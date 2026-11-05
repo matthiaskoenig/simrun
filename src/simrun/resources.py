@@ -19,6 +19,7 @@ MARGIN = 1.10
 DEFAULT_PER_WORKER_GB = 6.0
 GIB = 2**30
 PERCENTILE = 0.95
+MIN_PER_WORKER_GB = 0.1
 
 
 @dataclass(frozen=True)
@@ -124,8 +125,13 @@ class ResourceStore:
         """
         measured = report.memory_limit_bytes if oom else report.peak_memory_bytes
         per_worker = None
-        if measured is not None:
-            per_worker = max(0.0, (measured / GIB - base_gb) / max(report.processes, 1))
+        if measured is None:
+            if oom:
+                logger.warning("Out of memory report of %s without a memory limit", key)
+        else:
+            value = (measured / GIB - base_gb) / max(report.processes, 1)
+            if value > 0:
+                per_worker = value
         seconds = None
         if report.units_done:
             seconds = report.seconds / len(report.units_done)
@@ -153,13 +159,17 @@ class ResourceStore:
         """
         with self._connect() as con:
             rows = con.execute(
-                "SELECT per_worker_gb, seconds_per_unit FROM observations WHERE key = ?",
+                "SELECT per_worker_gb, seconds_per_unit, oom FROM observations WHERE key = ?",
                 (key.text(),),
             ).fetchall()
         memory = [r[0] for r in rows if r[0] is not None]
         seconds = [r[1] for r in rows if r[1] is not None]
+        ooms = [r[0] for r in rows if r[0] is not None and r[2]]
         if memory:
-            per_worker = _round_up(_percentile(memory, PERCENTILE) * MARGIN)
+            wanted = _percentile(memory, PERCENTILE) * MARGIN
+            if ooms:
+                wanted = max(wanted, max(ooms) * RETRY_FACTOR)
+            per_worker = max(MIN_PER_WORKER_GB, _round_up(wanted))
             source = f"learned from {len(memory)} runs"
         elif hint.memory_per_worker_gb != DEFAULT_PER_WORKER_GB:
             per_worker = hint.memory_per_worker_gb
