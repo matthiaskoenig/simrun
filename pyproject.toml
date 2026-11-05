@@ -1,0 +1,52 @@
+[project]
+name = "simrun"
+version = "0.1.0"
+description = "Runner of simulation workflows on a k3s cluster with Argo Workflows and Kueue"
+readme = "README.md"
+authors = [
+    { name = "Matthias Koenig", email = "konigmatt@googlemail.com" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.162",
+    "fastmcp>=4.1",
+    "hera>=7.2",
+    "httpx>=0.28.1",
+    "kubernetes>=37",
+    "pydantic>=2.14",
+    "pyyaml>=6.0.3",
+    "typer>=0.27",
+    "uvicorn>=0.54.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "cwl-utils>=0.46",
+    "cwltool>=3.3.20260925135507",
+    "pre-commit>=4.7.0",
+    "pytest>=9.2.0",
+    "pytest-xdist>=3.8.0",
+    "ruff>=0.17.4",
+    "ty>=0.0.98",
+]
+
+[build-system]
+requires = ["uv_build>=0.13.7,<0.14.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-n auto -m 'not cluster'"
+markers = [
+    "cluster: needs a running k3s cluster, run on demand with `-m cluster`",
+]
+
+[tool.ty.environment]
+root = ["./src"]
+
+[tool.ty.src]
+include = ["src", "tests"]
+
+[tool.ty.terminal]
+# warnings are failures: keep the codebase free of any diagnostic
+error-on-warning = true
