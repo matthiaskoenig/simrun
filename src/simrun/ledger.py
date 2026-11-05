@@ -1,8 +1,10 @@
 """The unit ledger: workers of a split task claim units through atomic renames."""
 
+import errno
 import logging
 import os
 import shutil
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -11,6 +13,8 @@ from typing import Self
 logger = logging.getLogger(__name__)
 
 SIZE_FILE = "size"
+SIZE_RETRIES = 20
+SIZE_RETRY_SECONDS = 0.25
 
 
 @dataclass(frozen=True)
@@ -32,7 +36,9 @@ class Ledger:
     """A directory with `pending/<i>`, `claimed/<i>@<worker>` and `done/<i>`.
 
     Every transition is one `os.rename`, atomic on a local file system and on NFS v4,
-    so a unit is held by at most one worker.
+    so a unit is held by at most one worker. On NFS the mount must be NFS >= 4.1
+    (sessions give renames exactly-once semantics; `claim` also tolerates a resent
+    rename that answers ENOENT although it happened).
     """
 
     def __init__(self, root: Path, n_units: int) -> None:
@@ -68,20 +74,40 @@ class Ledger:
                 (tmp / "claimed").mkdir()
                 (tmp / "done").mkdir()
                 for i in range(n_units):
-                    (tmp / "pending" / str(i)).touch()
+                    os.close(
+                        os.open(
+                            tmp / "pending" / str(i),
+                            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
+                            0o644,
+                        )
+                    )
                 (tmp / SIZE_FILE).write_text(str(n_units))
                 try:
-                    tmp.rename(root)
-                except OSError:
-                    if not root.exists():
+                    os.rename(tmp, root)
+                except OSError as error:
+                    # Another process published the ledger first. A cached lookup
+                    # on NFS may still deny that root exists, so decide by errno.
+                    if error.errno not in (errno.EEXIST, errno.ENOTEMPTY):
                         raise
                     logger.debug("ledger %s was created by another process", root)
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
-        size = int((root / SIZE_FILE).read_text())
+        size = cls._read_size(root)
         if size != n_units:
             raise ValueError(f"ledger {root} has {size} units, not {n_units}")
         return cls(root, size)
+
+    @staticmethod
+    def _read_size(root: Path) -> int:
+        """Read the size file, retrying while a cached negative lookup expires."""
+        for attempt in range(SIZE_RETRIES):
+            try:
+                return int((root / SIZE_FILE).read_text())
+            except FileNotFoundError:
+                if attempt == SIZE_RETRIES - 1:
+                    raise
+                time.sleep(SIZE_RETRY_SECONDS)
+        raise AssertionError("unreachable")
 
     def _names(self, state: str) -> list[str]:
         return os.listdir(self.root / state)
@@ -103,6 +129,10 @@ class Ledger:
                         self.root / "claimed" / f"{index}@{worker}",
                     )
                 except FileNotFoundError:
+                    # Another worker won it, or a resent rename of ours (NFS) that
+                    # had happened answered ENOENT: then the claim is ours.
+                    if (self.root / "claimed" / f"{index}@{worker}").exists():
+                        return index
                     continue
                 return index
             self._candidates = None
