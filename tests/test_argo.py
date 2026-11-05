@@ -1,3 +1,4 @@
+import dataclasses
 import json
 import re
 from datetime import UTC, datetime
@@ -146,52 +147,9 @@ def _resolved(template: dict[str, Any], args: dict[str, str]) -> str:
     return text
 
 
-def test_worker_scatter() -> None:
-    manifest = _manifest()
-    dag = _dag(manifest)
-    assert dag["squares"]["withSequence"]["count"] == "3"
-    assert dag["squares-merge"]["dependencies"] == ["squares"]
-    assert dag["report"]["dependencies"] == ["squares-merge"]
-    assert "dependencies" not in dag["squares"]
-    worker = _template(manifest, "squares")
-    assert worker["container"]["command"] == ["simrun-worker"]
-    assert _args(manifest, "squares")["worker"] == "squares-w{{item}}"
-    assert _env(worker)["SIMRUN_WORKER"] == "{{inputs.parameters.worker}}"
-    merge = _template(manifest, "squares-merge")
-    assert merge["container"]["command"] == ["simrun-merge"]
-    assert "SIMRUN_WORKER" not in _env(merge)
-    report = _template(manifest, "report")
-    assert report["container"]["command"] == ["python", "-m", "report"]
-    assert report["container"]["image"] == "localhost:5000/tools:1"
-    assert worker["container"]["image"] == "localhost:5000/env:1"
-    assert merge["container"]["image"] == "localhost:5000/env:1"
-
-
-def test_kueue_labels_and_priorities() -> None:
-    manifest = _manifest()
-    priority = _args(manifest, "squares")["priority"]
-    assert priority == "{{=item == '0' ? 'simrun-owner-base' : 'simrun-owner-extra'}}"
-    for task in ("squares", "squares-merge", "report"):
-        template = _template(manifest, task)
-        metadata = template["metadata"]
-        assert metadata["labels"]["kueue.x-k8s.io/queue-name"] == "simrun"
-        assert (
-            metadata["annotations"]["kueue.x-k8s.io/podset-required-topology"]
-            == "kubernetes.io/hostname"
-        )
-        assert (
-            template["priorityClassName"]
-            == metadata["labels"]["kueue.x-k8s.io/priority-class"]
-        )
-    worker = _template(manifest, "squares")
-    assert worker["priorityClassName"] == "{{inputs.parameters.priority}}"
-    for task in ("squares-merge", "report"):
-        assert _template(manifest, task)["priorityClassName"] == "simrun-owner-base"
-
-
 def test_requests_equal_limits() -> None:
     manifest = _manifest()
-    worker = _template(manifest, "squares")["container"]["resources"]
+    worker = _template(manifest, "squares-w0")["container"]["resources"]
     assert worker["requests"] == worker["limits"]
     assert worker["requests"] == {
         "cpu": "4",
@@ -207,7 +165,7 @@ def test_requests_equal_limits() -> None:
 
 def test_retry_strategy() -> None:
     manifest = _manifest()
-    for task in ("squares", "squares-merge", "report"):
+    for task in ("squares-w0", "squares-extra", "squares-merge", "report"):
         template = _template(manifest, task)
         retry = template["retryStrategy"]
         assert retry["limit"] == 20
@@ -219,7 +177,7 @@ def test_retry_strategy() -> None:
         assert patch["terminationGracePeriodSeconds"] == 90
         (container,) = patch["containers"]
         assert container["name"] == template["container"]["name"] == "main"
-    worker = json.loads(_template(manifest, "squares")["podSpecPatch"])
+    worker = json.loads(_template(manifest, "squares-w0")["podSpecPatch"])
     (container,) = worker["containers"]
     memory = "{{=lastRetry.exitCode == '137' ? '5Gi' : '3Gi'}}"
     assert container["resources"] == {
@@ -240,7 +198,7 @@ def test_retry_strategy() -> None:
 
 def test_environment() -> None:
     manifest = _manifest()
-    worker = _env(_template(manifest, "squares"))
+    worker = _env(_template(manifest, "squares-w0"))
     task_dir = f"/store/runs/{RUN}/tasks/squares"
     assert worker["SIMRUN_TASK_DIR"] == task_dir
     assert worker["SIMRUN_TASK_TYPE"] == "demo.squares"
@@ -289,7 +247,7 @@ def test_mounts() -> None:
         "path": "/scratch",
         "type": "DirectoryOrCreate",
     }
-    for task in ("squares", "squares-merge", "report"):
+    for task in ("squares-w0", "squares-extra", "squares-merge", "report"):
         mounts = {
             v["mountPath"]: v
             for v in _template(manifest, task)["container"]["volumeMounts"]
@@ -313,11 +271,16 @@ def test_scratch_per_worker() -> None:
         (path,) = [v["subPath"] for v in mounts if v["mountPath"] == "/scratch"]
         return path
 
-    assert scratch("squares") == f"{RUN}/squares/{{{{inputs.parameters.worker}}}}"
+    worker = f"{RUN}/squares/{{{{inputs.parameters.worker}}}}"
+    assert scratch("squares-w0") == scratch("squares-extra") == worker
     assert scratch("squares-merge") == f"{RUN}/squares/merge"
     assert scratch("report") == f"{RUN}/report"
-    worker = _template(manifest, "squares")
-    resolved = _resolved(worker, {**_args(manifest, "squares"), "worker": "squares-w2"})
+    worker = _template(manifest, "squares-w0")
+    resolved = _resolved(worker, _args(manifest, "squares-w0"))
+    assert f'"subPath": "{RUN}/squares/squares-w0"' in resolved
+    resolved = _resolved(
+        worker, {**_args(manifest, "squares-extra"), "worker": "squares-w2"}
+    )
     assert f'"subPath": "{RUN}/squares/squares-w2"' in resolved
 
 
@@ -350,10 +313,10 @@ def test_manifest_is_valid() -> None:
     manifest = _manifest(reserve="srv-01")
     m.Workflow.model_validate(manifest)
     # the templates stay valid once Argo substitutes the input parameters
-    worker = _template(manifest, "squares")
-    args = _args(manifest, "squares")
-    args = {**args, "priority": "simrun-owner-extra", "worker": "squares-w1"}
-    m.Template.model_validate(json.loads(_resolved(worker, args)))
+    worker = _template(manifest, "squares-w0")
+    for task in ("squares-w0", "squares-extra"):
+        args = {**_args(manifest, task), "worker": "squares-w1"}
+        m.Template.model_validate(json.loads(_resolved(worker, args)))
 
 
 def test_missing_image_raises() -> None:
@@ -390,15 +353,91 @@ def test_no_group() -> None:
     assert "annotations" not in metadata
 
 
-def test_workers_continue_on_failure() -> None:
+def test_split_task_dag() -> None:
     manifest = _manifest()
     dag = _dag(manifest)
-    assert dag["squares"]["continueOn"] == {"failed": True, "error": True}
-    assert dag["squares-merge"]["dependencies"] == ["squares"]
-    assert "continueOn" not in dag["squares-merge"]
-    assert "continueOn" not in dag["report"]
-    args = _args(manifest, "squares")
-    assert args["task"] == "squares"
-    assert args["role"] == "{{=item == '0' ? 'base' : 'extra'}}"
-    inputs = _template(manifest, "squares")["inputs"]["parameters"]
-    assert {p["name"] for p in inputs} == {"worker", "priority", "task", "role"}
+    assert list(dag) == ["squares-w0", "squares-extra", "squares-merge", "report"]
+    assert "withSequence" not in dag["squares-w0"]
+    assert dag["squares-extra"]["withSequence"] == {"start": "1", "count": "2"}
+    assert dag["squares-merge"]["dependencies"] == ["squares-w0"]
+    assert dag["report"]["dependencies"] == ["squares-merge"]
+    assert "dependencies" not in dag["squares-w0"]
+    assert "dependencies" not in dag["squares-extra"]
+    assert dag["squares-extra"]["continueOn"] == {"failed": True, "error": True}
+    for task in ("squares-w0", "squares-merge", "report"):
+        assert "continueOn" not in dag[task]
+    assert dag["squares-w0"]["template"] == dag["squares-extra"]["template"]
+    worker = _template(manifest, "squares-w0")
+    assert worker["container"]["command"] == ["simrun-worker"]
+    inputs = worker["inputs"]["parameters"]
+    assert [p["name"] for p in inputs] == ["worker", "priority", "task", "role"]
+    assert _args(manifest, "squares-w0") == {
+        "worker": "squares-w0",
+        "priority": "simrun-owner-base",
+        "task": "squares",
+        "role": "base",
+    }
+    assert _args(manifest, "squares-extra") == {
+        "worker": "squares-w{{item}}",
+        "priority": "simrun-owner-extra",
+        "task": "squares",
+        "role": "extra",
+    }
+    merge = _template(manifest, "squares-merge")
+    assert merge["container"]["command"] == ["simrun-merge"]
+    report = _template(manifest, "report")
+    assert report["container"]["command"] == ["python", "-m", "report"]
+    assert report["container"]["image"] == "localhost:5000/tools:1"
+    assert worker["container"]["image"] == "localhost:5000/env:1"
+    assert merge["container"]["image"] == "localhost:5000/env:1"
+
+
+def test_single_pod_has_no_extra_workers() -> None:
+    plans = {**PLANS, "squares": dataclasses.replace(PLANS["squares"], pods=1)}
+    manifest = to_argo(_record(), plans, TYPES, CONFIG)
+    dag = _dag(manifest)
+    assert list(dag) == ["squares-w0", "squares-merge", "report"]
+    assert dag["squares-merge"]["dependencies"] == ["squares-w0"]
+    m.Workflow.model_validate(manifest)
+
+
+def test_kueue_labels_and_priorities() -> None:
+    manifest = _manifest()
+    for task in ("squares-w0", "squares-extra", "squares-merge", "report"):
+        template = _template(manifest, task)
+        metadata = template["metadata"]
+        assert metadata["labels"]["kueue.x-k8s.io/queue-name"] == "simrun"
+        assert (
+            metadata["annotations"]["kueue.x-k8s.io/podset-required-topology"]
+            == "kubernetes.io/hostname"
+        )
+        assert (
+            template["priorityClassName"]
+            == metadata["labels"]["kueue.x-k8s.io/priority-class"]
+        )
+    worker = _template(manifest, "squares-w0")
+    assert worker["priorityClassName"] == "{{inputs.parameters.priority}}"
+    for task in ("squares-merge", "report"):
+        assert _template(manifest, task)["priorityClassName"] == "simrun-owner-base"
+
+
+def test_worker_roles() -> None:
+    manifest = _manifest()
+    worker = _template(manifest, "squares-w0")
+    env = _env(worker)
+    assert env["SIMRUN_WORKER"] == "{{inputs.parameters.worker}}"
+    assert env["SIMRUN_ROLE"] == "{{inputs.parameters.role}}"
+    assert env["SIMRUN_STALE_S"] == "120"
+    for task, role in (("squares-w0", "base"), ("squares-extra", "extra")):
+        resolved = json.loads(_resolved(worker, _args(manifest, task)))
+        env = _env(resolved)
+        assert env["SIMRUN_ROLE"] == role
+        priority = f"simrun-owner-{role}"
+        assert resolved["priorityClassName"] == priority
+        assert (
+            resolved["metadata"]["labels"]["kueue.x-k8s.io/priority-class"] == priority
+        )
+    for task in ("squares-merge", "report"):
+        env = _env(_template(manifest, task))
+        for name in ("SIMRUN_WORKER", "SIMRUN_ROLE", "SIMRUN_STALE_S"):
+            assert name not in env

@@ -1,26 +1,26 @@
 """Argo workflows from runs: one DAG, a scatter of workers per split task.
 
-A split task is the DAG task `<task>` over `withSequence: {count: pods}`, each item a
-pod running `simrun-worker` as worker `<task>-w<item>`, followed by `<task>-merge`
-running `simrun-merge`; an unsplit task is one pod running its command. A task waits
-for the tasks it reads from, a split one for their merge.
+A split task of `pods` pods is three DAG tasks of one worker template running
+`simrun-worker`: `<task>-w0`, the coordinator (worker `<task>-w0`, `SIMRUN_ROLE=base`,
+base priority), which returns once the ledger of the task is complete; `<task>-extra`
+over `withSequence: {start: 1, count: pods - 1}` (workers `<task>-w<item>`,
+`SIMRUN_ROLE=extra`, extra priority; left out for one pod), which exit when nothing is
+pending; and `<task>-merge` running `simrun-merge`, which depends on `<task>-w0` only,
+so extra workers still waiting for admission never hold up the merge. An unsplit task
+is one pod running its command. A task waits for the tasks it reads from, a split one
+for their merge.
 
-The scatter continues on failure (`continueOn: {failed: true, error: true}`): the
-merge runs once every item has ended, whatever its phase, and verifies the ledger
-(`run_merge` fails naming the units which are not done). So an extra worker which
-fails, or which the controller stops once the ledger has no pending units, does not
-fail the run. The items of a scatter carry the input parameters `task` (the task id)
-and `role` (`base` for item 0, `extra` for the others), so the node field selector
-`templateName=<task>-worker,inputs.parameters.role.value=extra` selects the extra
-workers of a task (fields of `SelectorMatchesNode` in workflow/util/util.go; add
-`phase=Pending` for the ones not yet running). Note that `argo stop` with a node field
-selector only changes active suspend nodes (`StopWorkflow`/`updateSuspendedNode` in
-workflow/util/util.go), not pod nodes, and a deleted pod is an Error which the retry
-strategy retries; stopping an extra worker needs another mechanism.
+The extra workers continue on failure (`continueOn: {failed: true, error: true}`), so
+an extra worker which fails does not fail the run; the coordinator releases the
+claims of workers whose heartbeat is older than `SIMRUN_STALE_S` (`grace_s + 60`) and
+computes them. The workers carry the input parameters `worker`, `priority`, `task`
+and `role`. Extra workers may still be pending or running after the last merge of a
+run: the controller stops the whole workflow then and records the state of the run
+itself.
 
 Every pod carries the Kueue label of the LocalQueue, the WorkloadPriorityClass label
-and the Kubernetes `priorityClassName` (item 0 of a scatter and every other pod the
-base priority, the further items the extra priority), the annotation which requires
+and the Kubernetes `priorityClassName` (the coordinator, the merge and an unsplit task
+the base priority, the extra workers the extra priority), the annotation which requires
 one node per pod (topology aware scheduling), requests equal to limits, the run
 directory of the store mounted read-write and the snapshots read-only, a scratch
 directory on the local disk (`<run>/<task>/<worker>` for a worker, `<run>/<task>/merge`
@@ -46,11 +46,12 @@ The Argo features this relies on (Argo Workflows v4.1.6):
   by name), also for `terminationGracePeriodSeconds`, which a template has no field
   for; the emissary executor reads it after the patch (`createWorkflowPod` in
   workflow/controller/workflowpod.go).
-- `{{item}}` and `{{=...}}` expressions on it in the arguments of an expanded DAG
-  task (`processItem` in workflow/controller/operator.go; the items of a sequence
-  are strings), and input parameters substituted anywhere in a template, its
-  metadata and `priorityClassName` included (`SubstituteParams` in
+- `{{item}}` in the arguments of an expanded DAG task (`processItem` in
+  workflow/controller/operator.go), and input parameters substituted anywhere in a
+  template, its metadata and `priorityClassName` included (`SubstituteParams` in
   workflow/common/util.go).
+- `continueOn` of a task which no task depends on: the DAG ignores its failure
+  (`assessDAGPhase` in workflow/controller/dag.go).
 """
 
 import hashlib
@@ -93,6 +94,9 @@ RETRY_EXPRESSION = (
 )
 # seconds a pod gets beyond the grace of the worker, for the executor to finish
 GRACE_MARGIN_S = 30
+# seconds beyond the grace after which the coordinator takes a worker as gone
+STALE_MARGIN_S = 60
+WORKER_PARAMETERS = ("worker", "priority", "task", "role")
 ENTRYPOINT = "dag"
 CONTAINER = "main"
 STORE_VOLUME = "store"
@@ -118,11 +122,6 @@ def _on_oom(retry: str, first: str) -> str:
     )
 
 
-def _on_first_item(first: str, other: str) -> str:
-    """An expression of a scatter item: `first` for item 0, else `other`."""
-    return f"{{{{=item == '0' ? '{first}' : '{other}'}}}}"
-
-
 def label_value(text: str) -> str:
     """A valid label value for free text.
 
@@ -142,6 +141,19 @@ def label_value(text: str) -> str:
     digest = hashlib.sha256(text.encode()).hexdigest()[:LABEL_HASH]
     stem = value[: LABEL_MAX - LABEL_HASH - 1].rstrip("-_.")
     return f"{stem}-{digest}" if stem else digest
+
+
+def _parameter(name: str) -> str:
+    """The reference to an input parameter of a template."""
+    return f"{{{{inputs.parameters.{name}}}}}"
+
+
+def _worker_arguments(worker: str, priority: str, task: str, role: str) -> m.Arguments:
+    """The arguments of the worker template, in the order of `WORKER_PARAMETERS`."""
+    values = dict(zip(WORKER_PARAMETERS, (worker, priority, task, role), strict=True))
+    return m.Arguments(
+        parameters=[m.Parameter(name=k, value=v) for k, v in values.items()]
+    )
 
 
 def _resources(shape: PodShape) -> m.ResourceRequirements:
@@ -192,9 +204,12 @@ def _env(
     task_type: TaskType,
     shape: PodShape,
     config: ClusterConfig,
-    worker: str | None,
+    worker: dict[str, str] | None = None,
 ) -> list[m.EnvVar]:
-    """The environment of the worker harness, see `simrun.worker`."""
+    """The environment of the worker harness, see `simrun.worker`.
+
+    `worker` holds the variables of a worker pod, e.g. `SIMRUN_WORKER`.
+    """
     inputs = {port: _output(record, ref) for port, ref in task.inputs.items()}
     for port in task.stage:
         if port not in inputs:
@@ -202,7 +217,6 @@ def _env(
     values = {
         "SIMRUN_TASK_DIR": _task_dir(record, task.id, config),
         "SIMRUN_TASK_TYPE": task_type.name,
-        "SIMRUN_WORKER": worker,
         "SIMRUN_ATTEMPT": "{{retries}}",
         "SIMRUN_MEMORY_BASE_GB": _number(task_type.hint.memory_base_gb),
         "SIMRUN_MEMORY_PER_WORKER_GB": _number(shape.per_worker_gb),
@@ -214,8 +228,9 @@ def _env(
             f"{config.store_mount}/{source.snapshot}" for source in record.sources
         ),
         "SIMRUN_SCRATCH": config.scratch_path,
+        **(worker or {}),
     }
-    env = [m.EnvVar(name=k, value=v) for k, v in values.items() if v is not None]
+    env = [m.EnvVar(name=k, value=v) for k, v in values.items()]
     node = m.EnvVarSource(field_ref=m.ObjectFieldSelector(field_path="spec.nodeName"))
     env.append(m.EnvVar(name="SIMRUN_NODE", value_from=node))
     return env
@@ -367,7 +382,7 @@ def to_argo(
         ] or None
         if not split[task.id]:
             image, argv = _unsplit_command(record, task, task_type, config)
-            env = _env(record, task, task_type, shape, config, None)
+            env = _env(record, task, task_type, shape, config)
             name = f"{task.id}-run"
             mounts = _mounts(record, f"{record.id}/{task.id}", config)
             templates.append(
@@ -380,8 +395,19 @@ def to_argo(
             )
             continue
         image = _image(record, task, task_type)
-        worker = "{{inputs.parameters.worker}}"
-        worker_env = _env(record, task, task_type, shape, config, worker)
+        worker = _parameter("worker")
+        worker_env = _env(
+            record,
+            task,
+            task_type,
+            shape,
+            config,
+            {
+                "SIMRUN_WORKER": worker,
+                "SIMRUN_ROLE": _parameter("role"),
+                "SIMRUN_STALE_S": str(config.grace_s + STALE_MARGIN_S),
+            },
+        )
         templates.append(
             _template(
                 f"{task.id}-worker",
@@ -390,31 +416,42 @@ def to_argo(
                 worker_env,
                 _mounts(record, f"{record.id}/{task.id}/{worker}", config),
                 shape,
-                "{{inputs.parameters.priority}}",
+                _parameter("priority"),
                 config,
-                inputs=["worker", "priority", "task", "role"],
+                inputs=list(WORKER_PARAMETERS),
             )
         )
-        priority = _on_first_item(plan.base_priority, plan.extra_priority)
         tasks.append(
             m.DAGTask(
-                name=task.id,
+                name=f"{task.id}-w0",
                 template=f"{task.id}-worker",
                 dependencies=dependencies,
-                continue_on=m.ContinueOn(failed=True, error=True),
-                with_sequence=m.Sequence(count=m.IntOrString(str(plan.pods))),
-                arguments=m.Arguments(
-                    parameters=[
-                        m.Parameter(name="worker", value=f"{task.id}-w{{{{item}}}}"),
-                        m.Parameter(name="priority", value=priority),
-                        m.Parameter(name="task", value=task.id),
-                        m.Parameter(name="role", value=_on_first_item("base", "extra")),
-                    ]
+                arguments=_worker_arguments(
+                    f"{task.id}-w0", plan.base_priority, task.id, "base"
                 ),
             )
         )
+        if plan.pods > 1:
+            tasks.append(
+                m.DAGTask(
+                    name=f"{task.id}-extra",
+                    template=f"{task.id}-worker",
+                    dependencies=dependencies,
+                    continue_on=m.ContinueOn(failed=True, error=True),
+                    with_sequence=m.Sequence(
+                        start=m.IntOrString("1"),
+                        count=m.IntOrString(str(plan.pods - 1)),
+                    ),
+                    arguments=_worker_arguments(
+                        f"{task.id}-w{{{{item}}}}",
+                        plan.extra_priority,
+                        task.id,
+                        "extra",
+                    ),
+                )
+            )
         merge_shape = _merge_shape(shape, task_type.hint.memory_base_gb)
-        merge_env = _env(record, task, task_type, merge_shape, config, None)
+        merge_env = _env(record, task, task_type, merge_shape, config)
         templates.append(
             _template(
                 f"{task.id}-merge",
@@ -431,7 +468,7 @@ def to_argo(
             m.DAGTask(
                 name=f"{task.id}-merge",
                 template=f"{task.id}-merge",
-                dependencies=[task.id],
+                dependencies=[f"{task.id}-w0"],
             )
         )
     templates.insert(0, m.Template(name=ENTRYPOINT, dag=m.DAGTemplate(tasks=tasks)))
