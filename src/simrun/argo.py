@@ -56,24 +56,21 @@ The Argo features this relies on (Argo Workflows v4.1.6):
 
 import hashlib
 import json
-import math
 import re
-import shlex
 from typing import Any
 
 from hera.workflows import Workflow
 from hera.workflows import models as m
 
+from simrun import podspec
 from simrun.config import ClusterConfig
 from simrun.planner import PodShape, TaskPlan
 from simrun.plugins import TaskType
-from simrun.plugins_builtin import COMMAND, CommandSettings
 from simrun.store import RunRecord
 from simrun.worker import (
     EXIT_ANALYSIS,
     EXIT_CONFIGURATION,
     EXIT_POOL_BROKEN,
-    SETTINGS_FILE,
 )
 from simrun.workflow import TaskSpec
 
@@ -95,19 +92,11 @@ RETRY_EXPRESSION = (
 # seconds a pod gets beyond the grace of the worker, for the executor to finish
 GRACE_MARGIN_S = 30
 # seconds beyond the grace after which the coordinator takes a worker as gone
-STALE_MARGIN_S = 60
 WORKER_PARAMETERS = ("worker", "priority", "task", "role")
 ENTRYPOINT = "dag"
 CONTAINER = "main"
 STORE_VOLUME = "store"
 SCRATCH_VOLUME = "scratch"
-WORKER_COMMAND = "simrun-worker"
-MERGE_COMMAND = "simrun-merge"
-
-
-def _number(value: float) -> str:
-    """A number of GiB for the environment, e.g. `0.5`."""
-    return str(float(value))
 
 
 def _gi(value: float) -> str:
@@ -170,7 +159,7 @@ def _pod_spec_patch(shape: PodShape, config: ClusterConfig) -> str:
     """The patch of an attempt: the retry memory after an exit 137, and the grace."""
     memory = _on_oom(_gi(shape.retry_memory_gb), _gi(shape.memory_gb))
     per_worker = _on_oom(
-        _number(shape.retry_per_worker_gb), _number(shape.per_worker_gb)
+        podspec.number(shape.retry_per_worker_gb), podspec.number(shape.per_worker_gb)
     )
     patch = {
         "terminationGracePeriodSeconds": config.grace_s + GRACE_MARGIN_S,
@@ -188,16 +177,6 @@ def _pod_spec_patch(shape: PodShape, config: ClusterConfig) -> str:
     return json.dumps(patch)
 
 
-def _task_dir(record: RunRecord, task_id: str, config: ClusterConfig) -> str:
-    return f"{config.store_mount}/runs/{record.id}/tasks/{task_id}"
-
-
-def _output(record: RunRecord, ref: str) -> str:
-    """The output a reference `<task>.<port>` names, relative to the store."""
-    task_id, _, port = ref.partition(".")
-    return f"runs/{record.id}/tasks/{task_id}/out/{port}"
-
-
 def _env(
     record: RunRecord,
     task: TaskSpec,
@@ -206,28 +185,12 @@ def _env(
     config: ClusterConfig,
     worker: dict[str, str] | None = None,
 ) -> list[m.EnvVar]:
-    """The environment of the worker harness, see `simrun.worker`.
-
-    `worker` holds the variables of a worker pod, e.g. `SIMRUN_WORKER`.
-    """
-    inputs = {port: _output(record, ref) for port, ref in task.inputs.items()}
-    for port in task.stage:
-        if port not in inputs:
-            raise ValueError(f"task {task.id!r} stages {port!r}, which is no input")
+    """The environment of a pod; `worker` holds the variables of a worker pod."""
     values = {
-        "SIMRUN_TASK_DIR": _task_dir(record, task.id, config),
-        "SIMRUN_TASK_TYPE": task_type.name,
+        **podspec.env_values(
+            record, task, task_type, shape, config.store_mount, config.scratch_path
+        ),
         "SIMRUN_ATTEMPT": "{{retries}}",
-        "SIMRUN_MEMORY_BASE_GB": _number(task_type.hint.memory_base_gb),
-        "SIMRUN_MEMORY_PER_WORKER_GB": _number(shape.per_worker_gb),
-        "SIMRUN_INPUTS": ",".join(f"{port}={path}" for port, path in inputs.items()),
-        "SIMRUN_STAGE": ",".join(
-            f"{inputs[port]}={config.scratch_path}/{port}" for port in task.stage
-        ),
-        "SIMRUN_EDITABLE": ",".join(
-            f"{config.store_mount}/{source.snapshot}" for source in record.sources
-        ),
-        "SIMRUN_SCRATCH": config.scratch_path,
         **(worker or {}),
     }
     env = [m.EnvVar(name=k, value=v) for k, v in values.items()]
@@ -298,53 +261,6 @@ def _template(
     )
 
 
-def _image(record: RunRecord, task: TaskSpec, task_type: TaskType) -> str:
-    if task_type.image is not None:
-        return task_type.image
-    if record.image is None:
-        raise ValueError(
-            f"task {task.id!r} of type {task_type.name!r} needs the image of the run, "
-            "and the run has none"
-        )
-    return record.image
-
-
-def _merge_shape(shape: PodShape, base_gb: float) -> PodShape:
-    """The merge: one core and the memory of one worker process besides the base."""
-    return PodShape(
-        cores=1,
-        memory_gb=math.ceil(base_gb + shape.per_worker_gb),
-        processes=1,
-        per_worker_gb=shape.per_worker_gb,
-        retry_memory_gb=math.ceil(base_gb + shape.retry_per_worker_gb),
-        retry_per_worker_gb=shape.retry_per_worker_gb,
-        scratch_gb=0.0,
-        gpus=0,
-    )
-
-
-def _unsplit_command(
-    record: RunRecord, task: TaskSpec, task_type: TaskType, config: ClusterConfig
-) -> tuple[str, list[str]]:
-    """The image and argv of an unsplit task."""
-    if task_type.name == COMMAND.name:
-        settings = CommandSettings.model_validate(task.settings)
-        return settings.image, settings.args
-    if task_type.command is None:
-        raise ValueError(
-            f"task {task.id!r}: type {task_type.name!r} is neither splittable "
-            "nor has a command"
-        )
-    task_dir = _task_dir(record, task.id, config)
-    argv = [
-        part.replace("{settings}", f"{task_dir}/{SETTINGS_FILE}").replace(
-            "{out}", f"{task_dir}/out"
-        )
-        for part in shlex.split(task_type.command)
-    ]
-    return _image(record, task, task_type), argv
-
-
 def to_argo(
     record: RunRecord,
     plans: dict[str, TaskPlan],
@@ -381,7 +297,9 @@ def to_argo(
             f"{dep}-merge" if split[dep] else dep for dep in task.dependencies()
         ] or None
         if not split[task.id]:
-            image, argv = _unsplit_command(record, task, task_type, config)
+            image, argv = podspec.unsplit_command(
+                record, task, task_type, config.store_mount
+            )
             env = _env(record, task, task_type, shape, config)
             name = f"{task.id}-run"
             mounts = _mounts(record, f"{record.id}/{task.id}", config)
@@ -394,7 +312,7 @@ def to_argo(
                 m.DAGTask(name=task.id, template=name, dependencies=dependencies)
             )
             continue
-        image = _image(record, task, task_type)
+        image = podspec.image(record, task, task_type)
         worker = _parameter("worker")
         worker_env = _env(
             record,
@@ -405,14 +323,14 @@ def to_argo(
             {
                 "SIMRUN_WORKER": worker,
                 "SIMRUN_ROLE": _parameter("role"),
-                "SIMRUN_STALE_S": str(config.grace_s + STALE_MARGIN_S),
+                "SIMRUN_STALE_S": str(config.grace_s + podspec.STALE_MARGIN_S),
             },
         )
         templates.append(
             _template(
                 f"{task.id}-worker",
                 image,
-                [WORKER_COMMAND],
+                [podspec.WORKER_COMMAND],
                 worker_env,
                 _mounts(record, f"{record.id}/{task.id}/{worker}", config),
                 shape,
@@ -450,13 +368,13 @@ def to_argo(
                     ),
                 )
             )
-        merge_shape = _merge_shape(shape, task_type.hint.memory_base_gb)
+        merge_shape = podspec.merge_shape(shape, task_type.hint.memory_base_gb)
         merge_env = _env(record, task, task_type, merge_shape, config)
         templates.append(
             _template(
                 f"{task.id}-merge",
                 image,
-                [MERGE_COMMAND],
+                [podspec.MERGE_COMMAND],
                 merge_env,
                 _mounts(record, f"{record.id}/{task.id}/merge", config),
                 merge_shape,
