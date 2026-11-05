@@ -14,8 +14,14 @@ is pending; and `<task>-merge` after `<task>-w0` only. With `--parallel` the
 coordinator and the extra workers run side by side; without it the steps run one after
 the other and the run still ends, since either one worker computes everything or the
 next finds nothing pending. A task waits for the merge of the tasks it reads from. A
-failed extra worker with exit 137 or 143 (killed) does not fail the workflow; the
-coordinator releases its claims and computes them.
+failed extra worker does not fail the workflow (`successCodes` of the step), as
+`continueOn` in Argo; the coordinator releases its claims and computes them, and a
+deterministic unit failure fails the workflow through `<task>-w0`.
+
+The export targets a shared file system without containers (`cwltool --no-container`,
+Toil on Slurm with the store on NFS): `store` is a path, not a CWL `Directory`, and
+the image is only a `DockerRequirement` hint. Running the steps in containers is
+deferred to the Slurm plan.
 
 The scratch directory of a worker is `<scratch>/<run>/<task>/<worker>` below the
 workflow input `scratch` (`<run>/<task>/merge` for a merge, `<run>/<task>` for an
@@ -30,15 +36,7 @@ from typing import Any
 import yaml
 from cwl_utils.parser import load_document_by_uri
 
-from simrun.argo import (
-    MERGE_COMMAND,
-    STALE_MARGIN_S,
-    WORKER_COMMAND,
-    _image,
-    _merge_shape,
-    _number,
-    _unsplit_command,
-)
+from simrun import podspec
 from simrun.config import ClusterConfig
 from simrun.planner import PodShape, TaskPlan
 from simrun.plugins import TaskType
@@ -47,7 +45,10 @@ from simrun.workflow import TaskSpec
 
 CWL_VERSION = "v1.2"
 DEFAULT_SCRATCH = "/tmp/simrun-scratch"
-KILLED_CODES = [0, 137, 143]
+# an extra worker is tolerated as `continueOn` tolerates it in Argo (Ruling 17b):
+# done, analysis error, configuration error, out of memory, stopped; the coordinator
+# recomputes what it released and fails itself on a deterministic error
+EXTRA_SUCCESS_CODES = [0, 3, 4, 137, 143]
 STORE = "$(inputs.store)"
 MIB = 1024
 
@@ -60,26 +61,9 @@ def _env(
     scratch: str,
     worker: dict[str, str] | None = None,
 ) -> list[dict[str, str]]:
-    """The environment of the worker harness, see `simrun.worker`."""
-    inputs = {
-        port: f"runs/{record.id}/tasks/{ref.partition('.')[0]}/out/"
-        f"{ref.partition('.')[2]}"
-        for port, ref in task.inputs.items()
-    }
-    for port in task.stage:
-        if port not in inputs:
-            raise ValueError(f"task {task.id!r} stages {port!r}, which is no input")
+    """The environment of the worker harness, see `simrun.podspec`."""
     values = {
-        "SIMRUN_TASK_DIR": f"{STORE}/runs/{record.id}/tasks/{task.id}",
-        "SIMRUN_TASK_TYPE": task_type.name,
-        "SIMRUN_MEMORY_BASE_GB": _number(task_type.hint.memory_base_gb),
-        "SIMRUN_MEMORY_PER_WORKER_GB": _number(shape.per_worker_gb),
-        "SIMRUN_INPUTS": ",".join(f"{port}={path}" for port, path in inputs.items()),
-        "SIMRUN_STAGE": ",".join(
-            f"{inputs[port]}={scratch}/{port}" for port in task.stage
-        ),
-        "SIMRUN_EDITABLE": ",".join(f"{STORE}/{s.snapshot}" for s in record.sources),
-        "SIMRUN_SCRATCH": scratch,
+        **podspec.env_values(record, task, task_type, shape, STORE, scratch),
         **(worker or {}),
     }
     return [{"envName": k, "envValue": v} for k, v in values.items()]
@@ -190,9 +174,7 @@ def to_cwl(
             for dep in task.dependencies()
         ]
         if not split[task.id]:
-            image, argv = _unsplit_command(
-                record, task, task_type, ClusterConfig(store_mount=STORE, registry="")
-            )
+            image, argv = podspec.unsplit_command(record, task, task_type, STORE)
             env = _env(record, task, task_type, shape, f"{run_scratch}/{task.id}")
             tool = _tool(task.id, env, shape, image, argv, bool(after))
             steps[task.id] = _step(tool, after)
@@ -201,8 +183,8 @@ def to_cwl(
                 "outputSource": f"{task.id}/log",
             }
             continue
-        image = _image(record, task, task_type)
-        stale = str(grace_s + STALE_MARGIN_S)
+        image = podspec.image(record, task, task_type)
+        stale = str(grace_s + podspec.STALE_MARGIN_S)
         w0 = f"{task.id}-w0"
         env = _env(
             record,
@@ -213,7 +195,7 @@ def to_cwl(
             {"SIMRUN_WORKER": w0, "SIMRUN_ROLE": "base", "SIMRUN_STALE_S": stale},
         )
         steps[w0] = _step(
-            _tool(w0, env, shape, image, [WORKER_COMMAND], bool(after)), after
+            _tool(w0, env, shape, image, [podspec.WORKER_COMMAND], bool(after)), after
         )
         if plan.pods > 1:
             extra = f"{task.id}-extra"
@@ -239,19 +221,20 @@ def to_cwl(
                 env,
                 shape,
                 image,
-                [WORKER_COMMAND],
+                [podspec.WORKER_COMMAND],
                 bool(after),
                 index=True,
-                success_codes=KILLED_CODES,
+                success_codes=EXTRA_SUCCESS_CODES,
             )
             steps[extra] = _step(tool, after, scatter=indices)
-        merge_shape = _merge_shape(shape, task_type.hint.memory_base_gb)
+        merge_shape = podspec.merge_shape(shape, task_type.hint.memory_base_gb)
         merge = f"{task.id}-merge"
         env = _env(
             record, task, task_type, merge_shape, f"{run_scratch}/{task.id}/merge"
         )
         steps[merge] = _step(
-            _tool(merge, env, merge_shape, image, [MERGE_COMMAND], True), [f"{w0}/log"]
+            _tool(merge, env, merge_shape, image, [podspec.MERGE_COMMAND], True),
+            [f"{w0}/log"],
         )
         outputs[f"{task.id}_log"] = {"type": "File", "outputSource": f"{merge}/log"}
     return {
