@@ -22,7 +22,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import tomlkit
-from packaging.requirements import Requirement
 
 from simrun.snapshot import SourceProvenance
 
@@ -37,10 +36,6 @@ LOCAL_SOURCES = ("directory", "editable", "path", "virtual")
 def normalise(name: str) -> str:
     """Normalised name of a package (PEP 503), as `uv.lock` writes it."""
     return re.sub(r"[-_.]+", "-", name).lower()
-
-
-def _requirement_name(requirement: str) -> str:
-    return normalise(Requirement(requirement).name)
 
 
 def _reject_host_paths(lock: str, allowed: list[str]) -> None:
@@ -143,11 +138,10 @@ def resolve_environment(
     dependencies = project.setdefault("dependencies", tomlkit.array())
     # uv applies a source only to a dependency of the root, so the libraries are
     # dependencies of the temporary project, which locks their dependencies as well
-    present = {_requirement_name(str(d)) for d in dependencies}
+    # the worker requirements are always added: uv intersects the requirements of a
+    # package, so the lock never resolves one below the floor of the worker
     for requirement in (*WORKER_REQUIREMENTS, *names):
-        if _requirement_name(requirement) not in present:
-            dependencies.append(requirement)
-            present.add(_requirement_name(requirement))
+        dependencies.append(requirement)
     tool = document.setdefault("tool", tomlkit.table())
     uv = tool.setdefault("uv", tomlkit.table())
     sources = uv.setdefault("sources", tomlkit.table())
@@ -162,7 +156,14 @@ def resolve_environment(
         (work / "pyproject.toml").write_text(tomlkit.dumps(document))
         (work / "uv.lock").write_bytes(model_lock.read_bytes())
         (work / STORE_LINK).symlink_to(store.resolve(), target_is_directory=True)
-        _uv(["lock", "--python", python], work)
+        try:
+            _uv(["lock", "--python", python], work)
+        except RuntimeError as error:
+            raise RuntimeError(
+                "The dependencies of the model cannot be locked with the "
+                f"requirements of the worker {', '.join(WORKER_REQUIREMENTS)} and "
+                f"the libraries: {error}"
+            ) from error
         lock = (work / "uv.lock").read_text()
         _reject_host_paths(lock, [_package_name(pyproject), *names])
         skipped = [arg for name in names for arg in ("--no-emit-package", name)]
