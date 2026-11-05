@@ -128,16 +128,30 @@ def processes(
     return max(1, min(cores, fit))
 
 
-def _init_process(setup: str | None, settings: BaseModel, paths: TaskPaths) -> None:
-    """Start a process of the pool: ignore the signals, then run the setup."""
+# The setups which ran in this process of the pool.
+_SETUPS_DONE: set[str] = set()
+
+
+def _init_process() -> None:
+    """Start a process of the pool: ignore SIGINT.
+
+    SIGTERM keeps its default: when a process of the pool dies, the executor ends the
+    others with SIGTERM and joins them.
+    """
     signal.signal(signal.SIGINT, signal.SIG_IGN)
-    signal.signal(signal.SIGTERM, signal.SIG_IGN)
-    if setup is not None:
+
+
+def _compute(
+    setup: str | None, ref: str, settings: BaseModel, index: int, paths: TaskPaths
+) -> None:
+    """Compute one unit in a process of the pool, after the setup of the process.
+
+    The setup runs in the first unit of a process, so its exception is the exception
+    of that unit, and a broken pool only means that a process died.
+    """
+    if setup is not None and setup not in _SETUPS_DONE:
         resolve(setup)(settings, paths)
-
-
-def _compute(ref: str, settings: BaseModel, index: int, paths: TaskPaths) -> None:
-    """Compute one unit in a process of the pool."""
+        _SETUPS_DONE.add(setup)
     resolve(ref)(settings, index, paths)
 
 
@@ -176,16 +190,24 @@ def _append_progress(path: Path, worker: str, index: int) -> None:
         os.close(fd)
 
 
-def write_report(report: WorkerReport, task_dir: Path) -> Path:
-    """Write the report as `task_dir/workers/<worker>.json` (temporary file, rename).
+def write_report(report: WorkerReport, task_dir: Path, attempt: int = 0) -> Path:
+    """Write the report as `task_dir/workers/<worker>-<attempt>.json`.
+
+    The file is written as a temporary file and renamed.
+
+    Args:
+        report: The report.
+        task_dir: The task directory.
+        attempt: The attempt of the pod.
 
     Returns:
         The path of the report.
     """
     directory = task_dir / WORKERS_DIR
     directory.mkdir(parents=True, exist_ok=True)
-    path = directory / f"{report.worker}.json"
-    tmp = directory / f".{report.worker}.json.{uuid.uuid4().hex}.tmp"
+    name = f"{report.worker}-{attempt}.json"
+    path = directory / name
+    tmp = directory / f".{name}.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps(asdict(report), indent=2))
     os.replace(tmp, path)
     return path
@@ -265,7 +287,6 @@ def _compute_units(
         max_workers=n_processes,
         mp_context=multiprocessing.get_context("forkserver"),
         initializer=_init_process,
-        initargs=(task_type.setup, settings, paths),
     )
     in_flight: dict[Future[None], int] = {}
     deadline: float | None = None
@@ -285,7 +306,12 @@ def _compute_units(
                     break
                 try:
                     future = pool.submit(
-                        _compute, task_type.compute_unit, settings, index, paths
+                        _compute,
+                        task_type.setup,
+                        task_type.compute_unit,
+                        settings,
+                        index,
+                        paths,
                     )
                 except BrokenProcessPool as error:
                     units.broken = error
@@ -303,8 +329,9 @@ def _compute_units(
             for future in finished:
                 units.finished(future, in_flight.pop(future))
     finally:
-        if in_flight:
-            # the processes ignore SIGTERM: kill them, then free their units
+        if in_flight or units.broken is not None:
+            # end the processes before their units are freed, and every process of
+            # a broken pool, so that the shutdown does not wait for one
             pool.kill_workers()
         pool.shutdown(wait=True, cancel_futures=True)
         for future, index in in_flight.items():
@@ -322,6 +349,8 @@ def run_worker(
     base_gb: float,
     per_worker_gb: float,
     grace_s: float = 60.0,
+    attempt: int = 0,
+    stop: threading.Event | None = None,
 ) -> WorkerReport:
     """Compute units of the ledger of a task until none is pending.
 
@@ -329,8 +358,9 @@ def run_worker(
     `task_dir/units`, keeps `processes(...)` units in flight in a pool of processes
     which run the setup of the task type once, completes a unit after its function
     returned and appends a `unit_done` line to `task_dir/progress.jsonl`. On SIGTERM
-    it stops claiming, waits for the running units up to `grace_s` and releases the
-    rest. The report is written in every case.
+    (or when `stop` is set, also before the first claim) it stops claiming, waits for
+    the running units up to `grace_s` and releases the rest. The report
+    `task_dir/workers/<worker>-<attempt>.json` is written in every case.
 
     Args:
         task_type: The task type, splittable.
@@ -342,6 +372,8 @@ def run_worker(
         base_gb: The memory of the task besides its processes in GiB.
         per_worker_gb: The memory per process in GiB.
         grace_s: Seconds the running units get after SIGTERM.
+        attempt: The attempt of the pod, which names its report.
+        stop: Set on SIGTERM by a caller which handles it already, e.g. `main`.
 
     Returns:
         The report.
@@ -357,7 +389,8 @@ def run_worker(
     if not task_type.splittable:
         raise ValueError(f"task type {task_type.name!r} is not splittable")
     assert task_type.count_units is not None
-    stop = threading.Event()
+    if stop is None:
+        stop = threading.Event()
     with _stop_on_sigterm(stop):
         n_units = resolve(task_type.count_units)(settings)
         ledger = Ledger.create(paths.task_dir / UNITS_DIR, n_units)
@@ -382,7 +415,7 @@ def run_worker(
                 memory_limit_bytes=cgroup.memory_limit(),
                 per_worker_gb=per_worker_gb,
             )
-            write_report(report, paths.task_dir)
+            write_report(report, paths.task_dir, attempt)
     if units.failed is not None:
         raise UnitError(units.failed)
     if units.broken is not None:
@@ -438,7 +471,7 @@ def _pairs(value: str) -> list[tuple[str, str]]:
 def paths_from_env(env: Mapping[str, str]) -> TaskPaths:
     """The locations of a task from the environment of its pod.
 
-    The task directory is `<store>/runs/<run>/<task>` (`SIMRUN_TASK_DIR`), the
+    The task directory is `<store>/runs/<run>/tasks/<task>` (`SIMRUN_TASK_DIR`), the
     inputs are `port=path` pairs (`SIMRUN_INPUTS`, a relative path is relative to the
     store) and the scratch directory is `SIMRUN_SCRATCH` (default `/scratch`).
 
@@ -454,7 +487,7 @@ def paths_from_env(env: Mapping[str, str]) -> TaskPaths:
     if not env.get("SIMRUN_TASK_DIR"):
         raise ConfigurationError("SIMRUN_TASK_DIR is not set")
     task_dir = Path(env["SIMRUN_TASK_DIR"])
-    run_dir = task_dir.parent
+    run_dir = task_dir.parent.parent
     store = run_dir.parent.parent
     inputs = {port: store / path for port, path in _pairs(env.get("SIMRUN_INPUTS", ""))}
     return TaskPaths(
@@ -533,6 +566,21 @@ def _task(env: Mapping[str, str]) -> tuple[TaskType, BaseModel, TaskPaths]:
     return task_type, settings, paths
 
 
+def _attempt(env: Mapping[str, str]) -> int:
+    value = env.get("SIMRUN_ATTEMPT") or "0"
+    try:
+        return int(value)
+    except ValueError:
+        raise ConfigurationError(
+            f"SIMRUN_ATTEMPT is not an integer: {value!r}"
+        ) from None
+
+
+def _editable(env: Mapping[str, str]) -> list[str]:
+    value = env.get("SIMRUN_EDITABLE", "")
+    return [path.strip() for path in value.split(",") if path.strip()]
+
+
 def _gb(env: Mapping[str, str], name: str, default: float) -> float:
     value = env.get(name)
     if not value:
@@ -560,20 +608,29 @@ def _logging() -> None:
 def main() -> None:
     """Run `simrun-worker` in a pod of a split task; exits with its code.
 
+    SIGTERM is handled from the start, so a pod evicted while it prepares (as PID 1
+    without a handler it would ignore SIGTERM) stops before its first claim.
+
     Exit codes: 0 done, 3 a unit failed (logged and released), 4 a configuration
     error, 137 a process of the pool died (retried with more memory), 143 stopped on
     SIGTERM (retried).
     """
+    stop = threading.Event()
+    with _stop_on_sigterm(stop):
+        sys.exit(_worker(stop))
+
+
+def _worker(stop: threading.Event) -> int:
+    """Prepare and run the worker of `main`; returns its exit code."""
     _logging()
     env = os.environ
     try:
-        install_editable(
-            [p.strip() for p in env.get("SIMRUN_EDITABLE", "").split(",") if p.strip()]
-        )
+        install_editable(_editable(env))
         task_type, settings, paths = _task(env)
         worker = env.get("SIMRUN_WORKER")
         if not worker:
             raise ConfigurationError("SIMRUN_WORKER is not set")
+        attempt = _attempt(env)
         stage(_pairs(env.get("SIMRUN_STAGE", "")), paths.store, paths.scratch)
         base_gb = _gb(env, "SIMRUN_MEMORY_BASE_GB", task_type.hint.memory_base_gb)
         per_worker_gb = _gb(
@@ -581,7 +638,10 @@ def main() -> None:
         )
     except CONFIGURATION_ERRORS as error:
         logger.error("configuration error: %s", error)
-        sys.exit(EXIT_CONFIGURATION)
+        return EXIT_CONFIGURATION
+    if stop.is_set():
+        logger.info("stopped on SIGTERM before the first claim")
+        return EXIT_TERMINATED
     for name in THREAD_VARIABLES:
         os.environ[name] = "1"
     try:
@@ -594,39 +654,51 @@ def main() -> None:
             memory_bytes=cgroup.memory_limit(),
             base_gb=base_gb,
             per_worker_gb=per_worker_gb,
+            attempt=attempt,
+            stop=stop,
         )
     except UnitError:
-        sys.exit(EXIT_ANALYSIS)
+        return EXIT_ANALYSIS
     except BrokenProcessPool:
-        sys.exit(EXIT_POOL_BROKEN)
+        return EXIT_POOL_BROKEN
     except Terminated as error:
         logger.info("%s", error)
-        sys.exit(EXIT_TERMINATED)
+        return EXIT_TERMINATED
     except ValueError as error:
         logger.error("configuration error: %s", error)
-        sys.exit(EXIT_CONFIGURATION)
-    sys.exit(EXIT_DONE)
+        return EXIT_CONFIGURATION
+    return EXIT_DONE
 
 
 def merge_main() -> None:
     """Run `simrun-merge` after the workers of a split task; exits with its code.
 
+    SIGTERM is handled from the start: a merge stopped before it began exits 143.
+
     Exit codes: 0 merged, 3 the ledger is incomplete or the merge failed, 4 a
-    configuration error.
+    configuration error, 143 stopped on SIGTERM before the merge.
     """
+    stop = threading.Event()
+    with _stop_on_sigterm(stop):
+        sys.exit(_merge(stop))
+
+
+def _merge(stop: threading.Event) -> int:
+    """Prepare and run the merge of `merge_main`; returns its exit code."""
     _logging()
     env = os.environ
     try:
-        install_editable(
-            [p.strip() for p in env.get("SIMRUN_EDITABLE", "").split(",") if p.strip()]
-        )
+        install_editable(_editable(env))
         task_type, settings, paths = _task(env)
     except CONFIGURATION_ERRORS as error:
         logger.error("configuration error: %s", error)
-        sys.exit(EXIT_CONFIGURATION)
+        return EXIT_CONFIGURATION
+    if stop.is_set():
+        logger.info("stopped on SIGTERM before the merge")
+        return EXIT_TERMINATED
     try:
         run_merge(task_type, settings, paths)
     except Exception:
         logger.exception("the merge of %s failed", paths.task_dir)
-        sys.exit(EXIT_ANALYSIS)
-    sys.exit(EXIT_DONE)
+        return EXIT_ANALYSIS
+    return EXIT_DONE
