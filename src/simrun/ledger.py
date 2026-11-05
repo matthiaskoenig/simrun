@@ -13,6 +13,7 @@ from typing import Self
 logger = logging.getLogger(__name__)
 
 SIZE_FILE = "size"
+HEARTBEATS_DIR = "heartbeats"
 SIZE_RETRIES = 20
 SIZE_RETRY_SECONDS = 0.25
 
@@ -34,6 +35,9 @@ def _check_worker(worker: str) -> None:
 
 class Ledger:
     """A directory with `pending/<i>`, `claimed/<i>@<worker>` and `done/<i>`.
+
+    Workers touch `heartbeats/<worker>`, so that the claims of a worker which died
+    without releasing them are found by the age of its heartbeat (`release_stale`).
 
     Every transition is one `os.rename`, atomic on a local file system and on NFS v4,
     so a unit is held by at most one worker. On NFS the mount must be NFS >= 4.1
@@ -180,6 +184,73 @@ class Ledger:
                 except ValueError:
                     continue
                 released.append(index)
+        return sorted(released)
+
+    def heartbeat(self, worker: str) -> None:
+        """Touch the heartbeat file of `worker`, created with its directory lazily.
+
+        Its modification time is set by the file server, so the heartbeats of workers
+        on different servers compare without their clocks.
+        """
+        _check_worker(worker)
+        path = self.root / HEARTBEATS_DIR / worker
+        try:
+            path.touch()
+        except FileNotFoundError:
+            path.parent.mkdir(exist_ok=True)
+            path.touch()
+
+    def _mtime(self, worker: str) -> float | None:
+        """The time of the last heartbeat of `worker`, `None` without one.
+
+        The file is opened, which revalidates its attributes on NFS (close-to-open).
+        """
+        try:
+            fd = os.open(self.root / HEARTBEATS_DIR / worker, os.O_RDONLY)
+        except FileNotFoundError:
+            return None
+        try:
+            return os.fstat(fd).st_mtime
+        finally:
+            os.close(fd)
+
+    def release_stale(self, stale_s: float, reference: str) -> list[int]:
+        """Return the claims of workers without a recent heartbeat to pending.
+
+        The heartbeat of `reference` is touched and its time is "now"; a claim of
+        another worker which has no heartbeat or one older than `now - stale_s` is
+        released. The claims of `reference` are never released.
+
+        Args:
+            stale_s: Seconds after which a heartbeat is stale.
+            reference: The worker which releases, e.g. the coordinator.
+
+        Returns:
+            The indices released, sorted.
+        """
+        self.heartbeat(reference)
+        now = self._mtime(reference)
+        assert now is not None
+        beats: dict[str, float | None] = {}
+        released: list[int] = []
+        for name in self._names("claimed"):
+            index, _, worker = name.partition("@")
+            if worker == reference:
+                continue
+            if worker not in beats:
+                beats[worker] = self._mtime(worker)
+            beat = beats[worker]
+            if beat is not None and beat >= now - stale_s:
+                continue
+            try:
+                os.rename(self.root / "claimed" / name, self.root / "pending" / index)
+            except FileNotFoundError:
+                # completed, released or released by another reference meanwhile
+                continue
+            logger.info("released unit %s of %s, its heartbeat is stale", index, worker)
+            released.append(int(index))
+        if released:
+            self._candidates = None
         return sorted(released)
 
     def counts(self) -> LedgerCounts:
