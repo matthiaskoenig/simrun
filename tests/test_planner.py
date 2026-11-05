@@ -124,3 +124,39 @@ def test_command_unsplit():
     assert p.units is None
     assert (p.shape.cores, p.shape.memory_gb, p.shape.gpus) == (4, 11, 1)
     assert p.shape.retry_memory_gb == 12
+
+
+def test_larger_node_when_common_does_not_fit():
+    s = shape(_res(200), NODES)
+    assert s.processes == 4
+    assert s.memory_gb == 802
+
+
+def test_retry_on_larger_node():
+    # 130 GiB fits 188; 1.5x = 195 does not, but fits srv-01 (1000)
+    s = shape(_res(130), NODES)
+    assert s.processes == 1
+    assert s.retry_per_worker_gb == pytest.approx(195)
+    assert s.retry_memory_gb == 197  # capped at the processes of the shape
+
+
+def test_retry_fits_nowhere_takes_whole_node(caplog):
+    s = shape(_res(800), NODES)
+    assert s.processes == 1
+    assert s.retry_memory_gb == 1000
+    assert "fits on no node" in caplog.text
+
+
+def _command(**kw):
+    settings = {"image": "i", "args": ["x"], "cores": 4, "memory_gb": 10} | kw
+    spec = TaskSpec(id="c", type="command", settings=settings)
+    return plan_task(
+        spec, COMMAND, _res(), NODES, SplitMode.FASTEST, Priority.STANDARD, None
+    )
+
+
+@pytest.mark.parametrize("kw", [{"cores": 500}, {"memory_gb": 2000}, {"gpus": 1}])
+def test_command_too_large(kw):
+    with pytest.raises(PlanError) as e:
+        _command(**kw)
+    assert "srv-01" in str(e.value) or "GPUs" in str(e.value)
