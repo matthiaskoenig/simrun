@@ -313,7 +313,10 @@ TYPES = {
 
 
 def start_main(
-    tmp_path: Path, settings: SquaresSettings, task_type: str = "demo.squares"
+    tmp_path: Path,
+    settings: SquaresSettings,
+    task_type: str = "demo.squares",
+    new_session: bool = False,
 ) -> tuple[subprocess.Popen[bytes], Path]:
     """Run `main` in a subprocess; a task type other than the demo is from PLUGIN."""
     task_dir = tmp_path / "runs" / "r1" / "tasks" / "squares"
@@ -339,7 +342,9 @@ def start_main(
         env.pop(name, None)
     plugin = "-" if task_type == "demo.squares" else "plugin"
     process = subprocess.Popen(
-        [sys.executable, "-c", MAIN, str(plugin_dir), plugin], env=env
+        [sys.executable, "-c", MAIN, str(plugin_dir), plugin],
+        env=env,
+        start_new_session=new_session,
     )
     return process, task_dir
 
@@ -359,9 +364,9 @@ def children(pid: int) -> set[int]:
     return found
 
 
-def kill_tree(process: subprocess.Popen[bytes]) -> None:
-    """Kill a process and every process below it."""
-    tree: set[int] = set()
+def kill_tree(process: subprocess.Popen[bytes], pool: set[int] | None = None) -> None:
+    """Kill a process, every process below it and the pool processes given."""
+    tree: set[int] = set(pool or ())
     frontier = {process.pid}
     while frontier:
         frontier = {c for p in frontier for c in children(p)}
@@ -393,36 +398,71 @@ def alive(pid: int) -> bool:
     return stat.rpartition(")")[2].split()[0] != "Z"
 
 
+def wait_for_pool(process: subprocess.Popen[bytes], claimed: Path) -> set[int]:
+    """Wait until every claimed unit runs in a pool process past its initializer.
+
+    Returns:
+        The pool processes, children of the forkserver, a child of the worker.
+    """
+    deadline = time.monotonic() + 60
+    while True:
+        assert process.poll() is None
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+        if not (claimed.exists() and os.listdir(claimed)):
+            continue
+        running = {p for c in children(process.pid) for p in children(c)}
+        if len(running) == len(os.listdir(claimed)) and all(
+            ignores_sigint(p) for p in running
+        ):
+            return running
+
+
+def wait_ended(pids: set[int]) -> None:
+    deadline = time.monotonic() + 10
+    while any(alive(p) for p in pids):
+        assert time.monotonic() < deadline, [p for p in pids if alive(p)]
+        time.sleep(0.05)
+
+
+@pytest.mark.skipif(not Path("/proc").is_dir(), reason="reads /proc")
+def test_sigterm_to_the_process_group_keeps_the_grace(tmp_path: Path) -> None:
+    process, task_dir = start_main(
+        tmp_path, SquaresSettings(n=20, sleep_s=1.0), new_session=True
+    )
+    claimed = task_dir / "units" / "claimed"
+    pool: set[int] = set()
+    try:
+        pool = wait_for_pool(process, claimed)
+        running = {int(name.partition("@")[0]) for name in os.listdir(claimed)}
+        # as a container runtime or Argo's emissary signal: the whole group
+        os.killpg(process.pid, signal.SIGTERM)
+        assert process.wait(timeout=30) == 143
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        kill_tree(process, pool)
+    done = {int(name) for name in os.listdir(task_dir / "units" / "done")}
+    assert running <= done
+    assert os.listdir(claimed) == []
+    assert set(read_report(task_dir, "w0")["units_done"]) == done
+    wait_ended(pool)
+
+
 @pytest.mark.skipif(not Path("/proc").is_dir(), reason="reads /proc")
 def test_killed_pool_process_exits_137(tmp_path: Path) -> None:
     process, task_dir = start_main(tmp_path, SquaresSettings(n=20, sleep_s=1.0))
     claimed = task_dir / "units" / "claimed"
     pool: set[int] = set()
     try:
-        deadline = time.monotonic() + 60
-        # the pool processes are children of the forkserver, a child of the worker
-        while not pool:
-            assert process.poll() is None
-            assert time.monotonic() < deadline
-            time.sleep(0.05)
-            if not (claimed.exists() and os.listdir(claimed)):
-                continue
-            running = {p for c in children(process.pid) for p in children(c)}
-            # every claimed unit runs in a process past its initializer
-            if len(running) == len(os.listdir(claimed)) and all(
-                ignores_sigint(p) for p in running
-            ):
-                pool = running
+        pool = wait_for_pool(process, claimed)
         os.kill(min(pool), signal.SIGKILL)
         assert process.wait(timeout=30) == 137
     finally:
-        kill_tree(process)
+        kill_tree(process, pool)
     assert os.listdir(claimed) == []
     assert read_report(task_dir, "w0")["worker"] == "w0"
-    deadline = time.monotonic() + 10
-    while any(alive(p) for p in pool):
-        assert time.monotonic() < deadline, [p for p in pool if alive(p)]
-        time.sleep(0.05)
+    wait_ended(pool)
 
 
 def test_setup_error_exit_code(tmp_path: Path) -> None:

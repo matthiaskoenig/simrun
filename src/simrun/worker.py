@@ -7,6 +7,7 @@ is evicted with SIGTERM and killed after its grace period, and is restarted with
 same worker id, which releases the claims of the incarnation before.
 """
 
+import contextlib
 import importlib
 import json
 import logging
@@ -28,6 +29,7 @@ from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
+from multiprocessing import forkserver
 from pathlib import Path
 
 from pydantic import BaseModel
@@ -133,12 +135,43 @@ _SETUPS_DONE: set[str] = set()
 
 
 def _init_process() -> None:
-    """Start a process of the pool: ignore SIGINT.
+    """Start a process of the pool: ignore SIGINT and SIGTERM.
 
-    SIGTERM keeps its default: when a process of the pool dies, the executor ends the
-    others with SIGTERM and joins them.
+    A SIGTERM to the process group (from a container runtime or Argo's emissary)
+    reaches the worker only, which gives the running units their grace. The worker
+    ends the processes with SIGKILL, see `_kill`.
     """
     signal.signal(signal.SIGINT, signal.SIG_IGN)
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    # blocked by the forkserver, see `_start_forkserver`
+    signal.pthread_sigmask(signal.SIG_UNBLOCK, {signal.SIGTERM})
+
+
+def _start_forkserver() -> None:
+    """Start the forkserver of the pool with SIGTERM blocked.
+
+    The forkserver and the processes it forks inherit the mask, so a SIGTERM to the
+    process group ends neither. The forkserver would die of it, and the executor
+    reads the end of every process from the forkserver: the pool would break. A
+    SIGTERM to the worker meanwhile is delivered when the mask is restored.
+    """
+    previous = signal.pthread_sigmask(signal.SIG_BLOCK, {signal.SIGTERM})
+    try:
+        forkserver.ensure_running()
+    finally:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+def _kill(pids: set[int]) -> None:
+    """SIGKILL the processes of a pool, without the lock of the executor.
+
+    When a process dies, the manager thread of the executor holds its lock while it
+    sends SIGTERM to the others, which ignore it, and joins them; so
+    `ProcessPoolExecutor.kill_workers`, which takes that lock, would wait forever.
+    """
+    for pid in pids:
+        with contextlib.suppress(ProcessLookupError):
+            os.kill(pid, signal.SIGKILL)
 
 
 def _compute(
@@ -283,12 +316,15 @@ def _compute_units(
 ) -> None:
     """Keep `n_processes` units in flight until none is pending or the worker stops."""
     assert task_type.compute_unit is not None
+    _start_forkserver()
     pool = ProcessPoolExecutor(
         max_workers=n_processes,
         mp_context=multiprocessing.get_context("forkserver"),
         initializer=_init_process,
     )
     in_flight: dict[Future[None], int] = {}
+    # the processes the pool started, which it starts in `submit` only
+    started: set[int] = set()
     deadline: float | None = None
     try:
         while True:
@@ -318,6 +354,7 @@ def _compute_units(
                     units.release(index)
                     break
                 in_flight[future] = index
+                started.update(pool._processes or ())
             if not in_flight or units.failed is not None or units.broken is not None:
                 break
             timeout = POLL_S
@@ -331,8 +368,8 @@ def _compute_units(
     finally:
         if in_flight or units.broken is not None:
             # end the processes before their units are freed, and every process of
-            # a broken pool, so that the shutdown does not wait for one
-            pool.kill_workers()
+            # a broken pool, whose manager thread waits for them
+            _kill(started)
         pool.shutdown(wait=True, cancel_futures=True)
         for future, index in in_flight.items():
             units.settle(future, index)
@@ -418,10 +455,11 @@ def run_worker(
             write_report(report, paths.task_dir, attempt)
     if units.failed is not None:
         raise UnitError(units.failed)
+    if stop.is_set():
+        # also when the pool broke after SIGTERM: an eviction, not a lack of memory
+        raise Terminated(f"worker {worker} stopped on SIGTERM")
     if units.broken is not None:
         raise units.broken
-    if stop.is_set():
-        raise Terminated(f"worker {worker} stopped on SIGTERM")
     return report
 
 
