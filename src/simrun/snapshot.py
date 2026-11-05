@@ -11,6 +11,7 @@ import logging
 import os
 import secrets
 import shutil
+import stat
 import subprocess
 import tempfile
 from pathlib import Path
@@ -29,7 +30,8 @@ class SourceProvenance(BaseModel):
         commit: Commit of HEAD.
         dirty: Whether the working tree differs from HEAD.
         changed_files: Porcelain status lines, e.g. `M src/a.py`.
-        diff_sha256: Hash of the patch and the sorted untracked files.
+        diff_sha256: Hash of the snapshot tree (paths, types, modes, contents);
+            the patch stays as provenance.
         snapshot: Directory of the snapshot, relative to the store root.
         patch: Stored `git diff HEAD --binary`, relative to the store root.
     """
@@ -44,11 +46,50 @@ class SourceProvenance(BaseModel):
     patch: str | None
 
 
-def _git(repo: Path, *args: str) -> bytes:
-    result = subprocess.run(
-        ["git", "-C", str(repo), *args], check=True, capture_output=True
-    )
+def _run(cmd: list[str], input: bytes | None = None, ok: tuple[int, ...] = ()) -> bytes:
+    result = subprocess.run(cmd, input=input, capture_output=True)
+    if result.returncode == 23 and _only_missing_files(result.stderr):
+        return result.stdout  # a file vanished between the listing and the copy
+    if result.returncode != 0 and result.returncode not in ok:
+        raise RuntimeError(
+            f"{cmd[0]} failed with exit code {result.returncode}: "
+            f"{result.stderr.decode(errors='replace').strip()}"
+        )
     return result.stdout
+
+
+def _only_missing_files(stderr: bytes) -> bool:
+    """Whether every error of rsync (exit 23) is a source file which is gone."""
+    errors = [
+        line
+        for line in stderr.decode(errors="replace").splitlines()
+        if line.startswith("rsync:")
+    ]
+    return bool(errors) and all(
+        "link_stat" in line and "No such file" in line for line in errors
+    )
+
+
+def _git(repo: Path, *args: str) -> bytes:
+    return _run(["git", "-C", str(repo), *args])
+
+
+def _tree_hash(root: Path) -> str:
+    """Hash the entries of a tree: path, type, mode bits, content or target."""
+    digest = hashlib.sha256()
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames.sort()
+        for fname in sorted(filenames):
+            path = Path(dirpath) / fname
+            st = path.lstat()
+            kind = b"l" if stat.S_ISLNK(st.st_mode) else b"f"
+            content = (
+                os.fsencode(os.readlink(path)) if kind == b"l" else path.read_bytes()
+            )
+            digest.update(os.fsencode(str(path.relative_to(root))) + b"\0")
+            digest.update(kind + b"%o" % stat.S_IMODE(st.st_mode) + b"\0")
+            digest.update(b"%d\0" % len(content) + content)
+    return digest.hexdigest()
 
 
 def _split(data: bytes) -> list[str]:
@@ -85,20 +126,8 @@ def snapshot(repo: Path, store: Path, name: str) -> SourceProvenance:
     listed = _split(
         _git(repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard")
     )
-    untracked = sorted(
-        _split(_git(repo, "ls-files", "-z", "--others", "--exclude-standard"))
-    )
-    digest = hashlib.sha256(patch)
-    for rel in untracked:
-        digest.update(b"\0" + os.fsencode(rel) + b"\0")
-        path = repo / rel
-        digest.update(
-            os.readlink(path).encode() if path.is_symlink() else path.read_bytes()
-        )
-    diff_sha256 = digest.hexdigest()
     dirty = bool(changed)
 
-    # nanosecond mtimes (--modify-window=-1): same size and second is no match
     # skip deleted files and the directories of submodules
     files = sorted(
         {
@@ -111,31 +140,29 @@ def snapshot(repo: Path, store: Path, name: str) -> SourceProvenance:
 
     parent = store / "snapshots" / name
     parent.mkdir(parents=True, exist_ok=True)
-    dirname = f"{commit[:12]}-{diff_sha256[:12]}"
-    final = parent / dirname
     latest = parent / "latest"
-    if not final.is_dir():
-        tmp = Path(tempfile.mkdtemp(prefix=".tmp-", dir=parent))
-        try:
-            cmd = ["rsync", "-a", "--modify-window=-1", "--files-from=-", "--from0"]
-            if latest.is_dir():
-                cmd.append(f"--link-dest={latest.resolve()}")
-            cmd += [f"{repo}/", f"{tmp}/"]
-            subprocess.run(
-                cmd,
-                input=b"".join(os.fsencode(f) + b"\0" for f in files),
-                check=True,
-                capture_output=True,
-            )
-            tmp.chmod(0o755)
+    tmp = Path(tempfile.mkdtemp(prefix=".tmp-", dir=parent))
+    try:
+        # --checksum: link only files of identical content; exit 24 (a file
+        # vanished before the copy) leaves it out of the snapshot and its hash
+        cmd = ["rsync", "-a", "--checksum", "--files-from=-", "--from0"]
+        if latest.is_dir():
+            cmd.append(f"--link-dest={latest.resolve()}")
+        cmd += [f"{repo}/", f"{tmp}/"]
+        _run(cmd, input=b"".join(os.fsencode(f) + b"\0" for f in files), ok=(24,))
+        diff_sha256 = _tree_hash(tmp)
+        dirname = f"{commit[:12]}-{diff_sha256[:12]}"
+        final = parent / dirname
+        tmp.chmod(0o755)
+        if not final.is_dir():
             try:
                 os.rename(tmp, final)
             except OSError:
                 if not final.is_dir():
                     raise
                 logger.info("snapshot %s was created concurrently", final)
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
     patch_rel: str | None = None
     if dirty:
