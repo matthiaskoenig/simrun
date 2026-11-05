@@ -1,0 +1,126 @@
+import pytest
+from pydantic import BaseModel
+
+from simrun.planner import (
+    MAX_PIECES,
+    Node,
+    PlanError,
+    plan_task,
+    shape,
+)
+from simrun.plugins import TaskType
+from simrun.plugins_builtin import COMMAND
+from simrun.resources import ResolvedResources
+from simrun.workflow import Priority, SplitMode, TaskSpec
+
+
+class _S(BaseModel):
+    pass
+
+
+def _type(command: str | None = None) -> TaskType:
+    return TaskType(
+        name="t",
+        settings=_S,
+        command=command,
+        count_units=None if command else "m:count",
+        compute_unit=None if command else "m:unit",
+        merge=None if command else "m:merge",
+    )
+
+
+def _res(per_worker: float = 5.1, gpus: int = 0) -> ResolvedResources:
+    return ResolvedResources(2.0, per_worker, 0.0, gpus, None, 0, "default")
+
+
+NODES = [Node("srv-01", 104, 1000)] + [
+    Node(f"srv-{i:02d}", 40, 188) for i in range(2, 13)
+]
+
+
+def _spec() -> TaskSpec:
+    return TaskSpec(id="a", type="t")
+
+
+def _plan(mode=SplitMode.FASTEST, units=400, priority=Priority.OWNER, nodes=NODES):
+    return plan_task(_spec(), _type(), _res(), nodes, mode, priority, units)
+
+
+def test_shape_memory_bound():
+    s = shape(_res(), NODES)
+    assert s.processes == 36
+    assert s.cores == 36
+    assert s.memory_gb == 186
+    assert s.retry_per_worker_gb == pytest.approx(7.65)
+    assert s.retry_memory_gb == 186
+
+
+def test_fastest_pieces():
+    assert _plan().pods == MAX_PIECES
+
+
+def test_fewer_units_than_pieces():
+    assert _plan(units=3).pods == 3
+
+
+def test_single_server():
+    assert _plan(mode=SplitMode.SINGLE_SERVER).pods == 1
+
+
+def test_priorities():
+    p = _plan()
+    assert (p.base_priority, p.extra_priority) == (
+        "simrun-owner-base",
+        "simrun-owner-extra",
+    )
+    assert _plan(priority=Priority.AGENT).base_priority == "simrun-agent-base"
+
+
+def test_reserved_nodes_excluded():
+    nodes = [Node("srv-01", 104, 1000)] + [
+        Node(f"srv-{i:02d}", 40, 188, reserved_by="x") for i in range(2, 13)
+    ]
+    s = shape(_res(), nodes)
+    assert s.processes == 104
+    assert s.memory_gb == 533
+
+
+def test_too_large_raises():
+    with pytest.raises(PlanError) as e:
+        shape(_res(2000), NODES)
+    assert "2000" in str(e.value)
+    assert "srv-01" in str(e.value)
+
+
+def test_gpus_only_nodes_with_gpus():
+    nodes = [Node("a", 40, 188), Node("g", 16, 128, gpus=2)]
+    s = shape(_res(gpus=1), nodes)
+    assert s.gpus == 1
+    assert s.cores == 16
+
+
+def test_slots_limit_pieces():
+    nodes = [Node("a", 40, 188), Node("b", 40, 188)]
+    assert _plan(nodes=nodes).pods == 2
+
+
+def test_command_unsplit():
+    spec = TaskSpec(
+        id="c",
+        type="command",
+        settings={
+            "image": "i",
+            "args": ["x"],
+            "cores": 4,
+            "memory_gb": 10.5,
+            "gpus": 1,
+        },
+    )
+    nodes = [Node("g", 16, 12, gpus=1)]
+    p = plan_task(
+        spec, COMMAND, _res(), nodes, SplitMode.FASTEST, Priority.STANDARD, None
+    )
+    assert p.pods == 1
+    assert p.units is None
+    assert (p.shape.cores, p.shape.memory_gb, p.shape.gpus) == (4, 11, 1)
+    assert p.shape.retry_memory_gb == 12
