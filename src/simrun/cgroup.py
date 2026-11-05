@@ -1,0 +1,45 @@
+"""The limits and the usage of the cgroup (v2) a worker runs in."""
+
+from pathlib import Path
+
+CGROUP_ROOT = Path("/sys/fs/cgroup")
+
+
+def _read(path: Path) -> str | None:
+    try:
+        return path.read_text().strip()
+    except OSError:
+        return None
+
+
+def cpu_quota(root: Path = CGROUP_ROOT) -> int | None:
+    """The number of cores the CPU quota of `cpu.max` allows.
+
+    Args:
+        root: The directory of the cgroup.
+
+    Returns:
+        The quota over the period, rounded down and at least 1, or `None` without a
+        quota or without the file.
+    """
+    text = _read(root / "cpu.max")
+    if text is None:
+        return None
+    quota, _, period = text.partition(" ")
+    if quota == "max":
+        return None
+    return max(1, int(quota) // int(period or "100000"))
+
+
+def memory_limit(root: Path = CGROUP_ROOT) -> int | None:
+    """The memory limit of `memory.max` in bytes, `None` without a limit."""
+    text = _read(root / "memory.max")
+    if text is None or text == "max":
+        return None
+    return int(text)
+
+
+def memory_peak(root: Path = CGROUP_ROOT) -> int | None:
+    """The peak memory of `memory.peak` in bytes, `None` without the file."""
+    text = _read(root / "memory.peak")
+    return None if text is None else int(text)

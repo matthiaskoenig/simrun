@@ -1,7 +1,9 @@
 """The demo plugin: sums of squares, split into one unit per number."""
 
 import json
+import os
 import time
+import uuid
 
 from pydantic import BaseModel
 
@@ -47,7 +49,7 @@ def setup(settings: SquaresSettings, paths: TaskPaths) -> None:
 
 
 def compute_unit(settings: SquaresSettings, index: int, paths: TaskPaths) -> None:
-    """Write the square of the index.
+    """Write the square of the index, atomically (temporary file, rename).
 
     Args:
         settings: Settings of the task.
@@ -64,9 +66,9 @@ def compute_unit(settings: SquaresSettings, index: int, paths: TaskPaths) -> Non
         raise RuntimeError(f"unit {index} failed on request")
     units = paths.out / "units"
     units.mkdir(parents=True, exist_ok=True)
-    (units / f"{index}.json").write_text(
-        json.dumps({"i": index, "square": index * index})
-    )
+    tmp = units / f".{index}.json.{uuid.uuid4().hex}.tmp"
+    tmp.write_text(json.dumps({"i": index, "square": index * index}))
+    os.replace(tmp, units / f"{index}.json")
 
 
 def merge(settings: SquaresSettings, paths: TaskPaths) -> None:
