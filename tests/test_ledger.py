@@ -137,3 +137,69 @@ def test_killed_worker_units_recomputed(tmp_path: Path) -> None:
     counts = ledger.counts()
     assert counts.done == counts.total == 5
     assert sorted(completed) == list(range(5))
+
+
+def test_create_lost_race_with_stale_exists(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "units"
+    Ledger.create(root, 3).claim("w")
+    real_exists = Path.exists
+    monkeypatch.setattr(
+        Path, "exists", lambda self: False if self == root else real_exists(self)
+    )
+    ledger = Ledger.create(root, 3)
+    assert ledger.counts().claimed == 1
+    assert not list(tmp_path.glob(".units.tmp.*"))
+
+
+def test_create_reraises_other_oserror(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import errno
+
+    def deny(src: object, dst: object) -> None:
+        raise OSError(errno.EACCES, "denied")
+
+    monkeypatch.setattr("simrun.ledger.os.rename", deny)
+    with pytest.raises(PermissionError):
+        Ledger.create(tmp_path / "units", 3)
+    assert not list(tmp_path.glob(".units.tmp.*"))
+
+
+def test_create_retries_stale_size_lookup(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    root = tmp_path / "units"
+    Ledger.create(root, 3)
+    real = Path.read_text
+    calls = []
+
+    def flaky(self: Path, *args: object, **kwargs: object) -> str:
+        if self.name == "size" and len(calls) < 2:
+            calls.append(1)
+            raise FileNotFoundError(str(self))
+        return real(self, *args, **kwargs)  # ty: ignore[invalid-argument-type]
+
+    monkeypatch.setattr(Path, "read_text", flaky)
+    assert Ledger.create(root, 3).counts().total == 3
+    assert len(calls) == 2
+
+
+def test_claim_whose_rename_was_resent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger = Ledger.create(tmp_path / "units", 2)
+    real = os.rename
+    fired = []
+
+    def resent(src: str | Path, dst: str | Path) -> None:
+        real(src, dst)
+        if not fired:
+            fired.append(1)
+            raise FileNotFoundError(str(src))
+
+    monkeypatch.setattr("simrun.ledger.os.rename", resent)
+    assert ledger.claim("w") == 0
+    assert ledger.claim("w") == 1
+    assert ledger.counts().claimed == 2
