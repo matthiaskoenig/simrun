@@ -191,14 +191,19 @@ class Ledger:
 
         Its modification time is set by the file server, so the heartbeats of workers
         on different servers compare without their clocks.
+
+        Raises:
+            OSError: The time of the file was not set.
         """
         _check_worker(worker)
         path = self.root / HEARTBEATS_DIR / worker
         try:
-            path.touch()
+            # not Path.touch, which ignores a failure of utime: a heartbeat which
+            # does not advance must raise
+            os.utime(path, None)
         except FileNotFoundError:
             path.parent.mkdir(exist_ok=True)
-            path.touch()
+            os.close(os.open(path, os.O_CREAT | os.O_WRONLY, 0o644))
 
     def _mtime(self, worker: str) -> float | None:
         """The time of the last heartbeat of `worker`, `None` without one.
@@ -227,6 +232,9 @@ class Ledger:
 
         Returns:
             The indices released, sorted.
+
+        Raises:
+            OSError: The heartbeat of `reference` was not touched.
         """
         self.heartbeat(reference)
         now = self._mtime(reference)

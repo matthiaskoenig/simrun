@@ -1,3 +1,4 @@
+import errno
 import os
 import signal
 import subprocess
@@ -234,3 +235,29 @@ def test_release_stale(tmp_path: Path) -> None:
     assert os.listdir(root / "claimed") == ["2@ref"]
     # released units are claimed again
     assert ledger.claim("ref") == 0
+
+
+def failing_utime(*args: object, **kwargs: object) -> None:
+    raise OSError(errno.EIO, "Input/output error")
+
+
+def test_failed_heartbeat_raises(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ledger = Ledger.create(tmp_path / "units", 2)
+    ledger.heartbeat("w0")
+    assert ledger.claim("w1") == 0
+    monkeypatch.setattr(os, "utime", failing_utime)
+    with pytest.raises(OSError) as raised:
+        ledger.heartbeat("w0")
+    assert raised.value.errno == errno.EIO
+    # the reference touch of the coordinator fails loudly too, releasing nothing
+    with pytest.raises(OSError):
+        ledger.release_stale(0.0, "w0")
+    assert os.listdir(tmp_path / "units" / "claimed") == ["0@w1"]
+
+
+def test_heartbeat_creates_the_file(tmp_path: Path) -> None:
+    ledger = Ledger.create(tmp_path / "units", 1)
+    ledger.heartbeat("w0")
+    assert (tmp_path / "units" / "heartbeats" / "w0").is_file()
