@@ -107,8 +107,25 @@ def _common_node(nodes: list[Node], gpus: int) -> Node:
     return next(n for n in usable if (n.cores, n.memory_gb) == (cores, memory))
 
 
+def _largest(nodes: list[Node], gpus: int) -> Node:
+    usable = _usable(nodes, gpus)
+    if not usable:
+        raise PlanError(f"no node which is not reserved has {gpus} GPUs")
+    return max(usable, key=lambda n: (n.memory_gb, n.cores))
+
+
+def _fit(node: Node, base: float, per_worker: float) -> int | None:
+    """Returns the number of processes on the node, None if one does not fit."""
+    try:
+        return processes(node.cores, int(node.memory_gb * GIB), base, per_worker)
+    except ValueError:
+        return None
+
+
 def shape(resources: ResolvedResources, nodes: list[Node]) -> PodShape:
     """Sizes a pod for the most common node which is not reserved.
+
+    When one worker does not fit that node, the largest usable node is taken.
 
     Args:
         resources: The resources of the task.
@@ -120,30 +137,36 @@ def shape(resources: ResolvedResources, nodes: list[Node]) -> PodShape:
     Raises:
         PlanError: One worker fits on no node.
     """
-    node = _common_node(nodes, resources.gpus)
     base = resources.memory_base_gb
     per_worker = resources.memory_per_worker_gb
-    try:
-        n = processes(node.cores, int(node.memory_gb * GIB), base, per_worker)
-    except ValueError:
-        usable = _usable(nodes, resources.gpus)
-        largest = max(usable, key=lambda x: x.memory_gb)
+    node = _common_node(nodes, resources.gpus)
+    n = _fit(node, base, per_worker)
+    if n is None:
+        node = _largest(nodes, resources.gpus)
+        n = _fit(node, base, per_worker)
+    if n is None:
         raise PlanError(
             f"one worker needs {per_worker} GiB besides {base} GiB base, more than "
-            f"the largest node {largest.name} with {largest.memory_gb} GiB"
-        ) from None
+            f"the largest node {node.name} with {node.memory_gb} GiB"
+        )
     retry_per_worker = per_worker * RETRY_FACTOR
-    try:
-        retry_n = processes(
-            node.cores, int(node.memory_gb * GIB), base, retry_per_worker
-        )
+    retry_node = node
+    retry_n = _fit(retry_node, base, retry_per_worker)
+    if retry_n is None:
+        retry_node = _largest(nodes, resources.gpus)
+        retry_n = _fit(retry_node, base, retry_per_worker)
+    if retry_n is not None:
+        retry_n = min(retry_n, n)
         retry_memory = math.ceil(base + retry_per_worker * retry_n)
-    except ValueError:
+    else:
         logger.warning(
-            "a retry with %s GiB per worker fits on no node", retry_per_worker
+            "a retry with %s GiB per worker fits on no node, "
+            "it takes the whole memory of %s with one process",
+            retry_per_worker,
+            retry_node.name,
         )
-        retry_per_worker = per_worker
-        retry_memory = math.ceil(base + per_worker * n)
+        retry_memory = int(retry_node.memory_gb)
+        retry_per_worker = max(0.0, retry_memory - base)
     return PodShape(
         cores=n,
         memory_gb=math.ceil(base + per_worker * n),
@@ -158,10 +181,19 @@ def shape(resources: ResolvedResources, nodes: list[Node]) -> PodShape:
 
 def _command_shape(settings: CommandSettings, nodes: list[Node]) -> PodShape:
     memory = math.ceil(settings.memory_gb)
-    usable = _usable(nodes, settings.gpus)
-    if not usable:
-        raise PlanError(f"no node which is not reserved has {settings.gpus} GPUs")
-    node_memory = max(n.memory_gb for n in usable)
+    fitting = [
+        n
+        for n in _usable(nodes, settings.gpus)
+        if n.cores >= settings.cores and n.memory_gb >= memory
+    ]
+    if not fitting:
+        largest = _largest(nodes, settings.gpus)
+        raise PlanError(
+            f"the command needs {settings.cores} cores, {memory} GiB and "
+            f"{settings.gpus} GPUs, more than the largest node {largest.name} "
+            f"with {largest.cores} cores and {largest.memory_gb} GiB"
+        )
+    node_memory = max(n.memory_gb for n in fitting)
     retry = max(
         memory, min(math.ceil(settings.memory_gb * RETRY_FACTOR), int(node_memory))
     )
@@ -171,6 +203,7 @@ def _command_shape(settings: CommandSettings, nodes: list[Node]) -> PodShape:
         processes=1,
         per_worker_gb=settings.memory_gb,
         retry_memory_gb=retry,
+        # processes is 1, so the memory per worker of a retry is its memory
         retry_per_worker_gb=float(retry),
         scratch_gb=settings.scratch_gb,
         gpus=settings.gpus,
