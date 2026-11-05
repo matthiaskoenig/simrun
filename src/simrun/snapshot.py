@@ -79,7 +79,9 @@ def _tree_hash(root: Path) -> str:
     digest = hashlib.sha256()
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames.sort()
-        for fname in sorted(filenames):
+        # a symlink to a directory is listed in dirnames and not descended into
+        links = [d for d in dirnames if (Path(dirpath) / d).is_symlink()]
+        for fname in sorted(filenames + links):
             path = Path(dirpath) / fname
             st = path.lstat()
             kind = b"l" if stat.S_ISLNK(st.st_mode) else b"f"

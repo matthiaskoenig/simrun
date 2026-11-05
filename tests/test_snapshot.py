@@ -165,3 +165,17 @@ def test_vanished_file_is_left_out(
 def test_failing_command_names_stderr(repo: Path, tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="not a git repository"):
         snapshot(tmp_path, tmp_path / "store", "proj")
+
+
+def test_directory_symlink_target_is_hashed(repo: Path, tmp_path: Path) -> None:
+    store = tmp_path / "store"
+    (repo / "d1").mkdir()
+    (repo / "d2").mkdir()
+    (repo / "l").symlink_to("d1")
+    p1 = snapshot(repo, store, "proj")
+    (repo / "l").unlink()
+    (repo / "l").symlink_to("d2")
+    p2 = snapshot(repo, store, "proj")
+    assert p1.snapshot != p2.snapshot
+    assert os.readlink(store / p1.snapshot / "l") == "d1"
+    assert os.readlink(store / p2.snapshot / "l") == "d2"
