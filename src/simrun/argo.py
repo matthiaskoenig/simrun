@@ -5,13 +5,28 @@ pod running `simrun-worker` as worker `<task>-w<item>`, followed by `<task>-merg
 running `simrun-merge`; an unsplit task is one pod running its command. A task waits
 for the tasks it reads from, a split one for their merge.
 
+The scatter continues on failure (`continueOn: {failed: true, error: true}`): the
+merge runs once every item has ended, whatever its phase, and verifies the ledger
+(`run_merge` fails naming the units which are not done). So an extra worker which
+fails, or which the controller stops once the ledger has no pending units, does not
+fail the run. The items of a scatter carry the input parameters `task` (the task id)
+and `role` (`base` for item 0, `extra` for the others), so the node field selector
+`templateName=<task>-worker,inputs.parameters.role.value=extra` selects the extra
+workers of a task (fields of `SelectorMatchesNode` in workflow/util/util.go; add
+`phase=Pending` for the ones not yet running). Note that `argo stop` with a node field
+selector only changes active suspend nodes (`StopWorkflow`/`updateSuspendedNode` in
+workflow/util/util.go), not pod nodes, and a deleted pod is an Error which the retry
+strategy retries; stopping an extra worker needs another mechanism.
+
 Every pod carries the Kueue label of the LocalQueue, the WorkloadPriorityClass label
 and the Kubernetes `priorityClassName` (item 0 of a scatter and every other pod the
 base priority, the further items the extra priority), the annotation which requires
 one node per pod (topology aware scheduling), requests equal to limits, the run
 directory of the store mounted read-write and the snapshots read-only, a scratch
-directory per run and task on the local disk, and the environment of the worker
-harness (`simrun.worker`).
+directory on the local disk (`<run>/<task>/<worker>` for a worker, `<run>/<task>/merge`
+for a merge, `<run>/<task>` for an unsplit task), and the environment of the worker
+harness (`simrun.worker`). The label `simrun/group` is the group made a valid label
+value (`label_value`), the annotation `simrun/group` the group as given.
 
 The Argo features this relies on (Argo Workflows v4.1.6):
 
@@ -38,8 +53,10 @@ The Argo features this relies on (Argo Workflows v4.1.6):
   workflow/common/util.go).
 """
 
+import hashlib
 import json
 import math
+import re
 import shlex
 from typing import Any
 
@@ -67,6 +84,8 @@ RESERVED_KEY = "simrun/reserved"
 RUN_LABEL = "simrun/run"
 GROUP_LABEL = "simrun/group"
 GPU_RESOURCE = "nvidia.com/gpu"
+LABEL_MAX = 63
+LABEL_HASH = 8
 RETRY_LIMIT = 20
 RETRY_EXPRESSION = (
     f"lastRetry.exitCode != '{EXIT_ANALYSIS}' "
@@ -97,6 +116,32 @@ def _on_oom(retry: str, first: str) -> str:
     return (
         f"{{{{=lastRetry.exitCode == '{EXIT_POOL_BROKEN}' ? '{retry}' : '{first}'}}}}"
     )
+
+
+def _on_first_item(first: str, other: str) -> str:
+    """An expression of a scatter item: `first` for item 0, else `other`."""
+    return f"{{{{=item == '0' ? '{first}' : '{other}'}}}}"
+
+
+def label_value(text: str) -> str:
+    """A valid label value for free text.
+
+    Lowercase, every character but `[a-z0-9-_.]` replaced by `-`, starting and ending
+    alphanumeric, at most 63 characters; a value which had to be changed ends in a
+    hash of the text, so different texts keep different values.
+
+    Args:
+        text: The text.
+
+    Returns:
+        The label value, `text` itself when it is one.
+    """
+    value = re.sub(r"[^a-z0-9._-]", "-", text.lower()).strip("-_.")
+    if value == text and len(value) <= LABEL_MAX:
+        return value
+    digest = hashlib.sha256(text.encode()).hexdigest()[:LABEL_HASH]
+    stem = value[: LABEL_MAX - LABEL_HASH - 1].rstrip("-_.")
+    return f"{stem}-{digest}" if stem else digest
 
 
 def _resources(shape: PodShape) -> m.ResourceRequirements:
@@ -177,8 +222,9 @@ def _env(
 
 
 def _mounts(
-    record: RunRecord, task_id: str, config: ClusterConfig
+    record: RunRecord, scratch: str, config: ClusterConfig
 ) -> list[m.VolumeMount]:
+    """The mounts of a pod; `scratch` is its directory below the scratch path."""
     run = f"runs/{record.id}"
     return [
         m.VolumeMount(
@@ -193,7 +239,7 @@ def _mounts(
         m.VolumeMount(
             name=SCRATCH_VOLUME,
             mount_path=config.scratch_path,
-            sub_path=f"{record.id}/{task_id}",
+            sub_path=scratch,
         ),
     ]
 
@@ -316,7 +362,6 @@ def to_argo(
         task_type = types[task.type]
         plan = plans[task.id]
         shape = plan.shape
-        mounts = _mounts(record, task.id, config)
         dependencies = [
             f"{dep}-merge" if split[dep] else dep for dep in task.dependencies()
         ] or None
@@ -324,6 +369,7 @@ def to_argo(
             image, argv = _unsplit_command(record, task, task_type, config)
             env = _env(record, task, task_type, shape, config, None)
             name = f"{task.id}-run"
+            mounts = _mounts(record, f"{record.id}/{task.id}", config)
             templates.append(
                 _template(
                     name, image, argv, env, mounts, shape, plan.base_priority, config
@@ -334,35 +380,35 @@ def to_argo(
             )
             continue
         image = _image(record, task, task_type)
-        worker_env = _env(
-            record, task, task_type, shape, config, "{{inputs.parameters.worker}}"
-        )
+        worker = "{{inputs.parameters.worker}}"
+        worker_env = _env(record, task, task_type, shape, config, worker)
         templates.append(
             _template(
                 f"{task.id}-worker",
                 image,
                 [WORKER_COMMAND],
                 worker_env,
-                mounts,
+                _mounts(record, f"{record.id}/{task.id}/{worker}", config),
                 shape,
                 "{{inputs.parameters.priority}}",
                 config,
-                inputs=["worker", "priority"],
+                inputs=["worker", "priority", "task", "role"],
             )
         )
-        priority = (
-            f"{{{{=item == '0' ? '{plan.base_priority}' : '{plan.extra_priority}'}}}}"
-        )
+        priority = _on_first_item(plan.base_priority, plan.extra_priority)
         tasks.append(
             m.DAGTask(
                 name=task.id,
                 template=f"{task.id}-worker",
                 dependencies=dependencies,
+                continue_on=m.ContinueOn(failed=True, error=True),
                 with_sequence=m.Sequence(count=m.IntOrString(str(plan.pods))),
                 arguments=m.Arguments(
                     parameters=[
                         m.Parameter(name="worker", value=f"{task.id}-w{{{{item}}}}"),
                         m.Parameter(name="priority", value=priority),
+                        m.Parameter(name="task", value=task.id),
+                        m.Parameter(name="role", value=_on_first_item("base", "extra")),
                     ]
                 ),
             )
@@ -375,7 +421,7 @@ def to_argo(
                 image,
                 [MERGE_COMMAND],
                 merge_env,
-                mounts,
+                _mounts(record, f"{record.id}/{task.id}/merge", config),
                 merge_shape,
                 plan.base_priority,
                 config,
@@ -391,8 +437,10 @@ def to_argo(
     templates.insert(0, m.Template(name=ENTRYPOINT, dag=m.DAGTemplate(tasks=tasks)))
 
     labels = {RUN_LABEL: record.id}
+    annotations = None
     if record.group is not None:
-        labels[GROUP_LABEL] = record.group
+        labels[GROUP_LABEL] = label_value(record.group)
+        annotations = {GROUP_LABEL: record.group}
     node_selector = None
     tolerations = None
     if record.reserve is not None:
@@ -420,6 +468,7 @@ def to_argo(
         name=f"simrun-{record.id}",
         namespace=config.namespace,
         labels=labels,
+        annotations=annotations,
         entrypoint=ENTRYPOINT,
         templates=list(templates),  # a list of the union hera declares
         volumes=volumes,

@@ -1,4 +1,5 @@
 import json
+import re
 from datetime import UTC, datetime
 from typing import Any
 
@@ -301,9 +302,23 @@ def test_mounts() -> None:
         assert snapshots["name"] == "store"
         assert snapshots["subPath"] == "snapshots"
         assert snapshots["readOnly"] is True
-        scratch = mounts["/scratch"]
-        assert scratch["name"] == "scratch"
-        assert scratch["subPath"] == f"{RUN}/{task.removesuffix('-merge')}"
+        assert mounts["/scratch"]["name"] == "scratch"
+
+
+def test_scratch_per_worker() -> None:
+    manifest = _manifest()
+
+    def scratch(task: str) -> str:
+        mounts = _template(manifest, task)["container"]["volumeMounts"]
+        (path,) = [v["subPath"] for v in mounts if v["mountPath"] == "/scratch"]
+        return path
+
+    assert scratch("squares") == f"{RUN}/squares/{{{{inputs.parameters.worker}}}}"
+    assert scratch("squares-merge") == f"{RUN}/squares/merge"
+    assert scratch("report") == f"{RUN}/report"
+    worker = _template(manifest, "squares")
+    resolved = _resolved(worker, {**_args(manifest, "squares"), "worker": "squares-w2"})
+    assert f'"subPath": "{RUN}/squares/squares-w2"' in resolved
 
 
 def test_reservation() -> None:
@@ -327,6 +342,7 @@ def test_workflow_metadata() -> None:
     assert manifest["metadata"]["name"] == f"simrun-{RUN}"
     assert manifest["metadata"]["namespace"] == "simrun"
     assert manifest["metadata"]["labels"] == {"simrun/run": RUN, "simrun/group": "g1"}
+    assert manifest["metadata"]["annotations"] == {"simrun/group": "g1"}
     assert manifest["spec"]["ttlStrategy"] == {"secondsAfterCompletion": 86400}
 
 
@@ -345,3 +361,44 @@ def test_missing_image_raises() -> None:
     record.image = None
     with pytest.raises(ValueError, match="squares"):
         to_argo(record, PLANS, TYPES, CONFIG)
+
+
+LABEL_VALUE = re.compile(r"^([a-z0-9]([a-z0-9._-]*[a-z0-9])?)?$")
+
+
+def test_group_label_sanitised() -> None:
+    record = _record()
+    group = "Team A/" + "x" * 80
+    record.group = group
+    metadata = to_argo(record, PLANS, TYPES, CONFIG)["metadata"]
+    label = metadata["labels"]["simrun/group"]
+    assert LABEL_VALUE.match(label)
+    assert len(label) <= 63
+    assert label.startswith("team-a-xxx")
+    assert metadata["annotations"]["simrun/group"] == group
+    record.group = "Team A/" + "x" * 79 + "y"
+    other = to_argo(record, PLANS, TYPES, CONFIG)["metadata"]["labels"]
+    assert other["simrun/group"] != label
+    m.Workflow.model_validate(to_argo(record, PLANS, TYPES, CONFIG))
+
+
+def test_no_group() -> None:
+    record = _record()
+    record.group = None
+    metadata = to_argo(record, PLANS, TYPES, CONFIG)["metadata"]
+    assert "simrun/group" not in metadata["labels"]
+    assert "annotations" not in metadata
+
+
+def test_workers_continue_on_failure() -> None:
+    manifest = _manifest()
+    dag = _dag(manifest)
+    assert dag["squares"]["continueOn"] == {"failed": True, "error": True}
+    assert dag["squares-merge"]["dependencies"] == ["squares"]
+    assert "continueOn" not in dag["squares-merge"]
+    assert "continueOn" not in dag["report"]
+    args = _args(manifest, "squares")
+    assert args["task"] == "squares"
+    assert args["role"] == "{{=item == '0' ? 'base' : 'extra'}}"
+    inputs = _template(manifest, "squares")["inputs"]["parameters"]
+    assert {p["name"] for p in inputs} == {"worker", "priority", "task", "role"}
