@@ -50,3 +50,7 @@ include = ["src", "tests"]
 [tool.ty.terminal]
 # warnings are failures: keep the codebase free of any diagnostic
 error-on-warning = true
+
+[project.entry-points."simrun.task_types"]
+command = "simrun.plugins_builtin:COMMAND"
+"demo.squares" = "simrun.demo:SQUARES"
