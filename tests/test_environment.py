@@ -1,3 +1,5 @@
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -9,6 +11,9 @@ from simrun.snapshot import SourceProvenance
 @pytest.fixture(autouse=True)
 def _offline(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("UV_OFFLINE", "1")
+
+
+LOCK = 'version = 1\nrevision = 5\nrequires-python = ">=3.14"\n'
 
 
 def _write(path: Path, text: str) -> None:
@@ -39,56 +44,63 @@ def _project(root: Path, name: str, deps: list[str], sources: str = "") -> None:
 
 
 def _make(
-    tmp_path: Path, lib_deps: list[str], name: str = "store", shared: Path | None = None
+    tmp_path: Path, lib_deps: list[str], name: str = "store"
 ) -> tuple[Path, SourceProvenance, list[SourceProvenance]]:
     store = tmp_path / name
-    extra = shared or tmp_path / "extra"
-    _project(extra, "extra", [])
-    _write(extra / "extra.py", "")
-    _project(
-        store / "snap/model",
-        "model",
-        ["lib", "extra"],
-        f'[tool.uv.sources]\nextra = {{ path = "{extra}" }}\n',
-    )
+    _project(store / "snap/extra", "extra", [])
+    _write(store / "snap/model/uv.lock", LOCK)
+    _project(store / "snap/model", "model", ["lib"])
     _project(store / "snap/lib", "lib", lib_deps)
     return (
         store,
         _provenance("model", "snap/model"),
-        [_provenance("lib", "snap/lib")],
+        [_provenance("lib", "snap/lib"), _provenance("extra", "snap/extra")],
     )
+
+
+def _resolve(
+    store: Path, model: SourceProvenance, libs: list[SourceProvenance]
+) -> Environment:
+    return resolve_environment(store, model, libs, simrun_version="0.1.0")
 
 
 def test_snapshot_dependency_in_lock(tmp_path: Path) -> None:
     store, model, libs = _make(tmp_path, ["extra"])
-    env = resolve_environment(store, model, libs)
+    env = _resolve(store, model, libs)
     assert 'name = "extra"' in env.lock
-    assert env.editable == ["snap/model", "snap/lib"]
+    assert 'name = "pydantic"' not in env.lock or "pydantic" in env.requirements
+    assert env.editable == ["snap/model", "snap/lib", "snap/extra"]
     assert env.python == "3.14"
 
 
 def test_lock_independent_of_store_location(tmp_path: Path) -> None:
-    extra = tmp_path / "extra"
-    store, model, libs = _make(tmp_path / "a", ["extra"], shared=extra)
-    other, model2, libs2 = _make(tmp_path / "b", ["extra"], name="mnt", shared=extra)
-    a = resolve_environment(store, model, libs)
-    b = resolve_environment(other, model2, libs2)
+    store, model, libs = _make(tmp_path / "a", ["extra"])
+    other, model2, libs2 = _make(tmp_path / "b", ["extra"], name="mnt")
+    a = _resolve(store, model, libs)
+    b = _resolve(other, model2, libs2)
     assert a.lock_sha256 == b.lock_sha256
 
 
 def test_hash_stable(tmp_path: Path) -> None:
     store, model, libs = _make(tmp_path, ["extra"])
     assert (
-        resolve_environment(store, model, libs).lock_sha256
-        == resolve_environment(store, model, libs).lock_sha256
+        _resolve(store, model, libs).lock_sha256
+        == _resolve(store, model, libs).lock_sha256
     )
 
 
 def test_hash_changes_with_dependencies(tmp_path: Path) -> None:
     store, model, libs = _make(tmp_path, [])
-    before = resolve_environment(store, model, libs)
+    before = _resolve(store, model, libs)
     _project(store / "snap/lib", "lib", ["extra"])
-    assert resolve_environment(store, model, libs).lock_sha256 != before.lock_sha256
+    assert _resolve(store, model, libs).lock_sha256 != before.lock_sha256
+
+
+def test_hash_changes_with_simrun_version(tmp_path: Path) -> None:
+    store, model, libs = _make(tmp_path, [])
+    a = _resolve(store, model, libs)
+    b = resolve_environment(store, model, libs, simrun_version="0.2.0")
+    assert a.lock_sha256 != b.lock_sha256
 
 
 def test_existing_sources_overridden_by_name(tmp_path: Path) -> None:
@@ -99,28 +111,72 @@ def test_existing_sources_overridden_by_name(tmp_path: Path) -> None:
         ["lib"],
         '[tool.uv.sources]\nlib = { path = "/does/not/exist" }\n',
     )
-    env = resolve_environment(store, model, libs)
+    env = _resolve(store, model, libs)
     assert "/does/not/exist" not in env.lock
 
 
+def test_unsnapshotted_path_dependency_rejected(tmp_path: Path) -> None:
+    store, model, libs = _make(tmp_path, [])
+    other = tmp_path / "other"
+    _project(other, "other", [])
+    _project(
+        store / "snap/model",
+        "model",
+        ["lib", "other"],
+        f'[tool.uv.sources]\nother = {{ path = "{other}" }}\n',
+    )
+    with pytest.raises(ValueError, match="'other'.*source"):
+        _resolve(store, model, libs)
+
+
+def test_dev_group_not_in_requirements(tmp_path: Path) -> None:
+    store, model, libs = _make(tmp_path, [])
+    with (store / "snap/model/pyproject.toml").open("a") as handle:
+        handle.write('[dependency-groups]\ndev = ["pytest"]\n')
+    env = _resolve(store, model, libs)
+    assert 'name = "pytest"' in env.lock
+    assert "pytest==" not in env.requirements and "\npytest" not in env.requirements
+    assert "pydantic" in env.requirements
+
+
+def test_missing_lock(tmp_path: Path) -> None:
+    store, model, libs = _make(tmp_path, [])
+    (store / "snap/model/uv.lock").unlink()
+    with pytest.raises(ValueError, match=r"uv\.lock"):
+        _resolve(store, model, libs)
+
+
 def test_image_ref(tmp_path: Path) -> None:
-    env = Environment(lock="l", lock_sha256="ab" * 32, python="3.14", editable=[])
+    env = Environment(
+        lock="l", lock_sha256="ab" * 32, python="3.14", simrun_version="1", editable=[]
+    )
     assert image_ref(env, "reg:5000") == f"reg:5000/simrun-env:{'ab' * 8}"
 
 
 def test_dockerfile_has_no_source(tmp_path: Path) -> None:
     store, model, libs = _make(tmp_path, ["extra"])
-    text = dockerfile(resolve_environment(store, model, libs), "reg:5000")
+    text = dockerfile(_resolve(store, model, libs), "reg:5000", "simrun-0.1.0.whl")
     assert text.startswith("FROM reg:5000/uv:python3.14-bookworm-slim")
-    assert "COPY" not in text
+    assert text.count("COPY") == 1
+    assert "COPY simrun-0.1.0.whl " in text
+    assert "--no-deps /tmp/simrun-0.1.0.whl" in text
+    assert "uv pip install simrun" not in text
     assert "snap/" not in text
-    assert "uv pip install" in text and "simrun" in text
-    assert "extra" in text
-    assert "lib==" not in text and "model==" not in text
+    assert "file://" not in text
+    assert "pydantic" in text and "extra==" not in text
+
+
+def test_worker_imports_light() -> None:
+    code = (
+        "import simrun.worker, simrun.demo, sys; "
+        "assert not {'fastapi','kubernetes','hera','httpx','fastmcp'} "
+        "& set(sys.modules)"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_missing_pyproject(tmp_path: Path) -> None:
     store, model, libs = _make(tmp_path, [])
     (store / "snap/lib/pyproject.toml").unlink()
     with pytest.raises(ValueError, match=r"pyproject\.toml"):
-        resolve_environment(store, model, libs)
+        _resolve(store, model, libs)

@@ -27,6 +27,22 @@ from simrun.snapshot import SourceProvenance
 logger = logging.getLogger(__name__)
 
 STORE_LINK = "store"
+# what the worker of simrun imports besides the standard library
+WORKER_REQUIREMENTS = ("pydantic>=2.14", "pyyaml>=6.0.3")
+LOCAL_SOURCES = ("directory", "editable", "path", "virtual")
+
+
+def _reject_host_paths(lock: str, allowed: list[str]) -> None:
+    """Raise when the lock has a local package which is not a snapshotted source."""
+    for package in tomllib.loads(lock).get("package", []):
+        source = package.get("source", {})
+        url = str(source.get("url", ""))
+        local = any(key in source for key in LOCAL_SOURCES) or url.startswith("file:")
+        if local and package["name"] not in allowed:
+            raise ValueError(
+                f"The model depends on the local package {package['name']!r}, which "
+                "is not a snapshotted source: pass its working tree as a source"
+            )
 
 
 @dataclass(frozen=True)
@@ -37,6 +53,7 @@ class Environment:
         lock: Text of the `uv.lock`.
         lock_sha256: Hash of the lock and the python version, the identity of the image.
         python: Python version of the image.
+        simrun_version: Version of the simrun wheel the image installs.
         editable: Snapshot directories of the model and the libraries, relative to
             the store in the order of the sources, installed at pod start.
         requirements: The third party dependencies of the lock as pinned requirements,
@@ -46,6 +63,7 @@ class Environment:
     lock: str
     lock_sha256: str
     python: str
+    simrun_version: str
     editable: list[str]
     requirements: str = field(default="", compare=False)
 
@@ -80,6 +98,8 @@ def resolve_environment(
     model: SourceProvenance,
     libraries: list[SourceProvenance],
     python: str = "3.14",
+    *,
+    simrun_version: str,
 ) -> Environment:
     """Lock the dependencies of the model with its libraries as snapshot paths.
 
@@ -89,17 +109,36 @@ def resolve_environment(
         libraries: Snapshots of the libraries; each replaces the entry of
             `[tool.uv.sources]` of its package name, the other entries are kept.
         python: Python version of the image.
+        simrun_version: Version of the simrun wheel of the image, part of the hash.
 
     Returns:
         The environment.
 
     Raises:
-        ValueError: A snapshot has no `pyproject.toml`.
+        ValueError: A snapshot has no `pyproject.toml`, the model has no `uv.lock`
+            (it would resolve against the live index and the hash would drift), or
+            the model depends on a local package which is not a snapshotted source.
         RuntimeError: `uv` fails to lock.
     """
     pyproject = _pyproject(store, model)
     names = [_package_name(_pyproject(store, library)) for library in libraries]
+    model_lock = store / model.snapshot / "uv.lock"
+    if not model_lock.is_file():
+        raise ValueError(
+            f"The model {model.name!r} has no uv.lock: run `uv lock` and commit it"
+        )
     document = tomlkit.parse(pyproject.read_text())
+    project = document.setdefault("project", tomlkit.table())
+    dependencies = project.setdefault("dependencies", tomlkit.array())
+    # uv applies a source only to a dependency of the root, so the libraries are
+    # dependencies of the temporary project, which locks their dependencies as well
+    for requirement in (*WORKER_REQUIREMENTS, *names):
+        stem = requirement.split(">")[0].lower()
+        if not any(
+            str(d).lower().replace("_", "-").split(">")[0].strip() == stem
+            for d in dependencies
+        ):
+            dependencies.append(requirement)
     tool = document.setdefault("tool", tomlkit.table())
     uv = tool.setdefault("uv", tomlkit.table())
     sources = uv.setdefault("sources", tomlkit.table())
@@ -110,18 +149,19 @@ def resolve_environment(
     with tempfile.TemporaryDirectory(prefix="simrun-env-") as tmp:
         work = Path(tmp)
         (work / "pyproject.toml").write_text(tomlkit.dumps(document))
-        model_lock = store / model.snapshot / "uv.lock"
-        if model_lock.is_file():
-            (work / "uv.lock").write_bytes(model_lock.read_bytes())
+        (work / "uv.lock").write_bytes(model_lock.read_bytes())
         (work / STORE_LINK).symlink_to(store.resolve(), target_is_directory=True)
         _uv(["lock", "--python", python], work)
         lock = (work / "uv.lock").read_text()
+        _reject_host_paths(lock, [_package_name(pyproject), *names])
         skipped = [arg for name in names for arg in ("--no-emit-package", name)]
         requirements = _uv(
             [
                 "export",
                 "--frozen",
                 "--no-emit-project",
+                "--no-dev",
+                "--no-default-groups",
                 "--no-header",
                 "--no-annotate",
                 "--python",
@@ -130,11 +170,12 @@ def resolve_environment(
             ],
             work,
         )
-    digest = hashlib.sha256(f"{python}\n{lock}".encode()).hexdigest()
+    digest = hashlib.sha256(f"{python}\n{simrun_version}\n{lock}".encode()).hexdigest()
     return Environment(
         lock=lock,
         lock_sha256=digest,
         python=python,
+        simrun_version=simrun_version,
         editable=[model.snapshot, *(library.snapshot for library in libraries)],
         requirements=requirements,
     )
@@ -145,15 +186,17 @@ def image_ref(env: Environment, registry: str) -> str:
     return f"{registry}/simrun-env:{env.lock_sha256[:16]}"
 
 
-def dockerfile(env: Environment, registry: str) -> str:
+def dockerfile(env: Environment, registry: str, wheel: str) -> str:
     """Dockerfile of the image: the third party dependencies and `simrun`, no source.
 
-    The pinned requirements are written with a heredoc, so nothing is copied from the
+    The pinned requirements are written with a heredoc, so no source is copied from the
     build context. The model and the libraries are installed at pod start.
 
     Args:
         env: The environment.
         registry: Registry which mirrors the base image of uv.
+        wheel: File name of the simrun wheel in the build context, the only file
+            copied; simrun is unpublished, so it is never installed by name.
     """
     return (
         f"FROM {registry}/uv:python{env.python}-bookworm-slim\n"
@@ -164,5 +207,7 @@ def dockerfile(env: Environment, registry: str) -> str:
         f"{env.requirements.rstrip()}\n"
         "SIMRUN_REQUIREMENTS\n"
         "RUN uv pip install --no-deps -r /tmp/requirements.txt "
-        "&& uv pip install simrun && rm /tmp/requirements.txt\n"
+        "&& rm /tmp/requirements.txt\n"
+        f"COPY {wheel} /tmp/{wheel}\n"
+        f"RUN uv pip install --no-deps /tmp/{wheel} && rm /tmp/{wheel}\n"
     )
