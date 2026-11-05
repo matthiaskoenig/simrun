@@ -125,7 +125,7 @@ def test_unsnapshotted_path_dependency_rejected(tmp_path: Path) -> None:
         ["lib", "other"],
         f'[tool.uv.sources]\nother = {{ path = "{other}" }}\n',
     )
-    with pytest.raises(ValueError, match="'other'.*source"):
+    with pytest.raises(ValueError, match=r"'other'.*source"):
         _resolve(store, model, libs)
 
 
