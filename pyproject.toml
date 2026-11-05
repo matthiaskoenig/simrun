@@ -13,6 +13,7 @@ dependencies = [
     "hera>=7.2",
     "httpx>=0.28.1",
     "kubernetes>=37",
+    "packaging>=26.3",
     "pydantic>=2.14",
     "pyyaml>=6.0.3",
     "tomlkit>=0.15.2",
