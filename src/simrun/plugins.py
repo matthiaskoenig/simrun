@@ -60,6 +60,12 @@ class TaskType:
     process), `compute_unit(settings, index, paths) -> None` and
     `merge(settings, paths) -> None`.
 
+    A unit may be computed more than once: by a worker which is evicted before it
+    completes the unit, or by a restarted incarnation of a worker whose earlier one
+    still runs. So `compute_unit` writes outputs which depend on the settings and the
+    index only (deterministic), each written atomically (a temporary file in the same
+    directory, then renamed), so a reader never sees a partial unit.
+
     Attributes:
         name: Name of the type, as used in a workflow.
         settings: Pydantic model of the settings.
