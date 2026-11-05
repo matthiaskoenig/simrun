@@ -169,8 +169,9 @@ def test_dockerfile_has_no_source(tmp_path: Path) -> None:
 def test_worker_imports_light() -> None:
     code = (
         "import simrun.worker, simrun.demo, sys; "
-        "assert not {'fastapi','kubernetes','hera','httpx','fastmcp'} "
-        "& set(sys.modules)"
+        "forbidden = {'fastapi', 'kubernetes', 'hera', 'httpx', 'fastmcp', "
+        "'packaging', 'simrun.environment'}; "
+        "assert not forbidden & set(sys.modules)"
     )
     subprocess.run([sys.executable, "-c", code], check=True)
 
@@ -191,4 +192,4 @@ def test_normalised_names(tmp_path: Path) -> None:
         store, _provenance("model", "snap/model"), [_provenance("lib", "snap/lib")]
     )
     assert 'name = "my-lib"' in env.lock
-    assert ">=2.14" not in env.lock
+    assert '{ name = "pydantic", specifier = ">=2.14" }' in env.lock
