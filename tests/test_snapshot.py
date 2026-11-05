@@ -107,3 +107,61 @@ def test_concurrent_snapshots(repo: Path, tmp_path: Path) -> None:
     assert (store / outs[0] / "new.py").exists()
     assert (store / outs[0] / "a.py").exists()
     assert not list((store / "snapshots" / "proj").glob(".tmp-*"))
+
+
+def test_equal_size_edit_with_restored_mtime(repo: Path, tmp_path: Path) -> None:
+    store = tmp_path / "store"
+    old = (repo / "a.py").stat()
+    snapshot(repo, store, "proj")
+    (repo / "a.py").write_text("a = 9\n")
+    os.utime(repo / "a.py", ns=(old.st_atime_ns, old.st_mtime_ns))
+    prov = snapshot(repo, store, "proj")
+    assert (store / prov.snapshot / "a.py").read_text() == "a = 9\n"
+
+
+def test_mode_change_gives_other_snapshot(repo: Path, tmp_path: Path) -> None:
+    store = tmp_path / "store"
+    (repo / "run.sh").write_text("x\n")
+    p1 = snapshot(repo, store, "proj")
+    (repo / "run.sh").chmod(0o755)
+    p2 = snapshot(repo, store, "proj")
+    assert p1.snapshot != p2.snapshot
+    assert os.access(store / p2.snapshot / "run.sh", os.X_OK)
+    assert not os.access(store / p1.snapshot / "run.sh", os.X_OK)
+
+
+def test_symlink_differs_from_file(repo: Path, tmp_path: Path) -> None:
+    store = tmp_path / "store"
+    (repo / "l").symlink_to("a.py")
+    p1 = snapshot(repo, store, "proj")
+    (repo / "l").unlink()
+    (repo / "l").write_text("a.py")
+    p2 = snapshot(repo, store, "proj")
+    assert p1.snapshot != p2.snapshot
+    assert (store / p1.snapshot / "l").is_symlink()
+    assert not (store / p2.snapshot / "l").is_symlink()
+
+
+def test_vanished_file_is_left_out(
+    repo: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import simrun.snapshot as mod
+
+    real = mod._git
+
+    def listing(r: Path, *args: str) -> bytes:
+        out = real(r, *args)
+        return out + b"ghost.py\0" if args[0] == "ls-files" else out
+
+    monkeypatch.setattr(mod, "_git", listing)
+    # the existence check drops the name; make rsync see it anyway
+    monkeypatch.setattr(mod.os.path, "lexists", lambda p: True)
+    store = tmp_path / "store"
+    prov = snapshot(repo, store, "proj")
+    assert not (store / prov.snapshot / "ghost.py").exists()
+    assert (store / prov.snapshot / "a.py").exists()
+
+
+def test_failing_command_names_stderr(repo: Path, tmp_path: Path) -> None:
+    with pytest.raises(RuntimeError, match="not a git repository"):
+        snapshot(tmp_path, tmp_path / "store", "proj")
