@@ -44,6 +44,7 @@ if __name__ == "__main__":
         base_gb=0.5,
         per_worker_gb=0.5,
         grace_s=float(sys.argv[5]),
+        heartbeat_s=float(sys.argv[6]),
     )
 """
 
@@ -65,6 +66,8 @@ def start_worker(
     settings: SquaresSettings,
     cores: int,
     grace_s: float = 60.0,
+    heartbeat_s: float = 30.0,
+    new_session: bool = False,
 ) -> subprocess.Popen[bytes]:
     return subprocess.Popen(
         [
@@ -76,7 +79,9 @@ def start_worker(
             settings.model_dump_json(),
             str(cores),
             str(grace_s),
-        ]
+            str(heartbeat_s),
+        ],
+        start_new_session=new_session,
     )
 
 
@@ -169,7 +174,14 @@ def worker_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SIMRUN_MEMORY_BASE_GB", "0.5")
     monkeypatch.setenv("SIMRUN_MEMORY_PER_WORKER_GB", "0.5")
     monkeypatch.setenv("SIMRUN_SCRATCH", str(tmp_path / "scratch"))
-    for name in ("SIMRUN_STAGE", "SIMRUN_EDITABLE", "SIMRUN_INPUTS", "SIMRUN_ATTEMPT"):
+    for name in (
+        "SIMRUN_STAGE",
+        "SIMRUN_EDITABLE",
+        "SIMRUN_INPUTS",
+        "SIMRUN_ATTEMPT",
+        "SIMRUN_ROLE",
+        "SIMRUN_STALE_S",
+    ):
         monkeypatch.delenv(name, raising=False)
     # main sets the thread variables; monkeypatch restores them afterwards
     for name in worker.THREAD_VARIABLES:
@@ -317,10 +329,11 @@ def start_main(
     settings: SquaresSettings,
     task_type: str = "demo.squares",
     new_session: bool = False,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[subprocess.Popen[bytes], Path]:
     """Run `main` in a subprocess; a task type other than the demo is from PLUGIN."""
     task_dir = tmp_path / "runs" / "r1" / "tasks" / "squares"
-    task_dir.mkdir(parents=True)
+    task_dir.mkdir(parents=True, exist_ok=True)
     (task_dir / "settings.json").write_text(settings.model_dump_json())
     plugin_dir = tmp_path / "plugin"
     plugin_dir.mkdir()
@@ -338,8 +351,16 @@ def start_main(
             filter(None, [str(plugin_dir), os.environ.get("PYTHONPATH")])
         ),
     }
-    for name in ("SIMRUN_STAGE", "SIMRUN_EDITABLE", "SIMRUN_INPUTS", "SIMRUN_ATTEMPT"):
+    for name in (
+        "SIMRUN_STAGE",
+        "SIMRUN_EDITABLE",
+        "SIMRUN_INPUTS",
+        "SIMRUN_ATTEMPT",
+        "SIMRUN_ROLE",
+        "SIMRUN_STALE_S",
+    ):
         env.pop(name, None)
+    env.update(extra_env or {})
     plugin = "-" if task_type == "demo.squares" else "plugin"
     process = subprocess.Popen(
         [sys.executable, "-c", MAIN, str(plugin_dir), plugin],
@@ -518,3 +539,159 @@ def test_sigterm_during_preparation_exits_143(
     assert raised.value.code == 143
     assert not (worker_env / "out" / "summary.json").exists()
     assert signal.getsignal(signal.SIGTERM) == signal.SIG_DFL
+
+
+def coordinate(task_dir: Path, settings: SquaresSettings, stale_s: float) -> dict:
+    """Run the coordinator `w0` in this process; returns its report."""
+    run_worker(
+        SQUARES,
+        settings,
+        task_paths(task_dir),
+        "w0",
+        cores=2,
+        memory_bytes=None,
+        base_gb=0.5,
+        per_worker_gb=0.5,
+        coordinator=True,
+        stale_s=stale_s,
+        heartbeat_s=0.1,
+        poll_s=0.1,
+    )
+    return read_report(task_dir, "w0")
+
+
+def wait_for_claims(
+    process: subprocess.Popen[bytes], claimed: Path, worker_id: str, n: int
+) -> set[int]:
+    """Wait until `worker_id` holds `n` claims; returns their units."""
+    deadline = time.monotonic() + 60
+    while True:
+        assert process.poll() is None
+        assert time.monotonic() < deadline
+        names = os.listdir(claimed) if claimed.exists() else []
+        units = {
+            int(i) for i, _, w in (n.partition("@") for n in names) if w == worker_id
+        }
+        if len(units) >= n:
+            return units
+        time.sleep(0.05)
+
+
+def test_coordinator_recomputes_the_units_of_a_dead_worker(tmp_path: Path) -> None:
+    task_dir = tmp_path / "squares"
+    settings = SquaresSettings(n=6, sleep_s=0.3)
+    process = start_worker(
+        task_dir, "w1", settings, cores=1, heartbeat_s=0.1, new_session=True
+    )
+    try:
+        held = wait_for_claims(process, task_dir / "units" / "claimed", "w1", 1)
+        # the pod dies at once: no release, no report, its heartbeat stops
+        os.killpg(process.pid, signal.SIGKILL)
+        process.wait(timeout=30)
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, signal.SIGKILL)
+        kill_tree(process)
+    assert held <= {
+        int(n.partition("@")[0]) for n in os.listdir(task_dir / "units" / "claimed")
+    }
+    start = time.monotonic()
+    report = coordinate(task_dir, settings, stale_s=1.0)
+    assert Ledger(task_dir / "units", 6).complete_ledger()
+    assert held <= set(report["units_done"])
+    assert time.monotonic() - start >= 0.5
+    run_merge(SQUARES, settings, task_paths(task_dir))
+    summary = json.loads((task_dir / "out" / "summary.json").read_text())
+    assert summary["sum"] == sum(i * i for i in range(6))
+
+
+def test_coordinator_waits_for_a_live_worker(tmp_path: Path) -> None:
+    task_dir = tmp_path / "squares"
+    settings = SquaresSettings(n=4, sleep_s=1.0)
+    process = start_worker(task_dir, "w1", settings, cores=4, heartbeat_s=0.1)
+    try:
+        wait_for_claims(process, task_dir / "units" / "claimed", "w1", 4)
+        report = coordinate(task_dir, settings, stale_s=30.0)
+        assert process.wait(timeout=30) == 0
+    finally:
+        kill_tree(process)
+    assert report["units_done"] == []
+    assert Ledger(task_dir / "units", 4).complete_ledger()
+    assert sorted(read_report(task_dir, "w1")["units_done"]) == [0, 1, 2, 3]
+
+
+def test_extra_worker_returns_while_others_hold_claims(tmp_path: Path) -> None:
+    task_dir = tmp_path / "squares"
+    ledger = Ledger.create(task_dir / "units", 3)
+    assert ledger.claim("other") == 0
+    report = run_worker(
+        SQUARES,
+        SquaresSettings(n=3),
+        task_paths(task_dir),
+        "w1",
+        cores=2,
+        memory_bytes=None,
+        base_gb=0.5,
+        per_worker_gb=0.5,
+    )
+    assert report.units_done == [1, 2]
+    assert os.listdir(task_dir / "units" / "claimed") == ["0@other"]
+    assert (task_dir / "units" / "heartbeats" / "w1").exists()
+
+
+def test_main_reads_the_role(worker_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[dict] = []
+
+    def fake_run_worker(*args: object, **kwargs: object) -> None:
+        calls.append(kwargs)
+
+    monkeypatch.setattr(worker, "run_worker", fake_run_worker)
+    (worker_env / "settings.json").write_text(SquaresSettings(n=1).model_dump_json())
+    for role, stale, expected in (
+        ("base", "90", (True, 90.0)),
+        ("extra", None, (False, None)),
+        (None, None, (False, None)),
+    ):
+        if role is None:
+            monkeypatch.delenv("SIMRUN_ROLE", raising=False)
+        else:
+            monkeypatch.setenv("SIMRUN_ROLE", role)
+        if stale is None:
+            monkeypatch.delenv("SIMRUN_STALE_S", raising=False)
+        else:
+            monkeypatch.setenv("SIMRUN_STALE_S", stale)
+        with pytest.raises(SystemExit) as raised:
+            worker.main()
+        assert raised.value.code == 0
+        assert (calls[-1]["coordinator"], calls[-1]["stale_s"]) == expected
+    monkeypatch.setenv("SIMRUN_ROLE", "boss")
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == 4
+
+
+def test_idle_coordinator_stops_on_sigterm(tmp_path: Path) -> None:
+    task_dir = tmp_path / "runs" / "r1" / "tasks" / "squares"
+    ledger = Ledger.create(task_dir / "units", 2)
+    assert [ledger.claim("other"), ledger.claim("other")] == [0, 1]
+    ledger.heartbeat("other")
+    process, _ = start_main(
+        tmp_path,
+        SquaresSettings(n=2),
+        extra_env={"SIMRUN_ROLE": "base", "SIMRUN_STALE_S": "600"},
+    )
+    try:
+        deadline = time.monotonic() + 60
+        while not (task_dir / "units" / "heartbeats" / "w0").exists():
+            assert process.poll() is None
+            assert time.monotonic() < deadline
+            time.sleep(0.05)
+        time.sleep(0.2)
+        assert process.poll() is None
+        start = time.monotonic()
+        process.send_signal(signal.SIGTERM)
+        assert process.wait(timeout=30) == 143
+        assert time.monotonic() - start < 2.0
+    finally:
+        kill_tree(process)
+    assert sorted(os.listdir(task_dir / "units" / "claimed")) == ["0@other", "1@other"]

@@ -2,6 +2,7 @@ import os
 import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -203,3 +204,33 @@ def test_claim_whose_rename_was_resent(
     assert ledger.claim("w") == 0
     assert ledger.claim("w") == 1
     assert ledger.counts().claimed == 2
+
+
+def test_heartbeat_on_an_existing_ledger(tmp_path: Path) -> None:
+    ledger = Ledger.create(tmp_path / "units", 2)
+    assert not (tmp_path / "units" / "heartbeats").exists()
+    ledger.heartbeat("w0")
+    beat = tmp_path / "units" / "heartbeats" / "w0"
+    os.utime(beat, (1.0, 1.0))
+    Ledger(tmp_path / "units", 2).heartbeat("w0")
+    assert beat.stat().st_mtime > 1.0
+
+
+def test_release_stale(tmp_path: Path) -> None:
+    root = tmp_path / "units"
+    ledger = Ledger.create(root, 5)
+    assert [ledger.claim(w) for w in ("old", "fresh", "ref", "silent")] == [0, 1, 2, 3]
+    for worker in ("old", "fresh"):
+        ledger.heartbeat(worker)
+    past = time.time() - 100
+    os.utime(root / "heartbeats" / "old", (past, past))
+    assert ledger.release_stale(10.0, "ref") == [0, 3]
+    assert sorted(os.listdir(root / "claimed")) == ["1@fresh", "2@ref"]
+    assert sorted(os.listdir(root / "pending")) == ["0", "3", "4"]
+    # the reference's own claim stays, whatever the timeout
+    earlier = time.time() - 5
+    os.utime(root / "heartbeats" / "fresh", (earlier, earlier))
+    assert ledger.release_stale(1.0, "ref") == [1]
+    assert os.listdir(root / "claimed") == ["2@ref"]
+    # released units are claimed again
+    assert ledger.claim("ref") == 0

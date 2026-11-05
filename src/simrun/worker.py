@@ -48,6 +48,11 @@ SETTINGS_FILE = "settings.json"
 DEFAULT_SCRATCH = "/scratch"
 THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
 POLL_S = 0.2
+HEARTBEAT_S = 30.0
+COORDINATOR_POLL_S = 5.0
+# a heartbeat is stale this long after the grace of a worker
+STALE_MARGIN_S = 60.0
+ROLES = {"base": True, "extra": False}
 
 EXIT_DONE = 0
 EXIT_ANALYSIS = 3
@@ -305,6 +310,41 @@ class _Units:
                 self.failed = index
 
 
+@dataclass(frozen=True)
+class _Coordination:
+    """How the coordinator waits for the units of other workers.
+
+    Attributes:
+        stale_s: Seconds after which the heartbeat of a worker is stale.
+        poll_s: Seconds between two releases of stale claims.
+    """
+
+    stale_s: float
+    poll_s: float
+
+
+@contextmanager
+def _heartbeats(ledger: Ledger, worker: str, heartbeat_s: float) -> Generator[None]:
+    """Touch the heartbeat of `worker` now and every `heartbeat_s` until the end."""
+    ledger.heartbeat(worker)
+    done = threading.Event()
+
+    def beat() -> None:
+        while not done.wait(heartbeat_s):
+            try:
+                ledger.heartbeat(worker)
+            except OSError as error:
+                logger.warning("heartbeat of %s failed: %s", worker, error)
+
+    thread = threading.Thread(target=beat, name=f"heartbeat-{worker}", daemon=True)
+    thread.start()
+    try:
+        yield
+    finally:
+        done.set()
+        thread.join()
+
+
 def _compute_units(
     task_type: TaskType,
     settings: BaseModel,
@@ -313,8 +353,14 @@ def _compute_units(
     n_processes: int,
     stop: threading.Event,
     grace_s: float,
+    coordination: _Coordination | None,
 ) -> None:
-    """Keep `n_processes` units in flight until none is pending or the worker stops."""
+    """Keep `n_processes` units in flight until none is pending or the worker stops.
+
+    A coordinator (`coordination` given) continues until the ledger is complete: it
+    releases the claims of workers with a stale heartbeat every `poll_s` and computes
+    them.
+    """
     assert task_type.compute_unit is not None
     _start_forkserver()
     pool = ProcessPoolExecutor(
@@ -326,6 +372,7 @@ def _compute_units(
     # the processes the pool started, which it starts in `submit` only
     started: set[int] = set()
     deadline: float | None = None
+    next_release = 0.0
     try:
         while True:
             if stop.is_set() and deadline is None:
@@ -336,6 +383,14 @@ def _compute_units(
                     grace_s,
                 )
             claiming = not stop.is_set() and units.failed is None
+            if (
+                coordination is not None
+                and claiming
+                and units.broken is None
+                and time.monotonic() >= next_release
+            ):
+                units.ledger.release_stale(coordination.stale_s, units.worker)
+                next_release = time.monotonic() + coordination.poll_s
             while claiming and units.broken is None and len(in_flight) < n_processes:
                 index = units.ledger.claim(units.worker)
                 if index is None:
@@ -355,8 +410,19 @@ def _compute_units(
                     break
                 in_flight[future] = index
                 started.update(pool._processes or ())
-            if not in_flight or units.failed is not None or units.broken is not None:
+            if units.failed is not None or units.broken is not None:
                 break
+            if not in_flight:
+                if (
+                    coordination is None
+                    or stop.is_set()
+                    or units.ledger.complete_ledger()
+                ):
+                    break
+                # other workers hold the rest: wait for them, or for their heartbeat
+                # to go stale
+                stop.wait(max(0.0, next_release - time.monotonic()))
+                continue
             timeout = POLL_S
             if deadline is not None:
                 timeout = min(timeout, deadline - time.monotonic())
@@ -388,8 +454,17 @@ def run_worker(
     grace_s: float = 60.0,
     attempt: int = 0,
     stop: threading.Event | None = None,
+    heartbeat_s: float = HEARTBEAT_S,
+    coordinator: bool = False,
+    stale_s: float | None = None,
+    poll_s: float = COORDINATOR_POLL_S,
 ) -> WorkerReport:
     """Compute units of the ledger of a task until none is pending.
+
+    The worker touches its heartbeat in the ledger every `heartbeat_s` from its start
+    to its end. A coordinator does not return when nothing is pending: until the
+    ledger is complete it waits, releases the claims of workers whose heartbeat is
+    older than `stale_s` every `poll_s` and computes them.
 
     Releases the claims of an earlier incarnation of `worker`, creates the ledger
     `task_dir/units`, keeps `processes(...)` units in flight in a pool of processes
@@ -411,6 +486,11 @@ def run_worker(
         grace_s: Seconds the running units get after SIGTERM.
         attempt: The attempt of the pod, which names its report.
         stop: Set on SIGTERM by a caller which handles it already, e.g. `main`.
+        heartbeat_s: Seconds between two heartbeats.
+        coordinator: Whether the worker continues until the ledger is complete.
+        stale_s: Seconds after which the heartbeat of another worker is stale,
+            `grace_s + 60` by default.
+        poll_s: Seconds between two releases of stale claims by a coordinator.
 
     Returns:
         The report.
@@ -437,10 +517,22 @@ def run_worker(
         n_processes = processes(cores, memory_bytes, base_gb, per_worker_gb)
         logger.info("worker %s: %d processes, %d units", worker, n_processes, n_units)
         units = _Units(ledger, worker, paths.task_dir / PROGRESS_FILE)
+        coordination = None
+        if coordinator:
+            stale = grace_s + STALE_MARGIN_S if stale_s is None else stale_s
+            coordination = _Coordination(stale_s=stale, poll_s=poll_s)
         try:
-            _compute_units(
-                task_type, settings, paths, units, n_processes, stop, grace_s
-            )
+            with _heartbeats(ledger, worker, heartbeat_s):
+                _compute_units(
+                    task_type,
+                    settings,
+                    paths,
+                    units,
+                    n_processes,
+                    stop,
+                    grace_s,
+                    coordination,
+                )
         finally:
             report = WorkerReport(
                 worker=worker,
@@ -614,6 +706,23 @@ def _attempt(env: Mapping[str, str]) -> int:
         ) from None
 
 
+def _coordinator(env: Mapping[str, str]) -> bool:
+    role = env.get("SIMRUN_ROLE") or "extra"
+    if role not in ROLES:
+        raise ConfigurationError(f"SIMRUN_ROLE is not one of {sorted(ROLES)}: {role!r}")
+    return ROLES[role]
+
+
+def _stale_s(env: Mapping[str, str]) -> float | None:
+    value = env.get("SIMRUN_STALE_S")
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        raise ConfigurationError(f"SIMRUN_STALE_S is not a number: {value!r}") from None
+
+
 def _editable(env: Mapping[str, str]) -> list[str]:
     value = env.get("SIMRUN_EDITABLE", "")
     return [path.strip() for path in value.split(",") if path.strip()]
@@ -647,7 +756,10 @@ def main() -> None:
     """Run `simrun-worker` in a pod of a split task; exits with its code.
 
     SIGTERM is handled from the start, so a pod evicted while it prepares (as PID 1
-    without a handler it would ignore SIGTERM) stops before its first claim.
+    without a handler it would ignore SIGTERM) stops before its first claim. The
+    worker of `SIMRUN_ROLE=base` is the coordinator, which returns once the ledger is
+    complete (stale claims released after `SIMRUN_STALE_S`); `extra` (the default)
+    returns when nothing is pending.
 
     Exit codes: 0 done, 3 a unit failed (logged and released), 4 a configuration
     error, 137 a process of the pool died (retried with more memory), 143 stopped on
@@ -669,6 +781,8 @@ def _worker(stop: threading.Event) -> int:
         if not worker:
             raise ConfigurationError("SIMRUN_WORKER is not set")
         attempt = _attempt(env)
+        coordinator = _coordinator(env)
+        stale_s = _stale_s(env)
         stage(_pairs(env.get("SIMRUN_STAGE", "")), paths.store, paths.scratch)
         base_gb = _gb(env, "SIMRUN_MEMORY_BASE_GB", task_type.hint.memory_base_gb)
         per_worker_gb = _gb(
@@ -694,6 +808,8 @@ def _worker(stop: threading.Event) -> int:
             per_worker_gb=per_worker_gb,
             attempt=attempt,
             stop=stop,
+            coordinator=coordinator,
+            stale_s=stale_s,
         )
     except UnitError:
         return EXIT_ANALYSIS
