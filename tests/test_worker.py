@@ -607,11 +607,13 @@ def test_coordinator_recomputes_the_units_of_a_dead_worker(tmp_path: Path) -> No
 
 def test_coordinator_waits_for_a_live_worker(tmp_path: Path) -> None:
     task_dir = tmp_path / "squares"
-    settings = SquaresSettings(n=4, sleep_s=1.0)
+    settings = SquaresSettings(n=4, sleep_s=1.5)
     process = start_worker(task_dir, "w1", settings, cores=4, heartbeat_s=0.1)
     try:
         wait_for_claims(process, task_dir / "units" / "claimed", "w1", 4)
-        report = coordinate(task_dir, settings, stale_s=30.0)
+        # stale far below the duration of a unit: only the heartbeats of the thread
+        # keep the claims of the slow worker
+        report = coordinate(task_dir, settings, stale_s=0.5)
         assert process.wait(timeout=30) == 0
     finally:
         kill_tree(process)
