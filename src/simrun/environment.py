@@ -14,6 +14,7 @@ and not the place the store is mounted at (`/mnt/cluster` on the development ser
 
 import hashlib
 import logging
+import re
 import subprocess
 import tempfile
 import tomllib
@@ -21,6 +22,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import tomlkit
+from packaging.requirements import Requirement
 
 from simrun.snapshot import SourceProvenance
 
@@ -32,13 +34,22 @@ WORKER_REQUIREMENTS = ("pydantic>=2.14", "pyyaml>=6.0.3")
 LOCAL_SOURCES = ("directory", "editable", "path", "virtual")
 
 
+def normalise(name: str) -> str:
+    """Normalised name of a package (PEP 503), as `uv.lock` writes it."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
+def _requirement_name(requirement: str) -> str:
+    return normalise(Requirement(requirement).name)
+
+
 def _reject_host_paths(lock: str, allowed: list[str]) -> None:
     """Raise when the lock has a local package which is not a snapshotted source."""
     for package in tomllib.loads(lock).get("package", []):
         source = package.get("source", {})
         url = str(source.get("url", ""))
         local = any(key in source for key in LOCAL_SOURCES) or url.startswith("file:")
-        if local and package["name"] not in allowed:
+        if local and normalise(package["name"]) not in {normalise(a) for a in allowed}:
             raise ValueError(
                 f"The model depends on the local package {package['name']!r}, which "
                 "is not a snapshotted source: pass its working tree as a source"
@@ -132,17 +143,17 @@ def resolve_environment(
     dependencies = project.setdefault("dependencies", tomlkit.array())
     # uv applies a source only to a dependency of the root, so the libraries are
     # dependencies of the temporary project, which locks their dependencies as well
+    present = {_requirement_name(str(d)) for d in dependencies}
     for requirement in (*WORKER_REQUIREMENTS, *names):
-        stem = requirement.split(">")[0].lower()
-        if not any(
-            str(d).lower().replace("_", "-").split(">")[0].strip() == stem
-            for d in dependencies
-        ):
+        if _requirement_name(requirement) not in present:
             dependencies.append(requirement)
+            present.add(_requirement_name(requirement))
     tool = document.setdefault("tool", tomlkit.table())
     uv = tool.setdefault("uv", tomlkit.table())
     sources = uv.setdefault("sources", tomlkit.table())
     for name, library in zip(names, libraries, strict=True):
+        for key in [k for k in sources if normalise(k) == normalise(name)]:
+            del sources[key]  # the same package spelled otherwise
         entry = tomlkit.inline_table()
         entry["path"] = f"{STORE_LINK}/{library.snapshot}"
         sources[name] = entry

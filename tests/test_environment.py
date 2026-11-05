@@ -180,3 +180,15 @@ def test_missing_pyproject(tmp_path: Path) -> None:
     (store / "snap/lib/pyproject.toml").unlink()
     with pytest.raises(ValueError, match=r"pyproject\.toml"):
         _resolve(store, model, libs)
+
+
+def test_normalised_names(tmp_path: Path) -> None:
+    store = tmp_path / "store"
+    _write(store / "snap/model/uv.lock", LOCK)
+    _project(store / "snap/model", "My_Model", ["my.lib", "pydantic[email]>=2.5"])
+    _project(store / "snap/lib", "my_lib", [])
+    env = _resolve(
+        store, _provenance("model", "snap/model"), [_provenance("lib", "snap/lib")]
+    )
+    assert 'name = "my-lib"' in env.lock
+    assert ">=2.14" not in env.lock
