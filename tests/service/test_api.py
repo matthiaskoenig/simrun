@@ -121,6 +121,25 @@ def test_submit_returns_id_at_once(service):
     assert service.name(summary["id"]) in service.backend.manifests
 
 
+def test_task_dir_has_provenance_json(service):
+    store = service.settings.store
+    _snapshot(store, "snapshots/model/a", 10)
+    _snapshot(store, "snapshots/lib/b", 10)
+    sources = [
+        provenance("model", "snapshots/model/a"),
+        provenance("lib", "snapshots/lib/b"),
+    ]
+    run_id = service.submit(sources=sources)["id"]
+    path = service.run_dir(run_id) / "tasks/squares/provenance.json"
+    assert json.loads(path.read_text()) == [
+        SourceProvenance.model_validate(s).model_dump(mode="json") for s in sources
+    ]
+    # without sources, an empty list
+    run_id = service.submit()["id"]
+    path = service.run_dir(run_id) / "tasks/squares/provenance.json"
+    assert json.loads(path.read_text()) == []
+
+
 @pytest.mark.parametrize(
     ("token", "priority", "agent"),
     [

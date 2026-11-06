@@ -54,11 +54,12 @@ class TaskPaths:
 class TaskType:
     """A type of task, registered as an entry point of `ENTRY_POINT_GROUP`.
 
-    The four callables are `"module:function"` strings, so a worker process
-    resolves them by import, see `resolve`. Signatures:
-    `count_units(settings) -> int`, `setup(settings, paths) -> None` (once per
-    process), `compute_unit(settings, index, paths) -> None` and
-    `merge(settings, paths) -> None`.
+    The callables are `"module:function"` strings, so a worker process resolves
+    them by import, see `resolve`. Signatures: `count_units(settings) -> int`,
+    `setup(settings, paths) -> None` (once per process),
+    `compute_unit(settings, index, paths) -> None`, `merge(settings, paths) -> None`
+    and `plan(settings) -> settings`, which the client calls before a submission
+    when the type is installed locally (`simrun.client.plan_tasks`).
 
     A unit may be computed more than once: by a worker which is evicted before it
     completes the unit, or by a restarted incarnation of a worker whose earlier one
@@ -73,14 +74,18 @@ class TaskType:
         outputs: Names of the output ports.
         hint: Default resources.
         checkpoints: Whether the task resumes from checkpoints.
-        command: Argv template with `{settings}` and `{out}` for unsplit tasks; it
-            runs through `simrun-exec` (see `simrun.worker.exec_main`).
+        command: Argv template of unsplit tasks with `{settings}`, `{out}` and
+            `{input}`: a part with `{input}` is repeated once per input port of the
+            task, sorted by port, with `<port>=<path>`, and dropped without inputs.
+            It runs through `simrun-exec` (see `simrun.worker.exec_main`).
         uses_cores: Whether the command of an unsplit task uses the cores of its pod
             (a pool of processes); else the pod is sized for one process.
         count_units: Reference to the function counting the units of work.
         setup: Reference to the function preparing a process.
         compute_unit: Reference to the function computing one unit.
         merge: Reference to the function merging the units.
+        plan: Reference to the function which completes the settings of a task
+            before it is submitted, e.g. with values derived from its model.
         image: Image of the task, None for the environment image of the run.
         cost_setting: Name of the setting which changes the cost of a task, e.g. the
             subset of the data of a fit; the resources are learned per value of it
@@ -99,6 +104,7 @@ class TaskType:
     setup: str | None = None
     compute_unit: str | None = None
     merge: str | None = None
+    plan: str | None = None
     image: str | None = None
     cost_setting: str | None = None
 

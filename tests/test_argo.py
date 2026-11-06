@@ -244,6 +244,68 @@ def test_unsplit_plugin_command() -> None:
     assert container["image"] == "localhost:5000/plot:2"
 
 
+def test_pod_env_has_provenance() -> None:
+    manifest = _manifest()
+    for task in ("squares-w0", "squares-extra", "squares-merge", "report"):
+        env = _env(_template(manifest, task))
+        assert (
+            env["SIMRUN_PROVENANCE"]
+            == f"/store/runs/{RUN}/tasks/{task.split('-')[0]}/provenance.json"
+        )
+
+
+def test_unsplit_command_repeats_input_parts() -> None:
+    plot = TaskType(
+        name="plot",
+        settings=SQUARES.settings,
+        inputs=("a", "b"),
+        command="plot --input={input} --settings {settings} {input} --out {out}",
+        image="localhost:5000/plot:2",
+    )
+    record = _record()
+    record.workflow = Workflow(
+        name="p",
+        tasks=[
+            {"id": "squares", "type": "demo.squares", "settings": {"n": 10}},
+            {
+                "id": "plot",
+                "type": "plot",
+                "settings": {"n": 1},
+                # sorted by port, not in the order of the workflow
+                "inputs": {"b": "squares.squares", "a": "other.out"},
+            },
+            {"id": "other", "type": "plot", "settings": {"n": 1}},
+        ],
+    )
+    plans = {"squares": PLANS["squares"], "plot": PLANS["report"]}
+    plans["other"] = PLANS["report"]
+    manifest = to_argo(record, plans, {**TYPES, "plot": plot}, CONFIG)
+    run = f"/store/runs/{RUN}/tasks"
+    a = f"a={run}/other/out/out"
+    b = f"b={run}/squares/out/squares"
+    assert _template(manifest, "plot")["container"]["command"] == [
+        "simrun-exec",
+        "plot",
+        f"--input={a}",
+        f"--input={b}",
+        "--settings",
+        f"{run}/plot/settings.json",
+        a,
+        b,
+        "--out",
+        f"{run}/plot/out",
+    ]
+    # without inputs, the parts with `{input}` are dropped
+    assert _template(manifest, "other")["container"]["command"] == [
+        "simrun-exec",
+        "plot",
+        "--settings",
+        f"{run}/other/settings.json",
+        "--out",
+        f"{run}/other/out",
+    ]
+
+
 def test_mounts() -> None:
     manifest = _manifest()
     volumes = {v["name"]: v for v in manifest["spec"]["volumes"]}

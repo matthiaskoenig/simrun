@@ -12,7 +12,7 @@ from simrun.planner import PodShape
 from simrun.plugins import TaskType
 from simrun.plugins_builtin import COMMAND, CommandSettings
 from simrun.store import RunRecord
-from simrun.worker import SETTINGS_FILE
+from simrun.worker import PROVENANCE_FILE, SETTINGS_FILE
 from simrun.workflow import TaskSpec
 
 WORKER_COMMAND = "simrun-worker"
@@ -66,8 +66,9 @@ def env_values(
     for port in task.stage:
         if port not in inputs:
             raise ValueError(f"task {task.id!r} stages {port!r}, which is no input")
+    directory = task_dir(record, task.id, store)
     return {
-        "SIMRUN_TASK_DIR": task_dir(record, task.id, store),
+        "SIMRUN_TASK_DIR": directory,
         "SIMRUN_TASK_TYPE": task_type.name,
         "SIMRUN_MEMORY_BASE_GB": number(task_type.hint.memory_base_gb),
         "SIMRUN_MEMORY_PER_WORKER_GB": number(shape.per_worker_gb),
@@ -77,6 +78,7 @@ def env_values(
         ),
         "SIMRUN_EDITABLE": ",".join(f"{store}/{s.snapshot}" for s in record.sources),
         "SIMRUN_SCRATCH": scratch,
+        "SIMRUN_PROVENANCE": f"{directory}/{PROVENANCE_FILE}",
     }
 
 
@@ -117,7 +119,11 @@ def unsplit_command(
 
     The command of a plugin type runs through `simrun-exec`, which installs the
     snapshots, sets the thread variables and writes a report; a `command` task runs
-    its argv as given in its image.
+    its argv as given in its image. In the command template of a type, `{settings}`
+    is the path of the settings file and `{out}` the output directory of the task,
+    and a part with `{input}` is repeated once per input port of the task, sorted by
+    port, with `{input}` replaced by `<port>=<path>`, the output the port reads as
+    the pod sees it; without inputs the part is dropped.
     """
     if task_type.name == COMMAND.name:
         settings = CommandSettings.model_validate(task.settings)
@@ -128,10 +134,17 @@ def unsplit_command(
             "nor has a command"
         )
     directory = task_dir(record, task.id, store)
-    argv = [EXEC_COMMAND] + [
-        part.replace("{settings}", f"{directory}/{SETTINGS_FILE}").replace(
+    inputs = [
+        f"{port}={store}/{output(record, task.inputs[port])}"
+        for port in sorted(task.inputs)
+    ]
+    argv = [EXEC_COMMAND]
+    for template in shlex.split(task_type.command):
+        part = template.replace("{settings}", f"{directory}/{SETTINGS_FILE}").replace(
             "{out}", f"{directory}/out"
         )
-        for part in shlex.split(task_type.command)
-    ]
+        if "{input}" in part:
+            argv += [part.replace("{input}", value) for value in inputs]
+        else:
+            argv.append(part)
     return image(record, task, task_type), argv

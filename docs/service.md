@@ -85,7 +85,7 @@ To raise a pin of the build backends, edit `build_constraints.txt` (or point `bu
 | `SIMRUN_STORE` | command line, MCP server | the run store as mounted on the machine of the client |
 | `SIMRUN_CONFIG` | service | the YAML file of the `ServiceSettings` |
 | `KUBECONFIG` | service | the cluster outside of a pod; in the pod the service account |
-| `SIMRUN_TASK_DIR`, `SIMRUN_TASK_TYPE`, `SIMRUN_INPUTS`, `SIMRUN_STAGE`, `SIMRUN_EDITABLE`, `SIMRUN_SCRATCH`, `SIMRUN_MEMORY_BASE_GB`, `SIMRUN_MEMORY_PER_WORKER_GB`, `SIMRUN_WORKER`, `SIMRUN_ROLE`, `SIMRUN_ATTEMPT`, `SIMRUN_STALE_S`, `SIMRUN_NODE` | pods | the environment of the harness of a pod, set by the workflow, see `simrun.podspec` and `simrun.worker` |
+| `SIMRUN_TASK_DIR`, `SIMRUN_TASK_TYPE`, `SIMRUN_INPUTS`, `SIMRUN_STAGE`, `SIMRUN_EDITABLE`, `SIMRUN_SCRATCH`, `SIMRUN_PROVENANCE`, `SIMRUN_MEMORY_BASE_GB`, `SIMRUN_MEMORY_PER_WORKER_GB`, `SIMRUN_WORKER`, `SIMRUN_ROLE`, `SIMRUN_ATTEMPT`, `SIMRUN_STALE_S`, `SIMRUN_NODE` | pods | the environment of the harness of a pod, set by the workflow, see `simrun.podspec` and `simrun.worker` |
 | `SIMRUN_K3D`, `SIMRUN_K3D_KEEP` | tests | run the tests on the k3d cluster and keep it, see [Testing](testing.md) |
 
 ## Submissions in the background
