@@ -50,7 +50,13 @@ def test_demo_run_end_to_end(service: Service) -> None:
     assert nodes == set(AGENTS)
     # the controller recorded the three reports as observations
     assert sorted(p.name for p in (task_dir / "recorded").iterdir()) == reports
-    # and kept the logs of the pods, which the API serves after the workflow
+    # and kept the logs of the pods once they ended, which the API serves after the
+    # workflow
+    wait_for(
+        lambda: not service.record(run["id"])["pending_logs"],
+        120,
+        "the logs of the run were not kept",
+    )
     index = json.loads((task_dir / "logs" / "index.json").read_text())
     nodes = {entry["node"] for entry in index}
     assert {"squares-w0(0)", "squares-merge(0)"} <= nodes, nodes
