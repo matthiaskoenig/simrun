@@ -41,6 +41,7 @@ class TaskState(StrEnum):
     QUEUED = "queued"
     RUNNING = "running"
     PREEMPTED = "preempted"
+    RETRYING = "retrying"
     DONE = "done"
     FAILED = "failed"
     SKIPPED = "skipped"

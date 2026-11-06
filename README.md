@@ -336,7 +336,8 @@ manifests and the code:
   attempt `Error` with the message `pod deleted` and no exit code
   (`lastRetry.exitCode` is `"-1"`), so the retry strategy retries it; the new pod is
   gated again and waits. The backend reports such a node `Preempted` until its next
-  pod runs. Workloads of equal priority never preempt each other, so the extra
+  pod runs (a node whose pod failed otherwise, a crash or a kill after its grace
+  period, is `Retrying`, the task `retrying`). Workloads of equal priority never preempt each other, so the extra
   workers of two runs of one priority wait for each other's end. A pod preempted
   before Argo saw it running is created again by Argo as the same attempt, without a
   retry, so such a node is reported queued and not `Preempted`; the take-back test

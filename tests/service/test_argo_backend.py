@@ -130,6 +130,39 @@ def test_a_retry_after_a_kill_for_memory_is_queued_and_counted() -> None:
     }
 
 
+@pytest.mark.parametrize(
+    ("message", "exit_code", "phase"),
+    [
+        ("pod deleted", None, "Preempted"),
+        ("Error (exit code 143)", "143", "Preempted"),
+        ("Pod was evicted", None, "Preempted"),
+        ("Error (exit code 1)", "1", "Retrying"),
+        ("Error (exit code 137)", "137", "Retrying"),
+        ("main: OOMKilled (exit code 137)", "137", "Pending"),
+    ],
+)
+def test_the_phase_of_a_retry_names_why(
+    message: str, exit_code: str | None, phase: str
+) -> None:
+    # Preempted only with the evidence of an eviction: the pod was deleted (no exit
+    # code) or the worker stopped on SIGTERM (143)
+    status = workflow_status(
+        _workflow(
+            _node("a-w0", "Retry", "Running", ["a-w0(0)", "a-w0(1)"], "a-w0"),
+            _node(
+                "a-w0(0)",
+                "Pod",
+                "Error",
+                worker="a-w0",
+                message=message,
+                exit_code=exit_code,
+            ),
+            _node("a-w0(1)", "Pod", "Pending", worker="a-w0"),
+        )
+    )
+    assert status.tasks == {"a-w0": phase}
+
+
 def test_a_kill_of_the_executor_is_no_kill_of_the_worker() -> None:
     init = "init: OOMKilled (exit code 137)"
     status = workflow_status(
@@ -324,7 +357,8 @@ def test_an_exit_137_is_no_evidence_of_a_kill_for_memory() -> None:
             _node("a-w0(1)", "Pod", "Pending", worker="a-w0"),
         )
     )
-    assert status.tasks == {"a-w0": "Preempted"}
+    # neither a kill for memory nor an eviction: the pod is retrying
+    assert status.tasks == {"a-w0": "Retrying"}
     assert status.failed == {"a-w0": [FailedAttempt(attempt=0, exit_code=137)]}
 
 
