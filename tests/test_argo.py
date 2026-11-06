@@ -36,7 +36,7 @@ def _record(reserve: str | None = None) -> RunRecord:
                     "cores": 2,
                     "memory_gb": 3.0,
                 },
-                "inputs": {"sums": "squares.out"},
+                "inputs": {"sums": "squares.squares"},
                 "stage": ["sums"],
             },
         ],
@@ -211,8 +211,10 @@ def test_environment() -> None:
     assert worker["SIMRUN_INPUTS"] == ""
     assert worker["SIMRUN_NODE"] == {"fieldRef": {"fieldPath": "spec.nodeName"}}
     report = _env(_template(manifest, "report"))
-    assert report["SIMRUN_INPUTS"] == f"sums=runs/{RUN}/tasks/squares/out/out"
-    assert report["SIMRUN_STAGE"] == f"runs/{RUN}/tasks/squares/out/out=/scratch/sums"
+    assert report["SIMRUN_INPUTS"] == f"sums=runs/{RUN}/tasks/squares/out/squares"
+    assert (
+        report["SIMRUN_STAGE"] == f"runs/{RUN}/tasks/squares/out/squares=/scratch/sums"
+    )
 
 
 def test_unsplit_plugin_command() -> None:

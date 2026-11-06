@@ -318,13 +318,13 @@ def test_record_and_progress(service):
 def test_outputs_relative_to_store(service):
     run_id = service.submit()["id"]
     out = service.run_dir(run_id) / "tasks/squares/out"
-    (out / "units").mkdir(parents=True)
+    (out / "squares").mkdir(parents=True)
     (out / "summary.json").write_text("{}")
-    (out / "units/0.json").write_text('{"i": 0}')
+    (out / "squares/0.json").write_text('{"i": 0}')
     files = service.get(f"/runs/{run_id}/outputs/squares").json()
     assert files == [
+        {"path": f"runs/{run_id}/tasks/squares/out/squares/0.json", "bytes": 8},
         {"path": f"runs/{run_id}/tasks/squares/out/summary.json", "bytes": 2},
-        {"path": f"runs/{run_id}/tasks/squares/out/units/0.json", "bytes": 8},
     ]
     assert service.get(f"/runs/{run_id}/outputs/nope").status_code == 404
 

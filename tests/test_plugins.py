@@ -45,7 +45,7 @@ def test_squares_end_to_end_in_process(tmp_path: Path) -> None:
     resolve(SQUARES.merge)(settings, paths)
     summary = json.loads((paths.out / "summary.json").read_text())
     assert summary == {"sum": 30, "n": 5}
-    assert json.loads((paths.out / "units" / "3.json").read_text()) == {
+    assert json.loads((paths.out / "squares" / "3.json").read_text()) == {
         "i": 3,
         "square": 9,
     }

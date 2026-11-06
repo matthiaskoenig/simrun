@@ -1,4 +1,9 @@
-"""The demo plugin: sums of squares, split into one unit per number."""
+"""The demo plugin: sums of squares, split into one unit per number.
+
+A unit writes its square into the output port `squares` (`out/squares/<i>.json`), the
+merge the sum into the summary of the task (`out/summary.json`, which `compare`
+reads; no port).
+"""
 
 import json
 import os
@@ -38,14 +43,17 @@ def count_units(settings: SquaresSettings) -> int:
     return settings.n
 
 
+PORT = "squares"
+
+
 def setup(settings: SquaresSettings, paths: TaskPaths) -> None:
-    """Create the output directories, once per process.
+    """Create the directory of the output port, once per process.
 
     Args:
         settings: Settings of the task.
         paths: Locations of the task.
     """
-    (paths.out / "units").mkdir(parents=True, exist_ok=True)
+    (paths.out / PORT).mkdir(parents=True, exist_ok=True)
 
 
 def compute_unit(settings: SquaresSettings, index: int, paths: TaskPaths) -> None:
@@ -64,7 +72,7 @@ def compute_unit(settings: SquaresSettings, index: int, paths: TaskPaths) -> Non
     time.sleep(settings.sleep_s)
     if settings.fail_at == index:
         raise RuntimeError(f"unit {index} failed on request")
-    units = paths.out / "units"
+    units = paths.out / PORT
     units.mkdir(parents=True, exist_ok=True)
     tmp = units / f".{index}.json.{uuid.uuid4().hex}.tmp"
     tmp.write_text(json.dumps({"i": index, "square": index * index}))
@@ -79,7 +87,7 @@ def merge(settings: SquaresSettings, paths: TaskPaths) -> None:
         paths: Locations of the task.
     """
     total = sum(
-        json.loads((paths.out / "units" / f"{i}.json").read_text())["square"]
+        json.loads((paths.out / PORT / f"{i}.json").read_text())["square"]
         for i in range(settings.n)
     )
     (paths.out / "summary.json").write_text(json.dumps({"sum": total, "n": settings.n}))
@@ -88,6 +96,7 @@ def merge(settings: SquaresSettings, paths: TaskPaths) -> None:
 SQUARES = TaskType(
     name="demo.squares",
     settings=SquaresSettings,
+    outputs=(PORT,),
     hint=ResourceHint(memory_base_gb=0.5, memory_per_worker_gb=0.5),
     count_units="simrun.demo:count_units",
     setup="simrun.demo:setup",

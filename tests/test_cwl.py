@@ -169,7 +169,7 @@ def _record_with_command() -> RunRecord:
                     "cores": 1,
                     "memory_gb": 1.0,
                 },
-                "inputs": {"sums": "squares.out"},
+                "inputs": {"sums": "squares.squares"},
             },
         ],
     )
