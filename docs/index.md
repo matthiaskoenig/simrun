@@ -43,7 +43,7 @@ The task runs as up to eight pods on as many servers, which claim the units from
 - [Plugins](plugins.md): task types as entry points of a python package, e.g. the scans and fits of [sbmlsim](https://github.com/matthiaskoenig/sbmlsim).
 - [Service](service.md): the HTTP API, its settings and the environment variables.
 - [Cluster deployment](deployment.md): k3s with Kueue, Argo Workflows, an NFS run store, the registry Zot and BuildKit.
-- [Testing](testing.md): the unit tests and the tests on a k3d cluster.
+- [Testing](testing.md): the unit tests, the tests on a k3d cluster and a local test system on it.
 
 ## Questions and issues
 

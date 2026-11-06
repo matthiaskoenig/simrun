@@ -19,6 +19,7 @@ pytest                                             # the unit tests, in parallel
 pytest -n 0                                        # in one process, e.g. for --pdb
 SIMRUN_K3D=1 uv run pytest -m cluster tests/cluster                     # the tests on a k3d cluster (docker, ~20 GiB disk)
 SIMRUN_K3D=1 SIMRUN_K3D_KEEP=1 uv run pytest -m cluster tests/cluster   # keep the cluster for the next session
+uv run python tests/cluster/local.py up            # the k3d cluster as a local test system, service on the host (docs/testing.md); `down` deletes it
 tox r -e py3.15                                    # single tox env (py3.14, py3.15)
 tox run-parallel                                   # every supported python, before opening a pull request
 
