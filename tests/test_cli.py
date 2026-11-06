@@ -84,3 +84,25 @@ def test_cli_wait_succeeds(service_factory, make_client, monkeypatch) -> None:
         result = runner.invoke(simrun.cli.app, ["wait", run_id, "--timeout", "30"])
         assert result.exit_code == 0, result.output
         assert "succeeded" in result.output
+
+
+def test_cli_wait_timeout_exits_2(cli, service) -> None:
+    run_id = service.submit()["id"]
+    result = cli("wait", run_id, "--timeout", "1")
+    assert result.exit_code == 2
+    assert result.output.strip().splitlines()[-1] != "2"
+    assert result.output.count("\n") == 1
+
+
+def test_cli_wait_failed_prints_one_line(cli, service) -> None:
+    run_id = service.submit()["id"]
+    cli("cancel", run_id)
+    result = cli("wait", run_id, "--timeout", "1")
+    assert result.exit_code == 1
+    assert result.output == f"{run_id}: cancelled\ncancelled\n"  # state, message
+
+
+def test_cli_bad_source_prints_only_message(cli, tmp_path: Path) -> None:
+    result = cli("submit", str(_workflow(tmp_path / "wf.yaml")), "--source", "model")
+    assert result.exit_code == 1
+    assert result.output == "--source must be NAME=PATH, got 'model'\n"

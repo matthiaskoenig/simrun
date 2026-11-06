@@ -11,16 +11,17 @@ from functools import wraps
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
 
+import click
 import httpx
 import typer
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 from rich.console import Console
 from rich.table import Column, Table
 
 from simrun.client import Client, ClientError
 from simrun.service.app import RunSummary
 from simrun.store import RunState
-from simrun.workflow import SplitMode, WorkflowError
+from simrun.workflow import SplitMode
 
 app = typer.Typer(help="Submit and follow simulation workflows.", no_args_is_help=True)
 console = Console()
@@ -56,9 +57,11 @@ def _guarded[**P, R](function: Callable[P, R]) -> Callable[P, R]:
     def run(*args: P.args, **kwargs: P.kwargs) -> R:
         try:
             return function(*args, **kwargs)
+        except typer.Exit, click.exceptions.ClickException:
+            raise
         except ClientError as error:
             _fail(error.detail)
-        except (WorkflowError, ValidationError, RuntimeError, OSError) as error:
+        except (ValueError, RuntimeError, OSError) as error:
             _fail(str(error))
         except httpx.TransportError as error:
             _fail(f"the service is not reachable: {error}")

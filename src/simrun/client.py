@@ -194,11 +194,15 @@ class Client:
         of 1 s doubling to 10 s, until the timeout.
 
         Returns:
-            The summary of the run, not terminal when the timeout passed.
+            The summary of the run, not terminal when the timeout passed; when the
+            timeout passes during an outage, the last summary obtained.
 
         Raises:
             ClientError: For an unknown run or another refusal.
+            httpx.TransportError: When the service was never reached before the
+                timeout.
         """
+        last: RunSummary | None = None
         deadline = None if timeout_s is None else time.monotonic() + timeout_s
         backoff = BACKOFF_START_S
         while True:
@@ -213,7 +217,9 @@ class Client:
             except httpx.TransportError as error:
                 remaining = None if deadline is None else deadline - time.monotonic()
                 if remaining is not None and remaining <= 0:
-                    return self.status_summary(run_id)
+                    if last is None:
+                        raise
+                    return last
                 logger.warning(
                     "wait for %s: %s, retrying in %.0f s", run_id, error, backoff
                 )
@@ -223,15 +229,11 @@ class Client:
             backoff = BACKOFF_START_S
             if response.is_error:
                 raise ClientError(response.status_code, _detail(response))
-            summary = RunSummary.model_validate(response.json())
+            summary = last = RunSummary.model_validate(response.json())
             if summary.state in TERMINAL_RUN_STATES:
                 return summary
             if deadline is not None and time.monotonic() >= deadline:
                 return summary
-
-    def status_summary(self, run_id: str) -> RunSummary:
-        """The summary of a run."""
-        return RunSummary.of(self.status(run_id))
 
     def status(self, run_id: str) -> RunRecord:
         """The record of a run."""
