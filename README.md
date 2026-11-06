@@ -89,13 +89,22 @@ and kubectl into `.tools/bin`, creates the k3d cluster `simrun-test` (one server
 with the infrastructure; three agents of 6 GiB labelled `simrun/worker=true`)
 with the registry `k3d-simrun-registry:5000` (`localhost:5000` from the host), writes
 its kubeconfig to `.tools/kubeconfig` (the contexts of the user are not touched),
-applies `deploy/k3d`, builds the image of the runs from the working tree
-(`tests/cluster/Dockerfile`) and pushes it. Each test runs the service in its process
-with an `ArgoBackend` and the store `.tools/k3d/store`, which k3d mounts into every
-node. At the end the cluster, the registry, the store and the images of the runs
-are deleted, unless `SIMRUN_K3D_KEEP=1`; a kept cluster is used by the next session.
-The tests run in one worker of pytest-xdist and take about six minutes on a created
-cluster.
+applies `deploy/k3d`, builds the image of the runs without sources from the working
+tree (`tests/cluster/Dockerfile`) and pushes it, and mirrors the base image of the
+images of environments (`ghcr.io/astral-sh/uv`, pinned by digest) into the registry.
+Each test runs the service in its process with an `ArgoBackend` and the store
+`.tools/k3d/store`, which k3d mounts into every node. `test_sources.py` runs the path
+of a model with sources end to end: a model repository (hatchling, `uv.lock`) with
+task types of its own and a library (setuptools, a dependency, an uncommitted change)
+are snapshotted, the service resolves their environment and builds its image from
+the generated Dockerfile with BuildKit after `POST /runs` returned, the pods install
+the read-only snapshots, a split task and an unsplit task through `simrun-exec` run,
+and the merged result, the report and the learned resources are checked. At the end
+the cluster, the registry, the store and the images are deleted (the files the pods
+of an environment wrote as root are given back to the user first), unless
+`SIMRUN_K3D_KEEP=1`; a kept cluster is used by the next session.
+The tests run in one worker of pytest-xdist and take about nine minutes on a
+created cluster.
 
 ## Findings on the cluster
 
