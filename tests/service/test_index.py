@@ -195,7 +195,9 @@ def test_a_record_which_cannot_be_read_at_the_start_is_followed(
         assert restarted.store.index.live_ids() == [run_id]
 
 
-def test_reindex_does_not_rewrite_the_record(tmp_path: Path) -> None:
+def test_reindex_does_not_rewrite_the_record(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     store = IndexedRunStore(tmp_path / "store", RunIndex(tmp_path / "index.db"))
     RunStore.write(store, _record("r1"))
     store._unindexed.add("r1")
@@ -208,7 +210,7 @@ def test_reindex_does_not_rewrite_the_record(tmp_path: Path) -> None:
         RunStore.write(store, changed)
         return record
 
-    store.read = read_then_cancel  # type: ignore[method-assign]
+    monkeypatch.setattr(store, "read", read_then_cancel)
     assert store.reindex() == []
-    store.read = read  # type: ignore[method-assign]
+    monkeypatch.undo()
     assert store.read("r1").pending_cancel
