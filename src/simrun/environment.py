@@ -14,11 +14,17 @@ environment of `uv run` with the static requirements, in a shadow tree of the
 snapshot. They are dependencies of the temporary project, so the lock pins them with
 the third party dependencies and the image installs them.
 
-The lock is resolved in a temporary project which holds a copy of the `pyproject.toml`
-and `uv.lock` of the model and a symlink `store` to the store. The sources of the
-libraries are the relative paths `store/<snapshot>`, so the lock carries these paths
-and not the place the store is mounted at (`/mnt/cluster` on the development server,
-`/store` in the service): the same snapshots give the same lock and hash anywhere.
+The lock is resolved in a temporary project, a writable shadow tree of the model
+(`simrun.worker.shadow_tree`: its directories, links to its files) with its
+`pyproject.toml` changed and a copy of its `uv.lock`, and a directory
+`.simrun-store` with a shadow tree of every library at `.simrun-store/<snapshot>`.
+`uv lock` builds the metadata of a source with dynamic metadata, which a backend
+writes next to the sources (e.g. the `*.egg-info` of setuptools): into the shadows,
+never into the snapshots, which are named by the hash of their content. The sources
+of the libraries are the relative paths `.simrun-store/<snapshot>`, so the lock
+carries these paths and not the place the store is mounted at (`/mnt/cluster` on the
+development server, `/store` in the service): the same snapshots give the same lock
+and hash anywhere.
 """
 
 import hashlib
@@ -38,7 +44,9 @@ from simrun.worker import shadow_tree
 
 logger = logging.getLogger(__name__)
 
-STORE_LINK = "store"
+# the directory of the shadows of the libraries in the project which is locked, a
+# name which a model repository does not use
+SHADOWS_DIR = ".simrun-store"
 # what the worker of simrun imports besides the standard library
 WORKER_REQUIREMENTS = ("pydantic>=2.14", "pyyaml>=6.0.3")
 LOCAL_SOURCES = ("directory", "editable", "path", "virtual")
@@ -231,13 +239,17 @@ def resolve_environment(
         for key in [k for k in sources if normalise(k) == normalise(name)]:
             del sources[key]  # the same package spelled otherwise
         entry = tomlkit.inline_table()
-        entry["path"] = f"{STORE_LINK}/{library.snapshot}"
+        entry["path"] = f"{SHADOWS_DIR}/{library.snapshot}"
         sources[name] = entry
     with tempfile.TemporaryDirectory(prefix="simrun-env-") as tmp:
-        work = Path(tmp)
+        # uv writes the metadata it builds into the shadows, never the snapshots
+        work = shadow_tree(store / model.snapshot, Path(tmp) / "project")
+        for name in ("pyproject.toml", "uv.lock"):
+            (work / name).unlink()
         (work / "pyproject.toml").write_text(tomlkit.dumps(document))
         (work / "uv.lock").write_bytes(model_lock.read_bytes())
-        (work / STORE_LINK).symlink_to(store.resolve(), target_is_directory=True)
+        for library in libraries:
+            shadow_tree(store / library.snapshot, work / SHADOWS_DIR / library.snapshot)
         try:
             _uv(["lock", "--python", python], work)
         except RuntimeError as error:
