@@ -60,6 +60,19 @@ def task_plans(record: RunRecord) -> dict[str, TaskPlan]:
     }
 
 
+def _undo(current: RunRecord, record: RunRecord) -> dict[str, object]:
+    """What a run which ended during its submission still has to undo.
+
+    The workflow is cancelled, and the node released: the submission may have
+    reserved it after the end of the run released it (a release removes only the
+    reservation of its run, so it may be repeated).
+    """
+    return {
+        "pending_cancel": True,
+        "pending_release": current.pending_release or record.reserve,
+    }
+
+
 class Submitter:
     """Resolves, builds and submits the runs written `submitting`."""
 
@@ -172,8 +185,6 @@ class Submitter:
             return
         try:
             image, lock = self.environment(record)
-            if lock is not None:
-                (self.store.run_dir(run_id) / ENVIRONMENT_LOCK).write_text(lock)
             built = record.model_copy(
                 update={"image": image, "built": datetime.now(UTC)}
             )
@@ -181,6 +192,8 @@ class Submitter:
                 logger.info("run %s changed while it was built: not submitted", run_id)
                 return
             record = built
+            if lock is not None:
+                (self.store.run_dir(run_id) / ENVIRONMENT_LOCK).write_text(lock)
             try:
                 manifest = to_argo(record, task_plans(record), self.types, self.cluster)
             except ValueError as error:
@@ -262,12 +275,8 @@ class Submitter:
                 current: RunRecord | None = self.store.read(record.id)
             except KeyError:
                 current = None
-            if (
-                current is not None
-                and current.state in TERMINAL_RUN_STATES
-                and not current.pending_cancel
-            ):
-                self.store.write(current.model_copy(update={"pending_cancel": True}))
+            if current is not None and current.state in TERMINAL_RUN_STATES:
+                self.store.write(current.model_copy(update=_undo(current, record)))
         if current is None:
             self._cancel_orphan(record)
         else:
@@ -284,7 +293,7 @@ class Submitter:
             if current is not None:
                 ended = current.state in TERMINAL_RUN_STATES
                 if ended:  # cancelled while it was submitted: cancel the workflow
-                    current = current.model_copy(update={"pending_cancel": True})
+                    current = current.model_copy(update=_undo(current, record))
                 else:
                     current = current.model_copy(update={"state": RunState.QUEUED})
                 self.store.write(current)

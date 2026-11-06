@@ -536,3 +536,21 @@ def test_grace_counts_from_the_build(service):
     )
     service.controller.reconcile()
     assert RunStore(service.settings.store).read(old).state == "failed"
+
+
+def test_cancel_before_the_reservation_releases_the_node(service):
+    backend = service.backend
+    original = FakeBackend.reserve
+
+    def reserve(self, node, run_id):
+        # the run is cancelled (and settled) before its job reserves the node
+        service.controller.cancel(run_id)
+        return original(self, node, run_id)
+
+    backend.reserve = reserve.__get__(backend)
+    record = service.submit(reserve="srv-02")
+    assert record["state"] == "cancelled"
+    assert record["pending_release"] is None and not record["pending_cancel"]
+    (node,) = [n for n in backend.nodes() if n.name == "srv-02"]
+    assert node.reserved_by is None
+    assert ("cancel", service.name(record["id"])) in backend.calls
