@@ -30,7 +30,13 @@ from pathlib import Path
 import simrun
 from simrun.argo import to_argo
 from simrun.config import ClusterConfig
-from simrun.environment import Environment, dockerfile, image_ref, resolve_environment
+from simrun.environment import (
+    BUILD_CONSTRAINTS,
+    Environment,
+    dockerfile,
+    image_ref,
+    resolve_environment,
+)
 from simrun.planner import PodShape, TaskPlan
 from simrun.plugins import TaskType
 from simrun.service.backend import Backend
@@ -86,6 +92,7 @@ class Submitter:
         cluster: ClusterConfig,
         python: str,
         simrun_wheel: Path | None,
+        build_constraints: Path | None = None,
     ) -> None:
         """Create the submitter.
 
@@ -97,6 +104,8 @@ class Submitter:
             cluster: The cluster.
             python: Python version of the images.
             simrun_wheel: The simrun wheel the images install.
+            build_constraints: The pinned versions of the build backends, the ones
+                of simrun by default.
         """
         self.store = store
         self.backend = backend
@@ -105,6 +114,7 @@ class Submitter:
         self.cluster = cluster
         self.python = python
         self.simrun_wheel = simrun_wheel
+        self.build_constraints = build_constraints or BUILD_CONSTRAINTS
         self._reserve_lock = threading.Lock()
         self._builds_lock = threading.Lock()
         self._builds: dict[str, threading.Lock] = {}
@@ -137,6 +147,7 @@ class Submitter:
                 libraries,
                 python=self.python,
                 simrun_version=simrun.__version__,
+                build_constraints=self.build_constraints,
             )
         except (ValueError, RuntimeError) as error:
             raise SubmissionError(

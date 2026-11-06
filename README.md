@@ -163,6 +163,7 @@ The service reads a YAML file named by `SIMRUN_CONFIG`
 | `default_image` | the image of a run whose model has no `pyproject.toml` |
 | `simrun_wheel` | the simrun wheel the images of the environments install |
 | `python` | the python of the images of the environments (3.14) |
+| `build_constraints` | the pinned versions of the build backends, `src/simrun/build_constraints.txt` by default |
 | `backend` | `module:callable` of the backend, `simrun.service.argo_backend:backend` |
 
 `cluster` (`ClusterConfig`): `registry` (the registry inside the network, as the
@@ -245,7 +246,12 @@ dependencies of the model and its snapshotted libraries, locked with `uv lock`
 against the snapshots, and their build backends: `[build-system].requires` of every
 source (the legacy backend of setuptools without one) and what the backend asks for
 an editable build (`get_requires_for_build_editable`, e.g. `editables` of
-hatchling), asked at resolve time. The code comes from the snapshots, which a pod
+hatchling), asked at resolve time, at the versions of the constraints file of the
+service (`build_constraints.txt`: hatchling, setuptools, editables, wheel and the
+other common backends, for the packages the `uv.lock` of the model does not have),
+so a new release of a backend changes no lock and rebuilds no image. To raise a pin,
+edit the file (or point `build_constraints` at a file of your own) and redeploy the
+service; the images of the models which use the backend are built again. The code comes from the snapshots, which a pod
 mounts read-only and installs at its start with `uv pip install --no-deps
 --no-index --no-build-isolation -e`, each from a writable tree of links to its files
 (a backend may write a version file or metadata into the tree it builds). The image

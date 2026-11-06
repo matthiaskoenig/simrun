@@ -4,7 +4,14 @@ from pathlib import Path
 
 import pytest
 
-from simrun.environment import Environment, dockerfile, image_ref, resolve_environment
+from simrun.environment import (
+    BUILD_CONSTRAINTS,
+    Environment,
+    dockerfile,
+    image_ref,
+    load_constraints,
+    resolve_environment,
+)
 from simrun.snapshot import SourceProvenance
 
 
@@ -276,3 +283,47 @@ def test_resolve_never_writes_a_snapshot(tmp_path: Path) -> None:
     env = _resolve(store, model, libs)
     assert 'name = "lib"' in env.lock
     assert {d: _tree(store / "snap" / d) for d in ("model", "lib", "extra")} == before
+
+
+def _versions(lock: str) -> dict[str, str]:
+    import tomllib
+
+    return {p["name"]: p.get("version", "") for p in tomllib.loads(lock)["package"]}
+
+
+def test_build_backends_are_pinned_by_the_constraints_of_the_service(
+    tmp_path: Path,
+) -> None:
+    store, model, libs = _make(tmp_path, [])
+    _build_system(store / "snap/model/pyproject.toml", ["hatchling"], "hatchling.build")
+    env = _resolve(store, model, libs)
+    pins = load_constraints(BUILD_CONSTRAINTS)
+    versions = _versions(env.lock)
+    # the backend and what it asks for are the versions of the constraints, not
+    # the newest of the index, so a release of a backend changes no lock
+    for name in ("hatchling", "editables"):
+        assert pins[name] == f"{name}=={versions[name]}"
+    # a constraints file of the service with another pin wins
+    other = tmp_path / "constraints.txt"
+    other.write_text("# raised by hand\nhatchling==1.33.0\neditables == 0.6\n")
+    assert load_constraints(other) == {
+        "hatchling": "hatchling==1.33.0",
+        "editables": "editables==0.6",
+    }
+    pinned = resolve_environment(
+        store, model, libs, simrun_version="0.1.0", build_constraints=other
+    )
+    assert _versions(pinned.lock)["hatchling"] == "1.33.0"
+    # a pin is applied: a version which is not available fails the resolve
+    other.write_text("hatchling==1.0.0\n")
+    with pytest.raises(RuntimeError, match=r"hatchling==1\.0\.0"):
+        resolve_environment(
+            store, model, libs, simrun_version="0.1.0", build_constraints=other
+        )
+
+
+def test_the_constraints_file_names_exact_versions(tmp_path: Path) -> None:
+    bad = tmp_path / "constraints.txt"
+    bad.write_text("hatchling>=1\n")
+    with pytest.raises(ValueError, match="hatchling>=1"):
+        load_constraints(bad)

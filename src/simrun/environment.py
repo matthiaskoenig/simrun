@@ -12,7 +12,10 @@ and what the backend asks for an editable build (`get_requires_for_build_editabl
 PEP 660, e.g. `editables` of hatchling), which a hook asks at resolve time in an
 environment of `uv run` with the static requirements, in a shadow tree of the
 snapshot. They are dependencies of the temporary project, so the lock pins them with
-the third party dependencies and the image installs them.
+the third party dependencies and the image installs them. Their versions are the pins
+of a constraints file of the service (`build_constraints.txt`, `BUILD_CONSTRAINTS`),
+for the packages the `uv.lock` of the model does not have, so a release of a backend
+changes no lock.
 
 The lock is resolved in a temporary project, a writable shadow tree of the model
 (`simrun.worker.shadow_tree`: its directories, links to its files) with its
@@ -47,6 +50,10 @@ logger = logging.getLogger(__name__)
 # the directory of the shadows of the libraries in the project which is locked, a
 # name which a model repository does not use
 SHADOWS_DIR = ".simrun-store"
+# the pinned versions of the build backends, see the file
+BUILD_CONSTRAINTS = Path(__file__).with_name("build_constraints.txt")
+NAME = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+PIN = re.compile(r"^([A-Za-z0-9][A-Za-z0-9._-]*)\s*==\s*([^\s;#]+)$")
 # what the worker of simrun imports besides the standard library
 WORKER_REQUIREMENTS = ("pydantic>=2.14", "pyyaml>=6.0.3")
 LOCAL_SOURCES = ("directory", "editable", "path", "virtual")
@@ -85,6 +92,30 @@ def _reject_host_paths(lock: str, allowed: list[str]) -> None:
                 f"The model depends on the local package {package['name']!r}, which "
                 "is not a snapshotted source: pass its working tree as a source"
             )
+
+
+def load_constraints(path: Path) -> dict[str, str]:
+    """The pins of a constraints file by normalised name, e.g. `hatchling==1.33.0`.
+
+    Raises:
+        ValueError: A line is no exact pin `<name>==<version>`.
+    """
+    pins: dict[str, str] = {}
+    for line in path.read_text().splitlines():
+        text = line.partition("#")[0].strip()
+        if not text:
+            continue
+        found = PIN.match(text)
+        if found is None:
+            raise ValueError(f"{path}: {text!r} is no pin <name>==<version>")
+        pins[normalise(found[1])] = f"{found[1]}=={found[2]}"
+    return pins
+
+
+def _pinned(requirements: list[str], pins: dict[str, str]) -> list[str]:
+    """The pins of the packages of requirements, for `uv run --with`."""
+    names = [NAME.match(r) for r in requirements]
+    return [pins[normalise(n[1])] for n in names if n and normalise(n[1]) in pins]
 
 
 @dataclass(frozen=True)
@@ -138,13 +169,17 @@ def _package_name(path: Path) -> str:
     return name
 
 
-def build_requirements(directory: Path, name: str, python: str) -> list[str]:
+def build_requirements(
+    directory: Path, name: str, python: str, pins: dict[str, str] | None = None
+) -> list[str]:
     """What building a source editable needs: its build system and its backend's hook.
 
     Args:
         directory: The snapshot of the source, with its `pyproject.toml`.
         name: The name of the source, for messages.
         python: The python version the hook runs with.
+        pins: The pinned versions of build backends (`load_constraints`), applied
+            to the environment the hook runs in.
 
     Returns:
         `[build-system].requires` and the result of the backend's
@@ -166,7 +201,8 @@ def build_requirements(directory: Path, name: str, python: str) -> list[str]:
         # the hook may write into the tree, never into the snapshot
         shadow = shadow_tree(directory, work / "source")
         out = work / "requires.json"
-        with_args = [arg for r in requires for arg in ("--with", r)]
+        pinned = _pinned(requires, pins or {})
+        with_args = [arg for r in (*requires, *pinned) for arg in ("--with", r)]
         command = ["run", "--no-project", "--isolated", "--python", python]
         command += [*with_args, "--", "python", "-P", "-c", EDITABLE_HOOK]
         try:
@@ -187,6 +223,7 @@ def resolve_environment(
     python: str = "3.14",
     *,
     simrun_version: str,
+    build_constraints: Path = BUILD_CONSTRAINTS,
 ) -> Environment:
     """Lock the dependencies of the model with its libraries as snapshot paths.
 
@@ -197,6 +234,8 @@ def resolve_environment(
             `[tool.uv.sources]` of its package name, the other entries are kept.
         python: Python version of the image.
         simrun_version: Version of the simrun wheel of the image, part of the hash.
+        build_constraints: The pinned versions of the build backends; a pin of a
+            package the `uv.lock` of the model does not have constrains the lock.
 
     Returns:
         The environment.
@@ -215,10 +254,15 @@ def resolve_environment(
         raise ValueError(
             f"The model {model.name!r} has no uv.lock: run `uv lock` and commit it"
         )
+    pins = load_constraints(build_constraints)
+    locked = {
+        normalise(p["name"])
+        for p in tomllib.loads(model_lock.read_text()).get("package", [])
+    }
     builds: list[str] = []
     for source in (model, *libraries):
         for requirement in build_requirements(
-            store / source.snapshot, source.name, python
+            store / source.snapshot, source.name, python, pins
         ):
             if requirement not in builds:
                 builds.append(requirement)
@@ -234,6 +278,11 @@ def resolve_environment(
         dependencies.append(requirement)
     tool = document.setdefault("tool", tomlkit.table())
     uv = tool.setdefault("uv", tomlkit.table())
+    # the backends at their pins, unless the lock of the model has them already
+    constraints = uv.setdefault("constraint-dependencies", tomlkit.array())
+    for key, pin in pins.items():
+        if key not in locked:
+            constraints.append(pin)
     sources = uv.setdefault("sources", tomlkit.table())
     for name, library in zip(names, libraries, strict=True):
         for key in [k for k in sources if normalise(k) == normalise(name)]:
