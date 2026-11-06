@@ -138,6 +138,8 @@ spec:
       serviceAccountName: simrun
       containers:
         - name: simrun
+          # built from deploy/service/Dockerfile, see "The service image" in the
+          # README
           image: registry.cluster.internal:5000/simrun-service:0.1.0
           command:
             - uvicorn
