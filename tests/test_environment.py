@@ -193,3 +193,47 @@ def test_normalised_names(tmp_path: Path) -> None:
     )
     assert 'name = "my-lib"' in env.lock
     assert '{ name = "pydantic", specifier = ">=2.14" }' in env.lock
+
+
+def _build_system(path: Path, requires: list[str], backend: str) -> None:
+    with path.open("a") as handle:
+        handle.write(
+            f"[build-system]\nrequires = {requires!r}\nbuild-backend = {backend!r}\n"
+        )
+
+
+def _lines(requirements: str) -> set[str]:
+    return {line.partition("==")[0] for line in requirements.splitlines()}
+
+
+def test_build_requirements_in_the_image(tmp_path: Path) -> None:
+    # the snapshots are installed without build isolation and without an index at
+    # pod start: their build backends, also the requirements of an editable build of
+    # the backend (`editables` of hatchling), must be in the image
+    store, model, libs = _make(tmp_path, ["extra"])
+    _build_system(store / "snap/model/pyproject.toml", ["hatchling"], "hatchling.build")
+    _build_system(
+        store / "snap/lib/pyproject.toml", ["setuptools>=61"], "setuptools.build_meta"
+    )
+    env = _resolve(store, model, libs)
+    assert "hatchling" in env.build_requirements
+    assert "setuptools>=61" in env.build_requirements
+    assert any(r.startswith("editables") for r in env.build_requirements)
+    assert {"hatchling", "editables", "setuptools"} <= _lines(env.requirements)
+    text = dockerfile(env, "reg:5000", "simrun-0.1.0.whl")
+    assert "hatchling==" in text and "editables==" in text
+
+
+def test_default_build_system(tmp_path: Path) -> None:
+    # without [build-system] a project is built with the legacy backend of setuptools
+    store, model, libs = _make(tmp_path, [])
+    env = _resolve(store, model, libs)
+    assert "setuptools>=40.8.0" in env.build_requirements
+    assert "setuptools" in _lines(env.requirements)
+
+
+def test_failing_build_backend(tmp_path: Path) -> None:
+    store, model, libs = _make(tmp_path, [])
+    _build_system(store / "snap/lib/pyproject.toml", [], "no_such_backend")
+    with pytest.raises(RuntimeError, match=r"(?s)'lib'.*no_such_backend"):
+        _resolve(store, model, libs)

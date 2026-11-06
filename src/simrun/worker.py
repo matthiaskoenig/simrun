@@ -22,6 +22,7 @@ import site
 import socket
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import uuid
@@ -56,6 +57,8 @@ POLL_S = 0.2
 HEARTBEAT_S = 30.0
 # seconds between two samples of the anonymous memory of the cgroup
 SAMPLE_S = 1.0
+# the directory of the writable trees the snapshots are installed from
+SOURCES_DIR = "simrun-sources"
 # seconds a command of `simrun-exec` gets after SIGTERM, the grace of a worker
 GRACE_S = 60.0
 COORDINATOR_POLL_S = 5.0
@@ -677,28 +680,74 @@ def paths_from_env(env: Mapping[str, str]) -> TaskPaths:
     )
 
 
-def install_editable(snapshots: list[str]) -> None:
+def shadow_tree(source: Path, target: Path) -> Path:
+    """A writable tree of a read-only one: its directories, links to its files.
+
+    A build backend may write into the tree it builds (a version file, metadata, a
+    build directory); it writes into the writable directories of the shadow, and
+    never into the source. A link (to a file or a directory) of the source is a link
+    to it in the shadow.
+
+    Args:
+        source: The read-only tree.
+        target: The shadow to create, replaced when it exists.
+
+    Returns:
+        `target`.
+    """
+    if target.exists():
+        shutil.rmtree(target)
+    for dirpath, dirnames, filenames in os.walk(source):
+        directory = Path(dirpath)
+        shadow = target / directory.relative_to(source)
+        shadow.mkdir(parents=True, exist_ok=True)
+        for name in list(dirnames):
+            if (directory / name).is_symlink():
+                dirnames.remove(name)
+                filenames.append(name)
+        for name in filenames:
+            (shadow / name).symlink_to(directory / name)
+    return target
+
+
+def install_editable(
+    snapshots: list[str], python: str = sys.executable, root: Path | None = None
+) -> None:
     """Install snapshots of sources as editable packages, without dependencies.
+
+    The image has the dependencies and the build backends of the sources (see
+    `simrun.environment`), so the snapshots are built without isolation and without
+    an index. A snapshot is mounted read-only: each is installed from a writable
+    shadow tree (`shadow_tree`) below `root`, whose files are links to the snapshot.
 
     Args:
         snapshots: The paths of the snapshots; nothing is installed without one.
+        python: The interpreter of the environment to install into.
+        root: The directory of the shadow trees, `SOURCES_DIR` below the temporary
+            directory by default.
 
     Raises:
         subprocess.CalledProcessError: The installation failed.
+        OSError: A shadow tree cannot be created.
     """
     if not snapshots:
         return
+    if root is None:
+        root = Path(tempfile.gettempdir()) / SOURCES_DIR
     command = [
         "uv",
         "pip",
         "install",
         "--python",
-        sys.executable,
+        python,
         "--no-deps",
         "--no-index",
+        "--no-build-isolation",
     ]
-    for snapshot in snapshots:
-        command += ["-e", snapshot]
+    for index, snapshot in enumerate(snapshots):
+        source = Path(snapshot)
+        shadow = shadow_tree(source, root / f"{index}-{source.name}")
+        command += ["-e", str(shadow)]
     logger.info("installing %s", " ".join(snapshots))
     subprocess.run(command, check=True)
     # the path files of the packages are read at the start of an interpreter only
