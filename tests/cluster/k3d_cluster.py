@@ -216,10 +216,10 @@ def build_image() -> tuple[str, Path]:
 def build_service_image(wheel: Path, plugins: list[Path]) -> str:
     """Build the image of the service from `deploy/service/Dockerfile` with docker.
 
-    The context as the README describes it: the requirements of the lock of simrun
-    (with hashes, and without as the constraints of the plugins), its wheel and the
-    wheels of the plugins; the base is the mirror of the base image
-    of the environments.
+    The context as docs/deployment.md describes it: the requirements of the lock of
+    simrun (with hashes, and without as the constraints of the plugins), its wheel and
+    the wheels of the plugins; the base is the mirror of the base image of the
+    environments.
 
     Returns:
         The image, as the host names it.

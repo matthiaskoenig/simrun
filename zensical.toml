@@ -1,0 +1,172 @@
+[project]
+site_name = "simrun"
+site_url = "https://matthiaskoenig.github.io/simrun/"
+site_description = "Runner of simulation workflows on a k3s cluster with Argo Workflows and Kueue, for people and agents"
+site_author = "Matthias König"
+
+copyright = 'Copyright &copy; 2026 <a href="https://livermetabolism.com">Matthias König</a>'
+
+repo_url = "https://github.com/matthiaskoenig/simrun"
+repo_name = "matthiaskoenig/simrun"
+edit_uri = "edit/develop/docs/"
+
+nav = [
+  { "Home" = "index.md" },
+  { "Installation" = "installation.md" },
+  { "Concepts" = "concepts.md" },
+  { "Usage" = [
+    { "Workflows" = "workflows.md" },
+    { "Command line" = "command-line.md" },
+    { "Agents and MCP" = "mcp.md" },
+    { "Plugins" = "plugins.md" },
+  ] },
+  { "Operation" = [
+    { "Service" = "service.md" },
+    { "Cluster deployment" = "deployment.md" },
+    { "Testing" = "testing.md" },
+  ] },
+  { "API reference" = [
+    { "Overview" = "api/index.md" },
+    { "simrun" = [
+      { "workflow" = "api/workflow.md" },
+      { "plugins" = "api/plugins.md" },
+      { "plugins_builtin" = "api/plugins_builtin.md" },
+      { "demo" = "api/demo.md" },
+      { "client" = "api/client.md" },
+      { "cli" = "api/cli.md" },
+      { "mcp" = "api/mcp.md" },
+      { "planner" = "api/planner.md" },
+      { "resources" = "api/resources.md" },
+      { "ledger" = "api/ledger.md" },
+      { "worker" = "api/worker.md" },
+      { "cgroup" = "api/cgroup.md" },
+      { "snapshot" = "api/snapshot.md" },
+      { "environment" = "api/environment.md" },
+      { "store" = "api/store.md" },
+      { "config" = "api/config.md" },
+      { "podspec" = "api/podspec.md" },
+      { "argo" = "api/argo.md" },
+      { "cwl" = "api/cwl.md" },
+      { "testing" = "api/testing.md" },
+    ] },
+    { "simrun.service" = [
+      { "app" = "api/service.app.md" },
+      { "auth" = "api/service.auth.md" },
+      { "backend" = "api/service.backend.md" },
+      { "argo_backend" = "api/service.argo_backend.md" },
+      { "controller" = "api/service.controller.md" },
+      { "submission" = "api/service.submission.md" },
+      { "index" = "api/service.index.md" },
+      { "logs" = "api/service.logs.md" },
+      { "compare" = "api/service.compare.md" },
+    ] },
+  ] },
+  { "Release notes" = "release-notes.md" },
+  { "Development" = "development.md" },
+]
+
+[project.theme]
+language = "en"
+features = [
+  "content.action.edit",
+  "content.code.annotate",
+  "content.code.copy",
+  "content.tooltips",
+  "navigation.footer",
+  "navigation.indexes",
+  "navigation.instant",
+  "navigation.instant.prefetch",
+  "navigation.sections",
+  "navigation.top",
+  "navigation.tracking",
+  "search.highlight",
+  "search.suggest",
+  "toc.follow",
+]
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme)"
+toggle.icon = "lucide/sun-moon"
+toggle.name = "Switch to light mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: light)"
+scheme = "default"
+primary = "indigo"
+accent = "indigo"
+toggle.icon = "lucide/sun"
+toggle.name = "Switch to dark mode"
+
+[[project.theme.palette]]
+media = "(prefers-color-scheme: dark)"
+scheme = "slate"
+primary = "indigo"
+accent = "indigo"
+toggle.icon = "lucide/moon"
+toggle.name = "Switch to system preference"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/github"
+link = "https://github.com/matthiaskoenig/simrun"
+
+[[project.extra.social]]
+icon = "fontawesome/brands/python"
+link = "https://pypi.org/project/simrun/"
+
+# `docs/superpowers` holds the design documents and plans of coding agents,
+# gitignored and no pages
+[project.plugins.exclude]
+glob = ["superpowers/*", "superpowers/**"]
+
+# API reference is rendered from the docstrings, see the `docs/api` pages
+[project.plugins.mkdocstrings]
+default_handler = "python"
+
+[project.plugins.mkdocstrings.handlers.python]
+paths = ["src"]
+
+[project.plugins.mkdocstrings.handlers.python.options]
+docstring_style = "google"
+docstring_section_style = "table"
+show_source = false
+# the page provides the heading, see the `docs/api` pages
+show_root_heading = false
+show_root_toc_entry = false
+show_root_full_path = false
+show_symbol_type_heading = true
+show_symbol_type_toc = true
+members_order = "source"
+separate_signature = true
+signature_crossrefs = true
+merge_init_into_class = true
+filters = ["!^_"]
+
+[project.markdown_extensions]
+abbr = {}
+admonition = {}
+attr_list = {}
+def_list = {}
+footnotes = {}
+md_in_html = {}
+tables = {}
+toc.permalink = true
+pymdownx.betterem = {}
+pymdownx.caret = {}
+pymdownx.details = {}
+pymdownx.emoji.emoji_generator = "zensical.extensions.emoji.to_svg"
+pymdownx.emoji.emoji_index = "zensical.extensions.emoji.twemoji"
+pymdownx.highlight.anchor_linenums = true
+pymdownx.highlight.line_spans = "__span"
+pymdownx.highlight.pygments_lang_class = true
+pymdownx.inlinehilite = {}
+pymdownx.keys = {}
+pymdownx.magiclink = {}
+pymdownx.mark = {}
+pymdownx.smartsymbols = {}
+pymdownx.superfences = {}
+pymdownx.tabbed.alternate_style = true
+pymdownx.tasklist.custom_checkbox = true
+pymdownx.tilde = {}
+# the release notes page includes the notes of `release-notes/` of the repository
+pymdownx.snippets.base_path = ["."]
+pymdownx.snippets.check_paths = true
