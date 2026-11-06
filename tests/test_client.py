@@ -1,4 +1,8 @@
+import dataclasses
+import json
+import sys
 import time
+import types
 from pathlib import Path
 
 import httpx
@@ -6,7 +10,9 @@ import pytest
 
 import simrun.client
 from simrun.client import ClientError
+from simrun.demo import SQUARES, SquaresSettings
 from simrun.testing import FakeBackend
+from simrun.workflow import Workflow
 
 WORKFLOW = {
     "name": "demo",
@@ -42,6 +48,63 @@ def test_submit_snapshots_then_posts(service, make_client, repo: Path) -> None:
     assert [s.id for s in client.list_runs(group="study")] == [summary.id]
     assert [s.id for s in client.list_runs(owner="mk")] == [summary.id]
     assert client.list_runs(owner="alice") == []
+
+
+def _plan(settings: SquaresSettings) -> SquaresSettings:
+    return settings.model_copy(update={"sleep_s": 0.25 * settings.n})
+
+
+@pytest.fixture
+def planning(monkeypatch) -> None:
+    """`demo.squares` is installed locally with a `plan` which sets `sleep_s`."""
+    module = types.ModuleType("simrun_test_plan")
+    module.plan = _plan  # ty: ignore[unresolved-attribute]
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    planned = dataclasses.replace(SQUARES, plan=f"{module.__name__}:plan")
+    monkeypatch.setattr(
+        simrun.client, "load_task_types", lambda: {SQUARES.name: planned}
+    )
+
+
+def test_client_plans_tasks_of_local_types(
+    service, make_client, repo: Path, planning
+) -> None:
+    client = make_client(service)
+    workflow = Workflow(**WORKFLOW)
+    body = client._request(workflow, {}, None, None, None)
+    (task,) = body["workflow"]["tasks"]
+    assert task["settings"] == SquaresSettings(n=4, sleep_s=1.0).model_dump(mode="json")
+    # the workflow of the caller is not changed
+    assert workflow.tasks[0].settings == {"n": 4}
+    # the service writes the planned settings
+    summary = client.submit(workflow, {"model": repo})
+    task_dir = service.run_dir(summary.id) / "tasks/squares"
+    assert json.loads((task_dir / "settings.json").read_text())["sleep_s"] == 1.0
+
+
+def test_client_plans_before_the_snapshots(
+    service, make_client, repo: Path, planning
+) -> None:
+    task = {"id": "squares", "type": "demo.squares", "settings": {"n": "x"}}
+    bad = {"name": "demo", "tasks": [task]}
+    with pytest.raises(ValueError, match=r"task 'squares' of type 'demo\.squares'"):
+        make_client(service).submit(Workflow(**bad), {"model": repo})
+    assert not (service.settings.store / "snapshots").exists()
+
+
+def test_client_keeps_tasks_of_unknown_types(service, make_client, monkeypatch) -> None:
+    client = make_client(service)
+    workflow = Workflow(**WORKFLOW)
+    # a type not installed locally is submitted as written
+    monkeypatch.setattr(simrun.client, "load_task_types", dict)
+    body = client._request(workflow, {}, None, None, None)
+    assert body["workflow"]["tasks"][0]["settings"] == {"n": 4}
+    # so is a type installed locally without a `plan`
+    monkeypatch.setattr(
+        simrun.client, "load_task_types", lambda: {SQUARES.name: SQUARES}
+    )
+    body = client._request(workflow, {}, None, None, None)
+    assert body["workflow"]["tasks"][0]["settings"] == {"n": 4}
 
 
 def test_submit_refused_has_detail(service, make_client) -> None:

@@ -48,6 +48,8 @@ UNITS_DIR = "units"
 WORKERS_DIR = "workers"
 PROGRESS_FILE = "progress.jsonl"
 SETTINGS_FILE = "settings.json"
+# the provenance of the sources of the run, `SIMRUN_PROVENANCE`
+PROVENANCE_FILE = "provenance.json"
 # written to the output of a task by `simrun-merge` after a successful merge, so the
 # service knows a task is done also when the workflow is gone
 MERGED_MARKER = ".simrun-merged"

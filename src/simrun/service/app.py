@@ -46,7 +46,13 @@ from simrun.service.logs import DEFAULT_TAIL_LINES, read_kept, render
 from simrun.service.submission import Submitter, has_model_project
 from simrun.snapshot import SourceProvenance
 from simrun.store import RunRecord, RunState, RunSummary, TaskState
-from simrun.worker import MERGED_MARKER, PROGRESS_FILE, SETTINGS_FILE, UNITS_DIR
+from simrun.worker import (
+    MERGED_MARKER,
+    PROGRESS_FILE,
+    PROVENANCE_FILE,
+    SETTINGS_FILE,
+    UNITS_DIR,
+)
 from simrun.workflow import Priority, SplitMode, Workflow
 
 logger = logging.getLogger(__name__)
@@ -487,19 +493,25 @@ class _Service:
         return record
 
     def _write(self, record: RunRecord) -> None:
-        """Write the record and the settings of every task.
+        """Write the record, the settings and the provenance of every task.
 
         The settings are written as submitted, not as the model of the service
         validates them: the worker validates them with the plugin of the snapshot,
-        whose defaults may differ from the ones of the service.
+        whose defaults may differ from the ones of the service. The provenance is
+        the list of the sources of the run, which a task reads through
+        `SIMRUN_PROVENANCE`.
         """
         with self.controller.lock:
             self.store.write(record)
         run_dir = self.store.run_dir(record.id)
+        provenance = json.dumps(
+            [source.model_dump(mode="json") for source in record.sources], indent=2
+        )
         for task in record.workflow.tasks:
             task_dir = run_dir / "tasks" / task.id
             task_dir.mkdir(parents=True, exist_ok=True)
             (task_dir / SETTINGS_FILE).write_text(json.dumps(task.settings, indent=2))
+            (task_dir / PROVENANCE_FILE).write_text(provenance)
 
     # queries
 

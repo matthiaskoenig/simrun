@@ -25,6 +25,7 @@ A run lives in `runs/<id>/` of the store:
 | `run.json` | the record: the workflow, the identity of the submitter, the plans, the provenance of the sources, the image, the states of the tasks and the out of memory kills |
 | `environment.lock` | the lock of the environment of the run |
 | `tasks/<task>/settings.json` | the settings of the task as submitted |
+| `tasks/<task>/provenance.json` | the provenance of the sources of the run, `SIMRUN_PROVENANCE` in the pods of the task |
 | `tasks/<task>/out/` | the outputs: a directory per output port and `summary.json`, the summary of the task, which `compare` reads |
 | `tasks/<task>/units/` | the ledger of a split task |
 | `tasks/<task>/workers/` | the reports of the pods: memory, units and their seconds |

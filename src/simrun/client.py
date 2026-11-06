@@ -10,7 +10,9 @@ from pathlib import Path
 from typing import Any
 
 import httpx
+from pydantic import ValidationError
 
+from simrun.plugins import TaskType, load_task_types, resolve
 from simrun.service.app import (
     CleanupResult,
     OutputFile,
@@ -39,6 +41,43 @@ BACKOFF_START_S = 1.0
 BACKOFF_MAX_S = 10.0
 # answers of a proxy or a restarting service, retried by `wait`
 RETRY_STATUS = (502, 503, 504)
+
+
+def plan_tasks(workflow: Workflow, types: dict[str, TaskType]) -> Workflow:
+    """The workflow with the settings of its tasks planned by their types.
+
+    A task whose type is in `types` and has a `plan` gets the settings the plan
+    returns for its validated settings, dumped as JSON; every other task is kept as
+    written, e.g. a task of a type which is not installed locally.
+
+    Args:
+        workflow: The workflow, which is not changed.
+        types: The task types installed locally, by name.
+
+    Returns:
+        A copy of the workflow with the planned settings.
+
+    Raises:
+        ValueError: The settings of a task are invalid for its type.
+    """
+    tasks = []
+    for task in workflow.tasks:
+        task_type = types.get(task.type)
+        if task_type is None or task_type.plan is None:
+            tasks.append(task)
+            continue
+        try:
+            settings = task_type.settings.model_validate(task.settings)
+        except ValidationError as error:
+            raise ValueError(
+                f"task {task.id!r} of type {task.type!r}: {error}"
+            ) from error
+        planned = resolve(task_type.plan)(settings)
+        logger.debug("task %s planned by %s", task.id, task_type.plan)
+        tasks.append(
+            task.model_copy(update={"settings": planned.model_dump(mode="json")})
+        )
+    return workflow.model_copy(update={"tasks": tasks})
 
 
 class ClientError(Exception):
@@ -132,6 +171,7 @@ class Client:
     ) -> dict[str, Any]:
         if isinstance(workflow, Path):
             workflow = load_workflow(workflow)
+        workflow = plan_tasks(workflow, load_task_types())
         provenance = [
             snapshot(path, self.store, name) for name, path in sources.items()
         ]
@@ -151,7 +191,10 @@ class Client:
         split: SplitMode | None = None,
         reserve: str | None = None,
     ) -> RunSummary:
-        """Snapshot the sources and submit a workflow.
+        """Plan the tasks, snapshot the sources and submit a workflow.
+
+        The settings of a task whose type is installed locally and has a `plan`
+        are replaced by the planned ones, see `plan_tasks`.
 
         Args:
             workflow: The workflow or its YAML file.
