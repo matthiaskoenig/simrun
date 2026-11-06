@@ -9,6 +9,7 @@ import pytest
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
+from simrun.resources import ResourceKey, ResourceStore
 from simrun.service import app as app_module
 from simrun.service import controller as controller_module
 from simrun.service.app import serve, unknown_settings
@@ -16,6 +17,7 @@ from simrun.service.auth import Identity, load_tokens, priority_of
 from simrun.snapshot import SourceProvenance
 from simrun.store import RunStore
 from simrun.testing import FakeBackend
+from simrun.worker import WorkerReport
 from simrun.workflow import Priority
 
 DAY = 86400.0
@@ -204,6 +206,31 @@ def test_estimate(service):
         "split": "single-server",
     }
     assert service.post("/estimate", single).json()["squares"]["plan"]["pods"] == 1
+
+
+def test_estimate_from_records(service):
+    # the reviewer's example: 360 units of 10 s on 36 processes took 100 s
+    report = WorkerReport(
+        worker="squares-w0",
+        node="srv-02",
+        processes=36,
+        units_done=list(range(360)),
+        seconds=100.0,
+        unit_seconds=3600.0,
+    )
+    resources = ResourceStore(service.settings.db)
+    resources.record(ResourceKey("demo.squares", ""), report, base_gb=0.5)
+    single = {
+        "workflow": service.workflow(n=360, resources={"memory_per_worker_gb": 4.0}),
+        "sources": [],
+        "split": "single-server",
+    }
+    squares = service.post("/estimate", single).json()["squares"]
+    assert squares["resources"]["seconds_per_unit"] == 10.0
+    plan = squares["plan"]
+    # one pod of a server of 40 cores: nine rounds of 10 s
+    assert (plan["pods"], plan["shape"]["processes"]) == (1, 40)
+    assert squares["seconds"] == 90.0
 
 
 def test_list_filters(service):

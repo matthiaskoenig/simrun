@@ -139,8 +139,9 @@ class TaskEstimate(BaseModel):
     Attributes:
         resources: The resolved resources.
         plan: The plan of the pods.
-        seconds: The expected seconds of a split task from the median seconds per
-            unit of past runs, None without them.
+        seconds: The expected seconds of a split task: the median time of a unit in
+            one process of past runs times the rounds of its units over the
+            processes of its pods, None without past runs.
     """
 
     resources: ResolvedResources
