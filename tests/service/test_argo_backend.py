@@ -16,6 +16,7 @@ from simrun.service.argo_backend import (
     backend,
     manifest_url,
     node_from,
+    pod_requests,
     workflow_status,
 )
 from simrun.service.backend import FailedAttempt, PodLog
@@ -175,6 +176,64 @@ def test_node_is_allocatable_minus_the_executor_rounded_down() -> None:
     assert node_from(node) == Node("n1", 19, 5.0, 2, None)
 
 
+def _k8s_pod(
+    node: str,
+    namespace: str = "kube-system",
+    containers: list[dict[str, str]] | None = None,
+    init: list[dict[str, str]] | None = None,
+    labels: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    def container(requests: dict[str, str]) -> dict[str, Any]:
+        return {"name": "c", "resources": {"requests": requests}}
+
+    return {
+        "metadata": {"name": "p", "namespace": namespace, "labels": labels or {}},
+        "spec": {
+            "nodeName": node,
+            "containers": [container(r) for r in containers or []],
+            "initContainers": [container(r) for r in init or []],
+        },
+    }
+
+
+def test_requests_of_a_pod() -> None:
+    assert pod_requests(_k8s_pod("n1")) == (0.0, 0.0)
+    pod = _k8s_pod(
+        "n1", containers=[{"cpu": "250m", "memory": "512Mi"}, {"memory": "512Mi"}]
+    )
+    assert pod_requests(pod) == (0.25, 1.0)
+    # an init container runs before the containers: the larger of the two counts
+    pod = _k8s_pod(
+        "n1", containers=[{"cpu": "1"}], init=[{"cpu": "2", "memory": "1Gi"}]
+    )
+    assert pod_requests(pod) == (2.0, 1.0)
+    pod["spec"]["overhead"] = {"cpu": "100m", "memory": "128Mi"}
+    assert pod_requests(pod) == (2.1, 1.125)
+
+
+def test_nodes_without_the_requests_of_other_pods() -> None:
+    # a DaemonSet of 1 GiB on n1 and the pod of a run, which Kueue counts itself
+    daemon = _k8s_pod("n1", containers=[{"cpu": "500m", "memory": "1Gi"}])
+    run = _k8s_pod(
+        "n1",
+        namespace="simrun",
+        containers=[{"cpu": "4", "memory": "4Gi"}],
+        labels={"workflows.argoproj.io/workflow": "simrun-r1"},
+    )
+    elsewhere = _k8s_pod("n2", containers=[{"cpu": "8", "memory": "8Gi"}])
+    infrastructure = _k8s_pod(
+        "n1", namespace="simrun", containers=[{"memory": "1Gi"}], labels={"app": "x"}
+    )
+    pods = SimpleNamespace(items=[daemon, run, elsewhere, infrastructure])
+    created, calls = _fake_backend(list_pod_for_all_namespaces=pods)
+    # 20 cores and 6.14 GiB less the executor, 0.5 cores and 2 GiB of other pods
+    assert created.nodes() == [Node("n1", 19, 3.0, 0, None)]
+    (listing,) = [c for c in calls if c[0] == "list_pod_for_all_namespaces"]
+    assert listing[2]["field_selector"] == (
+        "status.phase!=Succeeded,status.phase!=Failed"
+    )
+
+
 def test_node_reservation_and_taints() -> None:
     reserved = {"key": "simrun/reserved", "value": "r1", "effect": "NoExecute"}
     assert node_from(_k8s_node([reserved])) == Node("n1", 19, 5.0, 0, "r1")
@@ -295,6 +354,7 @@ ACCESS = {
     "delete_namespaced_pod": ("", "pods", "delete"),
     "read_namespaced_pod_log": ("", "pods/log", "get"),
     "list_node": ("", "nodes", "list"),
+    "list_pod_for_all_namespaces": ("", "pods", "list"),
     "read_node": ("", "nodes", "get"),
     "patch_node": ("", "nodes", "patch"),
     "create_namespaced_job": ("batch", "jobs", "create"),
@@ -356,6 +416,7 @@ def _fake_backend(**answers: Any) -> tuple[ArgoBackend, list[tuple[str, tuple, d
         ),
         "read_namespaced_pod_log": lambda name, *a, **k: f"log of {name}\n",
         "list_node": SimpleNamespace(items=[_k8s_node()]),
+        "list_pod_for_all_namespaces": SimpleNamespace(items=[]),
         "read_node": _k8s_reserved("r1"),
         "create_namespaced_job": {"metadata": {"uid": "u1"}},
         "read_namespaced_job": {"status": {"succeeded": 1}},
@@ -373,25 +434,35 @@ def _names(calls: list[tuple[str, tuple, dict]]) -> list[str]:
     return [name for name, _, _ in calls]
 
 
-def _granted() -> set[tuple[str, str, str]]:
-    """What the Role and the ClusterRole of the service grant its service account."""
+# the calls on resources of the cluster or on the pods of every namespace, which a
+# ClusterRole has to grant
+CLUSTER_CALLS = {"list_node", "read_node", "patch_node", "list_pod_for_all_namespaces"}
+
+
+def _granted() -> dict[str, set[tuple[str, str, str]]]:
+    """What the Role (`namespace`) and the ClusterRole (`cluster`) of the service
+    grant its service account."""
     docs = yaml.safe_load_all(
         (Path(__file__).parents[2] / "deploy/cluster/simrun.yaml").read_text()
     )
     objects = {(d["kind"], d["metadata"]["name"]): d for d in docs if d}
     account = {"kind": "ServiceAccount", "name": "simrun", "namespace": "simrun"}
-    granted: set[tuple[str, str, str]] = set()
+    granted: dict[str, set[tuple[str, str, str]]] = {
+        "namespace": set(),
+        "cluster": set(),
+    }
     for (kind, _), binding in objects.items():
         if kind not in ("RoleBinding", "ClusterRoleBinding"):
             continue
         if account not in binding["subjects"]:
             continue
         ref = binding["roleRef"]
+        scope = "cluster" if kind == "ClusterRoleBinding" else "namespace"
         for rule in objects[(ref["kind"], ref["name"])]["rules"]:
             for group in rule["apiGroups"]:
                 for resource in rule["resources"]:
                     for verb in rule["verbs"]:
-                        granted.add((group, resource, verb))
+                        granted[scope].add((group, resource, verb))
     return granted
 
 
@@ -409,8 +480,11 @@ def test_the_service_account_may_do_what_the_backend_does(tmp_path: Path) -> Non
     created.build_image(tmp_path, "k3d-simrun-registry:5000/x:1")
     used = set(_names(calls))
     assert used <= set(ACCESS), used - set(ACCESS)
-    missing = {ACCESS[name] for name in used} - _granted()
-    assert not missing
+    granted = _granted()
+    cluster = {ACCESS[name] for name in used & CLUSTER_CALLS}
+    assert not cluster - granted["cluster"]
+    namespaced = {ACCESS[name] for name in used - CLUSTER_CALLS}
+    assert not namespaced - granted["namespace"] - granted["cluster"]
 
 
 def test_cancel_and_stop_delete_the_pending_pods() -> None:
