@@ -12,8 +12,10 @@ codes and whether the kernel killed them for memory (`OOMKilled`).
 The nodes are the ones labelled `simrun/worker=true` (the nodes of the ResourceFlavor
 of Kueue) without a taint which keeps pods off, a reservation of simrun aside; their
 cores and memory are the allocatable ones minus the wait container of the Argo
-executor, rounded down to whole cores and GiB, so a pod the planner sizes for a node
-fits it with the executor beside it.
+executor and minus the requests of the pods on them which are no pods of runs (the
+DaemonSets of the cluster, e.g. of the NFS driver and of the monitoring), rounded
+down to whole cores and GiB, so a pod the planner sizes for a node fits it beside
+them.
 
 A reservation is the taint `simrun/reserved=<run id>:NoExecute`, which evicts the
 pods of other runs from the node, and the label `simrun/reserved=<run id>`, which the
@@ -216,16 +218,65 @@ def workflow_status(workflow: dict[str, Any]) -> BackendStatus:
     )
 
 
-def node_from(node: dict[str, Any]) -> Node | None:
+def _requests(container: dict[str, Any]) -> tuple[float, float]:
+    """The cores and GiB a container requests."""
+    requests = (container.get("resources") or {}).get("requests") or {}
+    cpu = float(parse_quantity(requests.get("cpu", "0")))
+    memory = float(parse_quantity(requests.get("memory", "0"))) / GIB
+    return cpu, memory
+
+
+def pod_requests(pod: dict[str, Any]) -> tuple[float, float]:
+    """The cores and GiB a pod requests, as the scheduler counts them.
+
+    The containers together, or an init container alone when it requests more (the
+    init containers run before the containers, one at a time; a sidecar, an init
+    container which keeps running, counts with the containers and the init
+    containers after it), plus the overhead of the pod.
+
+    Args:
+        pod: The pod as the API serialises it.
+
+    Returns:
+        The cores and the GiB.
+    """
+    spec = pod.get("spec") or {}
+    cpu, memory = 0.0, 0.0
+    for container in spec.get("containers") or []:
+        c, m = _requests(container)
+        cpu, memory = cpu + c, memory + m
+    sidecar_cpu, sidecar_memory = 0.0, 0.0
+    init_cpu, init_memory = 0.0, 0.0
+    for container in spec.get("initContainers") or []:
+        c, m = _requests(container)
+        if container.get("restartPolicy") == "Always":
+            sidecar_cpu, sidecar_memory = sidecar_cpu + c, sidecar_memory + m
+        init_cpu = max(init_cpu, sidecar_cpu + c)
+        init_memory = max(init_memory, sidecar_memory + m)
+    overhead = spec.get("overhead") or {}
+    return (
+        max(cpu + sidecar_cpu, init_cpu)
+        + float(parse_quantity(overhead.get("cpu", "0"))),
+        max(memory + sidecar_memory, init_memory)
+        + float(parse_quantity(overhead.get("memory", "0"))) / GIB,
+    )
+
+
+def node_from(
+    node: dict[str, Any], used: tuple[float, float] = (0.0, 0.0)
+) -> Node | None:
     """The node of the planner of a Kubernetes node, None when pods cannot run on it.
 
     Args:
         node: The node as the API serialises it.
+        used: The cores and GiB the pods on the node request which are no pods of
+            runs (e.g. of DaemonSets).
 
     Returns:
-        The node with its allocatable cores and memory minus one executor container,
-        rounded down, and its reservation; None for a node which is unschedulable or
-        has a taint other than a reservation which keeps pods off.
+        The node with its allocatable cores and memory minus one executor container
+        and minus `used`, rounded down, and its reservation; None for a node which
+        is unschedulable or has a taint other than a reservation which keeps pods
+        off.
     """
     metadata = node.get("metadata") or {}
     spec = node.get("spec") or {}
@@ -241,10 +292,14 @@ def node_from(node: dict[str, Any]) -> Node | None:
     cpu = float(parse_quantity(allocatable.get("cpu", "0")))
     memory = float(parse_quantity(allocatable.get("memory", "0"))) / GIB
     gpus = int(parse_quantity(allocatable.get(GPU_RESOURCE, "0")))
+    used_cpu, used_memory = used
     return Node(
         name=metadata["name"],
-        cores=max(0, math.floor(cpu - EXECUTOR_CPU)),
-        memory_gb=float(max(0, math.floor(memory - EXECUTOR_MEMORY_GB))),
+        # the tolerance keeps an exact difference from rounding down below it
+        cores=max(0, math.floor(cpu - EXECUTOR_CPU - used_cpu + 1e-9)),
+        memory_gb=float(
+            max(0, math.floor(memory - EXECUTOR_MEMORY_GB - used_memory + 1e-9))
+        ),
         gpus=gpus,
         reserved_by=reserved,
     )
@@ -426,11 +481,39 @@ class ArgoBackend:
 
     # nodes
 
+    def _run_pod(self, pod: dict[str, Any]) -> bool:
+        """Whether a pod is one of a run: a pod of a workflow in the namespace."""
+        metadata = pod.get("metadata") or {}
+        return metadata.get("namespace") == self.config.namespace and (
+            WORKFLOW_LABEL in (metadata.get("labels") or {})
+        )
+
     def nodes(self) -> list[Node]:
-        """The worker nodes on which pods can run, with their reservations."""
-        listed = self.core.list_node(label_selector=f"{WORKER_LABEL}=true")
+        """The worker nodes on which pods can run, with their reservations.
+
+        Their capacity is the allocatable one less the requests of the pods bound to
+        them which have not terminated and are no pods of runs, e.g. of DaemonSets;
+        Kueue counts the pods of the runs itself.
+        """
+        listed = [
+            self.api.sanitize_for_serialization(n)
+            for n in self.core.list_node(label_selector=f"{WORKER_LABEL}=true").items
+        ]
+        names = {n["metadata"]["name"] for n in listed}
+        used: dict[str, tuple[float, float]] = {}
+        pods = self.core.list_pod_for_all_namespaces(
+            field_selector="status.phase!=Succeeded,status.phase!=Failed"
+        )
+        for item in pods.items:
+            pod = self.api.sanitize_for_serialization(item)
+            node = (pod.get("spec") or {}).get("nodeName")
+            if node is None or node not in names or self._run_pod(pod):
+                continue
+            cpu, memory = pod_requests(pod)
+            before = used.get(node, (0.0, 0.0))
+            used[node] = (before[0] + cpu, before[1] + memory)
         nodes = (
-            node_from(self.api.sanitize_for_serialization(n)) for n in listed.items
+            node_from(n, used.get(n["metadata"]["name"], (0.0, 0.0))) for n in listed
         )
         return [n for n in nodes if n is not None]
 
