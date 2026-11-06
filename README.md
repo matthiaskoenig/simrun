@@ -126,7 +126,10 @@ The contract:
   (`simrun-merge`) runs once every unit is done. Other types run their `command`, an
   argv template with `{settings}` (the path of `settings.json`) and `{out}`, through
   `simrun-exec`; the command validates the settings itself with the settings model.
-  An unsplit type is sized as one process unless it sets `uses_cores`.
+  An unsplit type is sized as one process unless it sets `uses_cores`. A type
+  with an `image` of its own runs its pods in that image, which must have simrun
+  installed (`simrun-worker`, `simrun-merge` and `simrun-exec`, which every plugin
+  command runs through); the run image of an environment has it.
 - A unit may be computed more than once (a worker evicted before it completed the
   unit, a restarted pod whose earlier incarnation still runs), so `compute_unit`
   writes outputs which depend on the settings and the index only (deterministic), each
@@ -194,6 +197,8 @@ mkdir -p build/service/plugins
 uv build --wheel --out-dir build/service
 uv export --frozen --no-dev --no-emit-project --no-header --no-annotate \
     > build/service/requirements.txt
+uv export --frozen --no-dev --no-emit-project --no-header --no-annotate --no-hashes \
+    > build/service/constraints.txt
 cp ~/git/sbmlsim/dist/sbmlsim-*.whl build/service/plugins/   # the plugins
 cp deploy/service/Dockerfile build/service/
 docker build -t registry.cluster.internal:5000/simrun-service:0.1.0 \
@@ -201,7 +206,12 @@ docker build -t registry.cluster.internal:5000/simrun-service:0.1.0 \
 docker push registry.cluster.internal:5000/simrun-service:0.1.0
 ```
 
-The base (`--build-arg BASE`) is the base image of the environments in the registry.
+The plugins are installed with their dependencies at the versions of the lock of
+simrun (`constraints.txt`): a plugin which needs another version of a dependency of
+simrun fails the build instead of moving it. The base (`--build-arg BASE`) is the
+base image of the environments in the registry. At runtime the service keeps the
+cache of uv in `/var/cache/uv`, a volume of the deployment, so a submission does not
+download the metadata and the build backends again.
 The integration tests build the image once (`tests/cluster/test_service_image.py`)
 with a plugin and run the API from it.
 

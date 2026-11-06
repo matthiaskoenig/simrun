@@ -110,6 +110,21 @@ spec:
     requests:
       storage: 10Gi
 ---
+# the cache of uv of the service: the metadata and the build backends of the
+# environments it resolves
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: simrun-uv-cache
+  namespace: simrun
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 20Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -173,6 +188,8 @@ spec:
               mountPath: /store
             - name: db
               mountPath: /var/lib/simrun
+            - name: uv-cache
+              mountPath: /var/cache/uv
       volumes:
         - name: config
           configMap:
@@ -186,6 +203,9 @@ spec:
         - name: db
           persistentVolumeClaim:
             claimName: simrun-db
+        - name: uv-cache
+          persistentVolumeClaim:
+            claimName: simrun-uv-cache
 ---
 apiVersion: v1
 kind: Service
