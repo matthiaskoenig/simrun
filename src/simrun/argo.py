@@ -88,7 +88,12 @@ GROUP_LABEL = "simrun/group"
 GPU_RESOURCE = "nvidia.com/gpu"
 LABEL_MAX = 63
 LABEL_HASH = 8
-RETRY_LIMIT = 20
+# The retries of a pod: an eviction by Kueue (a preemption, a take-back) counts as
+# one, and a pod of a long run of low priority on a busy cluster is evicted many
+# times. A second kill for memory ends the run in the controller (Ruling 35), exits 3
+# and 4 are not retried, so the limit bounds only failures of other kinds (a crash,
+# a lost node) at a hundred attempts.
+RETRY_LIMIT = 100
 RETRY_EXPRESSION = (
     f"lastRetry.exitCode != '{EXIT_ANALYSIS}' "
     f"&& lastRetry.exitCode != '{EXIT_CONFIGURATION}'"
