@@ -27,6 +27,14 @@ spec:
       labels:
         app: buildkitd
     spec:
+      affinity:
+        # off the nodes of the runs, whose resources Kueue and the planner count
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: simrun/worker
+                    operator: DoesNotExist
       containers:
         - name: buildkitd
           image: moby/buildkit:v0.34.2-rootless

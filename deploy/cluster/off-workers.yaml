@@ -1,0 +1,16 @@
+# the controllers of Argo and Kueue run off the nodes of the runs, whose resources
+# Kueue and the planner count as free
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: any
+spec:
+  template:
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: simrun/worker
+                    operator: DoesNotExist

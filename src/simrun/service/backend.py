@@ -25,7 +25,8 @@ class BackendStatus(BaseModel):
             `<task>-extra(<i>:<item>)` and `<task>-merge` of a split task, `<task>` of
             an unsplit one; a node not yet created is missing. A node whose pod was
             evicted and whose retry waits is `Preempted` (`PREEMPTED_PHASE`).
-        oom: Pods killed for memory per worker id (`<task>-w<i>`), over all attempts.
+        oom: Pods killed for memory, over all attempts: per worker id (`<task>-w<i>`),
+            per task id of an unsplit task and per `<task>-merge` of a merge.
     """
 
     phase: str

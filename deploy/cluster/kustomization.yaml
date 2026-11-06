@@ -15,6 +15,11 @@ resources:
   - zot.yaml
   - buildkit.yaml
   - simrun.yaml
+patches:
+  - target:
+      kind: Deployment
+      name: workflow-controller|argo-server|kueue-controller-manager
+    path: off-workers.yaml
 replacements:
   - source:
       kind: ConfigMap

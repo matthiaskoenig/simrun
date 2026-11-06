@@ -38,12 +38,6 @@ AGENTS = [f"k3d-{CLUSTER}-agent-{i}" for i in range(3)]
 # images of k3s, Kueue, Argo, BuildKit and the runs
 MIN_FREE_GB = 20
 SETUP_TIMEOUT_S = 600.0
-TOKENS = {
-    "t-mk": {"name": "mk", "kind": "person"},
-    "t-mk-bot": {"name": "mk-bot", "kind": "agent", "owner": "mk"},
-    "t-alice": {"name": "alice", "kind": "person"},
-    "t-alice-bot": {"name": "alice-bot", "kind": "agent", "owner": "alice"},
-}
 TERMINAL = ("succeeded", "failed", "cancelled")
 
 
@@ -126,9 +120,6 @@ def create_cluster() -> None:
             f"{STORE}:/var/simrun/store@all",
             "--k3s-arg",
             "--disable=traefik@server:0",
-            "--k3s-arg",
-            "--node-taint=node-role.kubernetes.io/control-plane=true:NoSchedule"
-            "@server:0",
             "--k3s-arg",
             "--node-label=simrun/worker=true@agent:*",
             "--kubeconfig-update-default=false",
@@ -255,6 +246,14 @@ class Cluster:
             ):
                 running.append(pod)
         return running
+
+    def preempted(self, run_id: str) -> bool:
+        """Whether Kueue preempted a workload of a pod of a run."""
+        events = self.core.list_namespaced_event(
+            NAMESPACE, field_selector="reason=PreemptedWorkload"
+        )
+        victim = f"workload {NAMESPACE}/pod-simrun-{run_id}-"
+        return any(victim in (e.message or "") for e in events.items)
 
     def node(self, name: str) -> dict[str, Any]:
         return self.api.sanitize_for_serialization(self.core.read_node(name))

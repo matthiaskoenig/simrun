@@ -1,7 +1,7 @@
 """The cluster of the integration tests: k3d with Kueue, Argo Workflows and BuildKit.
 
 Run with `SIMRUN_K3D=1 uv run pytest -m cluster tests/cluster`. The session creates
-the k3d cluster `simrun-test` (one server tainted for the runs, three agents of
+the k3d cluster `simrun-test` (one server with the infrastructure, three agents of
 6 GiB labelled `simrun/worker=true`) with the registry `k3d-simrun-registry:5000`
 (`localhost:5000` from the host), applies `deploy/k3d`, builds the image of the runs
 (simrun with the demo plugin, `Dockerfile`) and pushes it. Every test starts the
@@ -26,7 +26,6 @@ from k3d_cluster import (
     REGISTRY,
     REGISTRY_HOST,
     STORE,
-    TOKENS,
     Cluster,
     Service,
     apply_manifests,
@@ -42,6 +41,7 @@ from kubernetes import config as kube_config
 from simrun.config import ClusterConfig
 from simrun.service.app import ServiceSettings, create_app
 from simrun.service.argo_backend import ArgoBackend
+from simrun.testing import TOKENS
 
 
 @pytest.fixture(scope="session")
@@ -51,8 +51,9 @@ def cluster() -> Iterator[Cluster]:
         pytest.skip("the cluster tests run with SIMRUN_K3D=1")
     download_tools()
     check_disk()
-    create_cluster()
     try:
+        # inside: a creation which fails half way leaves nothing behind
+        create_cluster()
         apply_manifests()
         image = build_image()
         api = kube_config.new_client_from_config(config_file=str(KUBECONFIG))
