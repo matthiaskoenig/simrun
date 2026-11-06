@@ -1,0 +1,921 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>sbmlsim workflows - mockup</title>
+<script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4.2.4/dist/index.global.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@vue-flow/core@1.48.2/dist/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@vue-flow/core@1.48.2/dist/theme-default.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@vue-flow/controls@1.1.3/dist/style.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@vue-flow/minimap@1.5.4/dist/style.css">
+<script src="https://cdn.jsdelivr.net/npm/vue@3.5.44/dist/vue.global.prod.js"></script>
+<script>var production = "production"; /* the IIFE of Vue Flow reads the build environment from this global */</script>
+<script src="https://cdn.jsdelivr.net/npm/@vue-flow/core@1.48.2/dist/vue-flow-core.iife.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@vue-flow/background@1.3.2/dist/vue-flow-background.iife.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@vue-flow/controls@1.1.3/dist/vue-flow-controls.iife.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@vue-flow/minimap@1.5.4/dist/vue-flow-minimap.iife.js"></script>
+<script src="workflow-icons.js"></script>
+<style type="text/tailwindcss">
+  @theme {
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  }
+</style>
+<style>
+  html, body, #app { height: 100%; margin: 0; }
+  body { background: #ffffff; color: #111827; -webkit-font-smoothing: antialiased; }
+  [v-cloak] { display: none; }
+  .ico { display: inline-block; flex-shrink: 0; line-height: 0; }
+  .ico svg { width: 100%; height: 100%; display: block; }
+  .vue-flow__handle { width: 10px; height: 10px; background: #fff; border: 2px solid #94a3b8; }
+  .vue-flow__handle:hover { border-color: #2563eb; }
+  .vue-flow__node-task { padding: 0; border: 0; background: transparent; }
+  .vue-flow__minimap { border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+  .vue-flow__controls { box-shadow: none; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden; }
+  .vue-flow__controls-button { border-bottom: 1px solid #f1f5f9; }
+  .stripes { background-image: repeating-linear-gradient(135deg, #fde68a 0 6px, #fef3c7 6px 12px); }
+  input[type=number]::-webkit-inner-spin-button { opacity: .4; }
+</style>
+</head>
+<body>
+<div id="app" v-cloak></div>
+
+<!-- status pill -->
+<script type="text/x-template" id="tpl-pill">
+  <span class="inline-flex shrink-0 items-center gap-1 rounded-full font-medium whitespace-nowrap" :class="[s.cls, small ? 'px-1.5 py-0.5 text-[10px]' : 'px-2 py-0.5 text-xs']">
+    <span class="ico" :class="[small ? 'size-2.5' : 'size-3', s.spin ? 'animate-spin' : '']" v-html="icon(s.icon)"></span>{{ s.label }}
+  </span>
+</script>
+
+<!-- a task on the canvas -->
+<script type="text/x-template" id="tpl-node">
+  <div class="relative w-64" :class="dim ? 'opacity-45' : ''">
+    <template v-if="stacked">
+      <div class="absolute inset-0 translate-x-2 translate-y-2 rounded-xl border border-gray-200 bg-gray-50"></div>
+      <div class="absolute inset-0 translate-x-1 translate-y-1 rounded-xl border border-gray-200 bg-white"></div>
+    </template>
+    <div class="relative rounded-xl border bg-white shadow-sm" :class="[border, isSelected ? 'ring-2 ring-blue-500 ring-offset-2' : '']">
+      <Handle v-if="!isInput" type="target" :position="Position.Left" />
+      <Handle type="source" :position="Position.Right" />
+      <div class="flex items-center gap-2.5 px-3 pt-3 pb-2">
+        <span class="grid size-8 shrink-0 place-items-center rounded-lg text-white" :style="{ background: kind.color }"><span class="ico size-4" v-html="icon(kind.icon)"></span></span>
+        <div class="min-w-0 flex-1">
+          <div class="text-[10px] font-semibold tracking-wide text-gray-400 uppercase">{{ kind.label }}</div>
+          <div class="truncate text-sm font-semibold text-gray-900">{{ title }}</div>
+        </div>
+        <status-pill v-if="state" :status="state.status" small></status-pill>
+      </div>
+      <div class="px-3 pb-3 text-xs text-gray-600">
+        <div class="truncate">{{ data.subtitle }}</div>
+
+        <!-- editor: what it will take -->
+        <div v-if="mode === 'editor'" class="mt-2 flex flex-wrap gap-1">
+          <span v-if="est.workers" class="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700"><span class="ico size-3" v-html="icon('cpu')"></span>{{ est.workers }}</span>
+          <span v-if="est.mem" class="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700"><span class="ico size-3" v-html="icon('memory-stick')"></span>{{ est.mem }}</span>
+          <span v-if="est.time" class="inline-flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-700"><span class="ico size-3" v-html="icon('clock')"></span>{{ est.time }}</span>
+          <span v-if="est.split" class="inline-flex items-center gap-1 rounded bg-indigo-50 px-1.5 py-0.5 text-[11px] text-indigo-700"><span class="ico size-3" v-html="icon('layers')"></span>{{ est.split }}</span>
+        </div>
+
+        <!-- execution: live state -->
+        <template v-else-if="state">
+          <div v-if="state.metric" class="mt-2 font-medium text-gray-800 tabular-nums">{{ state.metric }}</div>
+          <div v-if="hasBar" class="mt-1.5 h-1.5 overflow-hidden rounded-full bg-gray-100">
+            <div class="h-full rounded-full transition-all duration-300" :class="barColor(state.status)" :style="{ width: (state.frac * 100).toFixed(1) + '%' }"></div>
+          </div>
+          <div v-if="state.pieces && state.pieces.length > 1 && state.status !== 'waiting'" class="mt-2 space-y-1">
+            <div v-for="(p, i) in state.pieces" :key="i" class="flex items-center gap-2 text-[11px]">
+              <span class="w-11 shrink-0 font-mono text-gray-500">{{ p.server }}</span>
+              <div class="h-1 flex-1 overflow-hidden rounded-full bg-gray-100"><div class="h-full rounded-full" :class="barColor(p.status)" :style="{ width: (p.frac * 100).toFixed(1) + '%' }"></div></div>
+              <span class="ico size-3" :class="pieceIconClass(p.status)" v-html="icon(pieceIcon(p.status))"></span>
+            </div>
+          </div>
+        </template>
+        <div v-else class="mt-2 text-[11px] text-gray-400 italic">not part of this run</div>
+      </div>
+    </div>
+  </div>
+</script>
+
+<!-- the app -->
+<script type="text/x-template" id="tpl-app">
+<div class="flex h-full flex-col bg-white text-gray-900">
+
+  <!-- top bar -->
+  <header class="flex h-12 shrink-0 items-center gap-4 border-b border-gray-200 px-4">
+    <div class="flex items-center gap-2">
+      <span class="grid size-7 place-items-center rounded-md bg-gray-900 text-white"><span class="ico size-4" v-html="icon('activity')"></span></span>
+      <span class="text-sm font-semibold">sbmlsim</span>
+      <span class="ico size-3.5 text-gray-300" v-html="icon('chevron-right')"></span>
+      <span class="text-sm text-gray-500">Workflows</span>
+      <span class="ico size-3.5 text-gray-300" v-html="icon('chevron-right')"></span>
+      <span class="text-sm text-gray-500">caffeine_pbpk</span>
+      <span class="ico size-3.5 text-gray-300" v-html="icon('chevron-right')"></span>
+      <span class="text-sm font-medium">fit.yaml</span>
+    </div>
+    <nav class="mx-auto flex rounded-lg bg-gray-100 p-0.5 text-sm">
+      <button type="button" class="rounded-md px-3.5 py-1 font-medium" :class="store.mode === 'editor' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'" @click="setMode('editor')">Editor</button>
+      <button type="button" class="rounded-md px-3.5 py-1 font-medium" :class="store.mode === 'exec' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'" @click="setMode('exec')">Executions</button>
+    </nav>
+    <div class="flex items-center gap-3">
+      <div class="flex items-center gap-2 rounded-md border border-gray-200 px-2.5 py-1 text-xs text-gray-600" title="All servers of the cluster">
+        <span class="ico size-3.5" v-html="icon('server')"></span>
+        <span class="tabular-nums"><b class="font-semibold text-gray-900">{{ cluster.used }}</b>/{{ cluster.total }} cores</span>
+        <span class="text-gray-300">|</span>
+        <span class="tabular-nums">{{ cluster.queued }} queued</span>
+      </div>
+      <span class="grid size-7 place-items-center rounded-full bg-blue-600 text-xs font-semibold text-white">MK</span>
+    </div>
+  </header>
+
+  <div class="flex min-h-0 flex-1">
+
+    <!-- left: palette (editor) or executions (exec) -->
+    <aside class="flex w-64 shrink-0 flex-col border-r border-gray-200 bg-gray-50/60">
+      <template v-if="store.mode === 'editor'">
+        <div class="border-b border-gray-200 p-3">
+          <label class="flex items-center gap-2 rounded-md border border-gray-200 bg-white px-2 py-1.5 text-sm text-gray-400">
+            <span class="ico size-4" v-html="icon('search')"></span>
+            <input v-model="store.search" class="w-full bg-transparent text-gray-900 outline-none placeholder:text-gray-400" placeholder="Search tasks">
+          </label>
+        </div>
+        <div class="flex-1 overflow-y-auto p-3">
+          <div v-for="g in paletteGroups" :key="g.name" class="mb-4">
+            <div class="mb-1.5 px-1 text-[11px] font-semibold tracking-wide text-gray-400 uppercase">{{ g.name }}</div>
+            <div v-for="k in g.kinds" :key="k.id" draggable="true" @dragstart="onDragStart($event, k.id)" @click="addNodeAtFree(k.id)"
+                 class="mb-1 flex cursor-grab items-center gap-2.5 rounded-lg border border-transparent bg-white px-2 py-2 shadow-xs hover:border-gray-200 active:cursor-grabbing" :title="'Drag onto the canvas, or click to add'">
+              <span class="grid size-7 shrink-0 place-items-center rounded-md text-white" :style="{ background: k.color }"><span class="ico size-3.5" v-html="icon(k.icon)"></span></span>
+              <div class="min-w-0 flex-1">
+                <div class="text-sm font-medium text-gray-900">{{ k.label }}</div>
+                <div class="truncate text-[11px] text-gray-500">{{ k.desc }}</div>
+              </div>
+              <span class="ico size-3.5 text-gray-300" v-html="icon('grip-vertical')"></span>
+            </div>
+          </div>
+        </div>
+        <div class="border-t border-gray-200 p-3 text-[11px] leading-relaxed text-gray-500">
+          The workflow is a file of the model repository, <span class="font-mono text-gray-700">workflows/fit.yaml</span>, the same one an agent submits through the API or MCP.
+        </div>
+      </template>
+
+      <template v-else>
+        <div class="border-b border-gray-200 p-3">
+          <div class="mb-2 text-sm font-semibold">Executions</div>
+          <div class="flex flex-wrap gap-1">
+            <button v-for="f in filters" :key="f.id" type="button" @click="store.filter = f.id"
+                    class="rounded-full border px-2.5 py-0.5 text-xs" :class="store.filter === f.id ? 'border-gray-900 bg-gray-900 text-white' : 'border-gray-200 bg-white text-gray-600 hover:border-gray-300'">{{ f.label }}</button>
+          </div>
+        </div>
+        <div class="flex-1 overflow-y-auto p-2">
+          <button v-for="r in visibleRuns" :key="r.id" type="button" @click="selectRun(r.id)"
+                  class="mb-1 block w-full rounded-lg border px-2.5 py-2 text-left" :class="store.selectedRun === r.id ? 'border-blue-300 bg-blue-50/70' : 'border-transparent hover:bg-white'">
+            <div class="flex items-center gap-2">
+              <span class="grid size-6 shrink-0 place-items-center rounded-full" :class="r.agent ? 'bg-violet-100 text-violet-700' : 'bg-blue-600 text-white'">
+                <span v-if="r.agent" class="ico size-3.5" v-html="icon('bot')"></span><span v-else class="text-[9px] font-semibold">MK</span>
+              </span>
+              <div class="min-w-0 flex-1">
+                <div class="truncate text-sm font-medium text-gray-900">{{ r.model }}</div>
+                <div class="truncate text-[11px] text-gray-500">#{{ r.id }} · {{ r.who }} · {{ r.started }}</div>
+              </div>
+              <status-pill :status="r.info.status" small></status-pill>
+            </div>
+            <div v-if="r.info.status === 'running'" class="mt-1.5 h-1 overflow-hidden rounded-full bg-gray-200"><div class="h-full rounded-full bg-blue-500 transition-all duration-300" :style="{ width: (r.info.frac * 100).toFixed(1) + '%' }"></div></div>
+            <div v-if="r.info.note" class="mt-1 text-[11px] leading-snug" :class="r.info.status === 'failed' ? 'text-red-700' : 'text-gray-500'">{{ r.info.note }}</div>
+          </button>
+        </div>
+      </template>
+    </aside>
+
+    <!-- center: canvas -->
+    <main class="relative flex min-w-0 flex-1 flex-col">
+      <div class="relative min-h-0 flex-1" @drop="onDrop" @dragover.prevent>
+        <VueFlow id="wf" :nodes="initialNodes" :edges="edges" :node-types="nodeTypes"
+                 :min-zoom="0.3" :max-zoom="1.6" :nodes-connectable="store.mode === 'editor'"
+                 @node-click="onNodeClick" @pane-click="store.selectedNode = null" class="bg-gray-50">
+          <Background :gap="22" :size="1.3" pattern-color="#d1d5db"></Background>
+          <Controls position="bottom-left" :show-interactive="false"></Controls>
+          <MiniMap position="bottom-right" pannable zoomable :node-color="minimapColor" :width="160" :height="100"></MiniMap>
+        </VueFlow>
+
+        <!-- canvas header -->
+        <div class="pointer-events-none absolute inset-x-3 top-3 flex items-start justify-between gap-3">
+          <div v-if="store.mode === 'editor'" class="pointer-events-auto flex items-center gap-2 rounded-lg border border-gray-200 bg-white/95 px-3 py-2 text-xs shadow-sm">
+            <span class="ico size-3.5 text-gray-500" v-html="icon('git-branch')"></span>
+            <span class="font-mono text-gray-700">fit-cyp1a2</span>
+            <span class="rounded bg-amber-50 px-1.5 py-0.5 text-amber-800">3 uncommitted files</span>
+            <span class="text-gray-300">|</span>
+            <span class="inline-flex items-center gap-1 text-emerald-700"><span class="ico size-3.5" v-html="icon('check')"></span>valid, saved</span>
+          </div>
+          <div v-else class="pointer-events-auto flex items-center gap-3 rounded-lg border border-gray-200 bg-white/95 px-3 py-2 text-xs shadow-sm">
+            <span class="font-semibold text-gray-900">Run #{{ run.id }}</span>
+            <span class="inline-flex items-center gap-1 text-gray-600"><span class="ico size-3.5" v-html="icon(run.agent ? 'bot' : 'user')"></span>{{ run.who }}<span v-if="run.via" class="text-gray-400"> via {{ run.via }}</span></span>
+            <span class="text-gray-500">started {{ run.started }}</span>
+            <status-pill :status="run.info.status" small></status-pill>
+            <span v-if="run.info.status === 'running'" class="tabular-nums text-gray-600">{{ Math.round(run.info.frac * 100) }} %</span>
+          </div>
+
+          <div class="pointer-events-auto flex items-center gap-2">
+            <template v-if="store.mode === 'editor'">
+              <button type="button" class="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-sm hover:bg-gray-50"><span class="ico size-4" v-html="icon('git-compare-arrows')"></span>Diff</button>
+              <button type="button" @click="runWorkflow" class="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-sm font-medium text-white shadow-sm hover:bg-blue-700"><span class="ico size-4" v-html="icon('play')"></span>Run workflow</button>
+            </template>
+            <template v-else>
+              <button v-if="run.live" type="button" @click="store.playing = !store.playing" class="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50" title="Pauses the animation of the mockup">
+                <span class="ico size-3.5" v-html="icon(store.playing ? 'pause' : 'play')"></span>{{ store.playing ? 'Pause demo' : 'Play demo' }}</button>
+              <button v-if="run.live" type="button" @click="replay" class="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50"><span class="ico size-3.5" v-html="icon('rotate-ccw')"></span>Replay</button>
+              <button type="button" @click="setMode('editor')" class="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 shadow-sm hover:bg-gray-50"><span class="ico size-3.5" v-html="icon('settings-2')"></span>Rerun with changes</button>
+              <button v-if="run.info.status === 'running' || run.info.status === 'queued'" type="button" class="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium text-red-700 shadow-sm hover:bg-red-50"><span class="ico size-3.5" v-html="icon('square')"></span>Stop</button>
+            </template>
+          </div>
+        </div>
+      </div>
+
+      <!-- servers -->
+      <section v-if="store.mode === 'exec'" class="shrink-0 border-t border-gray-200 bg-white px-3 pt-2 pb-3">
+        <div class="mb-2 flex items-center justify-between">
+          <div class="flex items-center gap-2 text-xs font-semibold text-gray-700"><span class="ico size-3.5" v-html="icon('server')"></span>Servers</div>
+          <div class="flex items-center gap-3 text-[11px] text-gray-500">
+            <span class="inline-flex items-center gap-1"><span class="size-2.5 rounded-sm bg-blue-500"></span>run #{{ run.id }}</span>
+            <span class="inline-flex items-center gap-1"><span class="size-2.5 rounded-sm bg-slate-300"></span>other runs</span>
+            <span class="inline-flex items-center gap-1"><span class="stripes size-2.5 rounded-sm"></span>reserved</span>
+            <span class="inline-flex items-center gap-1"><span class="size-2.5 rounded-sm bg-amber-400"></span>checkpointing</span>
+          </div>
+        </div>
+        <div class="grid grid-cols-6 gap-2">
+          <div v-for="s in servers" :key="s.id" class="rounded-md border border-gray-200 px-2 py-1.5" :class="s.mine ? 'border-blue-200 bg-blue-50/40' : ''">
+            <div class="flex items-baseline justify-between">
+              <span class="font-mono text-[11px] font-semibold text-gray-800">{{ s.id }}</span>
+              <span class="text-[10px] text-gray-400">{{ s.cores }} c · {{ s.mem >= 1000 ? '1 TB' : s.mem + ' GB' }}</span>
+            </div>
+            <div class="mt-1 flex h-2 overflow-hidden rounded-sm bg-gray-100">
+              <div v-for="(g, i) in s.segs" :key="i" :title="g.title" class="h-full border-r border-white last:border-r-0" :class="g.cls" :style="{ width: (g.cores / s.cores * 100) + '%' }"></div>
+            </div>
+            <div class="mt-1 flex justify-between text-[10px] text-gray-500 tabular-nums">
+              <span>{{ s.used }}/{{ s.cores }} cores</span><span>{{ s.memUsed }} GB</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- right: inspector -->
+    <aside class="flex w-[380px] shrink-0 flex-col border-l border-gray-200 bg-white">
+      <template v-if="sel">
+        <div class="flex items-center gap-3 border-b border-gray-200 px-4 py-3">
+          <span class="grid size-9 shrink-0 place-items-center rounded-lg text-white" :style="{ background: selKind.color }"><span class="ico size-4.5" v-html="icon(selKind.icon)"></span></span>
+          <div class="min-w-0 flex-1">
+            <div class="text-[11px] font-semibold tracking-wide text-gray-400 uppercase">{{ selKind.label }}</div>
+            <div class="truncate font-semibold">{{ selTitle }}</div>
+          </div>
+          <status-pill v-if="store.mode === 'exec' && selState" :status="selState.status"></status-pill>
+        </div>
+
+        <!-- ===== editor: settings ===== -->
+        <div v-if="store.mode === 'editor'" class="flex-1 space-y-5 overflow-y-auto px-4 py-4 text-sm">
+          <section v-if="selKind.id === 'model'" class="space-y-3">
+            <h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">Model and code</h3>
+            <label class="block"><span class="mb-1 block text-xs text-gray-600">Model package</span>
+              <select class="w-full rounded-md border border-gray-300 px-2 py-1.5"><option>pkdb_models/caffeine_pbpk</option><option>pkdb_models/midazolam_pbpk</option><option>pkdb_models/codeine_pbpk</option></select></label>
+            <div class="rounded-lg border border-gray-200">
+              <div v-for="src in SOURCES" :key="src.repo" class="border-b border-gray-100 px-3 py-2 last:border-b-0">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="font-medium">{{ src.repo }}</span>
+                  <span class="inline-flex items-center gap-1 font-mono text-xs text-gray-600"><span class="ico size-3" v-html="icon('git-branch')"></span>{{ src.branch }}</span>
+                </div>
+                <div v-if="src.files.length" class="mt-1 space-y-0.5">
+                  <div v-for="f in src.files" :key="f" class="flex items-center gap-1.5 font-mono text-[11px] text-amber-800"><span class="ico size-3" v-html="icon('file-diff')"></span><span class="truncate">{{ f }}</span></div>
+                </div>
+                <div v-else class="mt-0.5 text-[11px] text-gray-400">clean</div>
+              </div>
+            </div>
+            <label class="flex items-start gap-2 text-sm"><input type="checkbox" checked class="mt-0.5"><span>Use the working trees, uncommitted changes included<span class="block text-xs text-gray-500">A snapshot of the trees is copied to the network drive and mounted read-only. The image is rebuilt only when <span class="font-mono">uv.lock</span> changes.</span></span></label>
+          </section>
+
+          <section v-if="selKind.id === 'data'" class="space-y-3">
+            <h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">Fit data</h3>
+            <label class="block"><span class="mb-1 block text-xs text-gray-600">Fit definition</span>
+              <select class="w-full rounded-md border border-gray-300 px-2 py-1.5"><option>fit_caffeine_all</option><option>fit_caffeine_iv</option><option>fit_caffeine_po</option></select></label>
+            <div class="grid grid-cols-3 gap-2 text-center">
+              <div class="rounded-lg bg-gray-50 py-2"><div class="text-base font-semibold">287</div><div class="text-[11px] text-gray-500">training</div></div>
+              <div class="rounded-lg bg-gray-50 py-2"><div class="text-base font-semibold">24</div><div class="text-[11px] text-gray-500">validation</div></div>
+              <div class="rounded-lg bg-gray-50 py-2"><div class="text-base font-semibold">7</div><div class="text-[11px] text-gray-500">outliers</div></div>
+            </div>
+          </section>
+
+          <section v-if="selKind.id === 'fit'" class="space-y-3">
+            <h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">Fit</h3>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Optimizer</span><select class="w-full rounded-md border border-gray-300 px-2 py-1.5"><option>least squares</option><option>differential evolution</option></select></label>
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Objective</span><select class="w-full rounded-md border border-gray-300 px-2 py-1.5"><option>least squares</option><option>likelihood</option><option>posterior</option></select></label>
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Repeats</span><input type="number" value="400" class="w-full rounded-md border border-gray-300 px-2 py-1.5"></label>
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Seed</span><input type="number" value="1234" class="w-full rounded-md border border-gray-300 px-2 py-1.5"></label>
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Parameter scale</span><select class="w-full rounded-md border border-gray-300 px-2 py-1.5"><option>log10</option><option>linear</option></select></label>
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Parameters</span><select class="w-full rounded-md border border-gray-300 px-2 py-1.5"><option>14 of the definition</option></select></label>
+            </div>
+          </section>
+
+          <section v-if="selKind.id === 'identifiability'" class="space-y-3">
+            <h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">Identifiability</h3>
+            <label class="flex items-center gap-2"><input type="checkbox" checked>Profile likelihood of every parameter</label>
+            <label class="flex items-center gap-2"><input type="checkbox" checked>Fisher information</label>
+            <label class="block"><span class="mb-1 block text-xs text-gray-600">Confidence level</span><input type="number" value="0.95" step="0.01" class="w-32 rounded-md border border-gray-300 px-2 py-1.5"></label>
+          </section>
+
+          <section v-if="selKind.id === 'sobol' || selKind.id === 'sampling' || selKind.id === 'uncertainty'" class="space-y-3">
+            <h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">{{ selKind.label }}</h3>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Points</span><input type="number" value="4096" class="w-full rounded-md border border-gray-300 px-2 py-1.5"></label>
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Range</span><select class="w-full rounded-md border border-gray-300 px-2 py-1.5"><option>fitted value ± 50 %</option><option>Fisher covariance</option><option>bounds of the fit</option></select></label>
+            </div>
+            <label class="block"><span class="mb-1 block text-xs text-gray-600">Outputs</span><input value="pk.auc, pk.cmax of every study" class="w-full rounded-md border border-gray-300 px-2 py-1.5"></label>
+          </section>
+
+          <section v-if="selKind.id === 'report' || selKind.id === 'release' || selKind.id === 'simulate'" class="space-y-3">
+            <h3 class="text-xs font-semibold tracking-wide text-gray-500 uppercase">{{ selKind.label }}</h3>
+            <label class="flex items-center gap-2"><input type="checkbox" checked>Fit and figures of every mapping</label>
+            <label class="flex items-center gap-2"><input type="checkbox" checked>Identifiability</label>
+            <label class="flex items-center gap-2"><input type="checkbox" checked>Sensitivity</label>
+          </section>
+
+          <!-- resources, every task -->
+          <section v-if="selKind.id !== 'model' && selKind.id !== 'data'" class="space-y-3">
+            <h3 class="flex items-center justify-between text-xs font-semibold tracking-wide text-gray-500 uppercase">Resources
+              <span class="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium tracking-normal text-emerald-700 normal-case">{{ selLearned.badge }}</span></h3>
+            <div class="rounded-lg border border-gray-200 bg-gray-50/70 p-3 text-xs leading-relaxed text-gray-600">
+              <div class="flex justify-between"><span>Memory per worker</span><b class="font-semibold text-gray-900">{{ selLearned.perWorker }}</b></div>
+              <div class="flex justify-between"><span>Duration</span><b class="font-semibold text-gray-900">{{ selLearned.time }}</b></div>
+              <div class="flex justify-between"><span>Placement</span><b class="font-semibold text-gray-900">{{ selLearned.placement }}</b></div>
+              <div class="mt-1.5 text-[11px] text-gray-500">{{ selLearned.note }}</div>
+            </div>
+            <div class="grid grid-cols-2 gap-3">
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Workers</span><select class="w-full rounded-md border border-gray-300 px-2 py-1.5"><option>auto</option><option>fixed number</option></select></label>
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Memory per worker</span><input placeholder="learned" class="w-full rounded-md border border-gray-300 px-2 py-1.5"></label>
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Split</span><select class="w-full rounded-md border border-gray-300 px-2 py-1.5"><option>if no server fits</option><option>always</option><option>never</option></select></label>
+              <label class="block"><span class="mb-1 block text-xs text-gray-600">Priority</span><select class="w-full rounded-md border border-gray-300 px-2 py-1.5"><option>normal</option><option>owner (immediate)</option><option>background</option></select></label>
+            </div>
+            <label class="flex items-start gap-2"><input type="checkbox" class="mt-0.5"><span class="flex items-center gap-1.5"><span class="ico size-3.5 text-gray-500" v-html="icon('lock')"></span>Reserve a whole server<span class="text-xs text-gray-500">(benchmarks)</span></span></label>
+          </section>
+        </div>
+
+        <!-- ===== execution: state ===== -->
+        <template v-else>
+          <div class="flex gap-4 border-b border-gray-200 px-4 text-sm">
+            <button v-for="t in tabs" :key="t" type="button" @click="store.tab = t" class="-mb-px border-b-2 py-2 capitalize" :class="store.tab === t ? 'border-blue-600 font-medium text-gray-900' : 'border-transparent text-gray-500 hover:text-gray-800'">{{ t }}</button>
+          </div>
+
+          <div v-if="!selState" class="p-4 text-sm text-gray-500">This task is not part of run #{{ run.id }}.</div>
+
+          <div v-else-if="store.tab === 'overview'" class="flex-1 space-y-4 overflow-y-auto px-4 py-4 text-sm">
+            <!-- headline numbers -->
+            <div v-if="selStats.length" class="grid grid-cols-2 gap-2">
+              <div v-for="s in selStats" :key="s.label" class="rounded-lg bg-gray-50 px-3 py-2">
+                <div class="text-[11px] text-gray-500">{{ s.label }}</div>
+                <div class="text-lg font-semibold tabular-nums">{{ s.value }}</div>
+              </div>
+            </div>
+
+            <!-- fit: cost -->
+            <div v-if="selKind.id === 'fit' && selState.status !== 'waiting'">
+              <div class="mb-1 flex items-baseline justify-between text-xs"><span class="font-semibold text-gray-700">Best cost</span><span class="text-gray-400">log scale, over time</span></div>
+              <svg viewBox="0 0 340 90" class="h-[90px] w-full rounded-lg border border-gray-200 bg-white">
+                <line v-for="y in [22, 45, 68]" :key="y" x1="0" x2="340" :y1="y" :y2="y" stroke="#f1f5f9"></line>
+                <polyline :points="costLine" fill="none" stroke="#4f46e5" stroke-width="2" stroke-linejoin="round"></polyline>
+              </svg>
+            </div>
+
+            <!-- identifiability -->
+            <div v-if="selKind.id === 'identifiability' && selState.status !== 'waiting'">
+              <div class="mb-1.5 text-xs font-semibold text-gray-700">Profiles</div>
+              <div class="flex flex-wrap gap-1">
+                <span v-for="p in profiles" :key="p.name" class="rounded px-1.5 py-0.5 font-mono text-[11px]" :class="p.cls" :title="p.title">{{ p.name }}</span>
+              </div>
+            </div>
+
+            <!-- sobol -->
+            <div v-if="selKind.id === 'sobol' && selState.status !== 'waiting'">
+              <div class="mb-1.5 flex items-baseline justify-between text-xs"><span class="font-semibold text-gray-700">Total indices of AUC</span><span class="text-gray-400">S1 dark, ST light</span></div>
+              <div v-if="selState.status === 'done'" class="space-y-1.5">
+                <div v-for="ix in SOBOL" :key="ix.p" class="flex items-center gap-2 text-xs">
+                  <span class="w-24 shrink-0 truncate font-mono text-gray-600">{{ ix.p }}</span>
+                  <div class="relative h-3 flex-1 rounded-sm bg-gray-100">
+                    <div class="absolute inset-y-0 left-0 rounded-sm bg-amber-200" :style="{ width: ix.st * 100 + '%' }"></div>
+                    <div class="absolute inset-y-0 left-0 rounded-sm bg-amber-600" :style="{ width: ix.s1 * 100 + '%' }"></div>
+                  </div>
+                  <span class="w-8 text-right tabular-nums text-gray-600">{{ ix.st.toFixed(2) }}</span>
+                </div>
+              </div>
+              <div v-else class="rounded-lg border border-dashed border-gray-300 px-3 py-3 text-xs text-gray-500">The indices are computed when all {{ selState.pieces.length }} pieces are done. The points of a piece do not depend on where it runs, so the merged result is exact.</div>
+            </div>
+
+            <!-- pieces -->
+            <div v-if="selState.pieces && selState.pieces.length && selState.status !== 'waiting'">
+              <div class="mb-1.5 flex items-baseline justify-between text-xs"><span class="font-semibold text-gray-700">{{ selState.pieces.length > 1 ? 'Pieces' : 'Placement' }}</span><span class="text-gray-400">peak / limit of memory</span></div>
+              <div class="overflow-hidden rounded-lg border border-gray-200">
+                <div v-for="(p, i) in selState.pieces" :key="i" class="border-b border-gray-100 px-3 py-2 text-xs last:border-b-0">
+                  <div class="flex items-center justify-between gap-2">
+                    <span class="truncate font-medium text-gray-800">{{ p.piece }}</span>
+                    <status-pill :status="p.status" small></status-pill>
+                  </div>
+                  <div class="mt-0.5 flex items-center gap-3 text-gray-500 tabular-nums">
+                    <span class="inline-flex items-center gap-1 font-mono"><span class="ico size-3" v-html="icon('server')"></span>{{ p.server }}</span>
+                    <span class="inline-flex items-center gap-1"><span class="ico size-3" v-html="icon('cpu')"></span>{{ p.workers }} workers</span>
+                    <span class="inline-flex items-center gap-1"><span class="ico size-3" v-html="icon('memory-stick')"></span>{{ peak(p) }} / {{ p.mem }} GB</span>
+                  </div>
+                  <div v-if="p.note" class="mt-1 text-[11px]" :class="p.status === 'failed' ? 'text-red-700' : 'text-amber-800'">{{ p.note }}</div>
+                </div>
+              </div>
+            </div>
+
+            <!-- environment of the run -->
+            <div v-if="selKind.id === 'model'" class="space-y-2">
+              <div class="text-xs font-semibold text-gray-700">Environment</div>
+              <div class="rounded-lg border border-gray-200 px-3 py-2 font-mono text-[11px] text-gray-700">zot.lab.local/sbmlsim-env@3f2a91c<div class="font-sans text-gray-500">python 3.14 · from uv.lock, cached</div></div>
+              <div class="text-xs font-semibold text-gray-700">Sources, snapshot of the working trees</div>
+              <div class="rounded-lg border border-gray-200">
+                <div v-for="src in SOURCES" :key="src.repo" class="flex items-center justify-between gap-2 border-b border-gray-100 px-3 py-1.5 text-xs last:border-b-0">
+                  <span class="font-medium">{{ src.repo }}</span>
+                  <span class="font-mono text-gray-600">{{ src.branch }}@{{ src.commit }}<span v-if="src.files.length" class="text-amber-700"> +{{ src.files.length }}</span></span>
+                </div>
+              </div>
+            </div>
+
+            <!-- resources -->
+            <div v-if="selResourceNote" class="rounded-lg bg-gray-50 px-3 py-2 text-[11px] leading-relaxed text-gray-600">
+              <div class="mb-0.5 flex items-center gap-1 font-semibold text-gray-700"><span class="ico size-3.5" v-html="icon('memory-stick')"></span>Resources</div>{{ selResourceNote }}
+            </div>
+          </div>
+
+          <div v-else-if="store.tab === 'outputs'" class="flex-1 overflow-y-auto px-4 py-4 text-sm">
+            <div class="mb-2 text-xs text-gray-500">On the network drive, read directly from the development server:</div>
+            <div class="mb-3 rounded-md bg-gray-50 px-2 py-1.5 font-mono text-[11px] text-gray-700">/mnt/cluster/runs/{{ run.id }}/{{ selKind.id }}/</div>
+            <div v-if="!selOutputs.length" class="text-xs text-gray-400 italic">Nothing written yet.</div>
+            <div v-for="o in selOutputs" :key="o.name" class="flex items-center gap-2 border-b border-gray-100 py-1.5 text-xs last:border-b-0">
+              <span class="ico size-3.5 text-gray-400" v-html="icon(o.icon)"></span>
+              <span class="flex-1 truncate font-mono text-gray-800">{{ o.name }}</span>
+              <span class="text-gray-400 tabular-nums">{{ o.size }}</span>
+            </div>
+          </div>
+
+          <div v-else class="min-h-0 flex-1 overflow-y-auto bg-gray-950 px-3 py-3 font-mono text-[11px] leading-relaxed text-gray-300">
+            <div v-for="(l, i) in selLog" :key="i" class="whitespace-pre-wrap"><span class="text-gray-500">{{ l.time }}</span> <span :class="l.cls">{{ l.text }}</span></div>
+            <div v-if="!selLog.length" class="text-gray-500">no output yet</div>
+          </div>
+        </template>
+      </template>
+
+      <div v-else class="p-4 text-sm text-gray-500">Select a task on the canvas.</div>
+    </aside>
+  </div>
+</div>
+</script>
+
+<script>
+const { createApp, reactive, computed, watch, nextTick, onMounted, markRaw } = Vue;
+const { VueFlow, Handle, Position, useVueFlow, MarkerType } = VueFlowCore;
+const { Background } = VueFlowBackground;
+const { Controls } = VueFlowControls;
+const { MiniMap } = VueFlowMiniMap;
+
+const icon = (name) => ICONS[name] || '';
+
+// ---------------------------------------------------------------- task kinds
+const KINDS = {
+  model:           { label: 'Model', icon: 'box', color: '#334155', group: 'Inputs', desc: 'Model package at a branch' },
+  data:            { label: 'Fit data', icon: 'database', color: '#0d9488', group: 'Inputs', desc: 'Fit definition and its data' },
+  simulate:        { label: 'Simulate', icon: 'play', color: '#0284c7', group: 'Analyses', desc: 'Simulation experiments' },
+  fit:             { label: 'Fit', icon: 'target', color: '#4f46e5', group: 'Analyses', desc: 'Repeats split over servers' },
+  identifiability: { label: 'Identifiability', icon: 'activity', color: '#7c3aed', group: 'Analyses', desc: 'Profiles and Fisher' },
+  sampling:        { label: 'Sampling', icon: 'dices', color: '#0891b2', group: 'Analyses', desc: 'Scan over a design' },
+  sobol:           { label: 'Sobol indices', icon: 'chart-pie', color: '#d97706', group: 'Analyses', desc: 'Points split over servers' },
+  uncertainty:     { label: 'Uncertainty', icon: 'waves', color: '#db2777', group: 'Analyses', desc: 'Draws split over servers' },
+  report:          { label: 'Report', icon: 'file-text', color: '#059669', group: 'Outputs', desc: 'HTML report of the run' },
+  release:         { label: 'Release', icon: 'package', color: '#475569', group: 'Outputs', desc: 'Release of the model' },
+};
+for (const [id, k] of Object.entries(KINDS)) k.id = id;
+
+const STATUS = {
+  waiting:   { label: 'waiting', cls: 'bg-gray-100 text-gray-500', icon: 'circle-dashed' },
+  queued:    { label: 'queued', cls: 'bg-slate-100 text-slate-700', icon: 'hourglass' },
+  running:   { label: 'running', cls: 'bg-blue-50 text-blue-700 ring-1 ring-blue-200', icon: 'loader-circle', spin: true },
+  preempted: { label: 'preempted', cls: 'bg-amber-50 text-amber-800 ring-1 ring-amber-200', icon: 'pause' },
+  done:      { label: 'done', cls: 'bg-emerald-50 text-emerald-700 ring-1 ring-emerald-200', icon: 'check' },
+  failed:    { label: 'failed', cls: 'bg-red-50 text-red-700 ring-1 ring-red-200', icon: 'x' },
+};
+const barColor = (s) => ({ running: 'bg-blue-500', done: 'bg-emerald-500', failed: 'bg-red-500', preempted: 'bg-amber-400' })[s] || 'bg-gray-300';
+
+const SOURCES = [
+  { repo: 'caffeine_pbpk', branch: 'fit-cyp1a2', commit: '9e1f2aa', files: ['models/factory.py', 'fitting/fit_definitions.py', 'experiments/blanchard1983.py'] },
+  { repo: 'sbmlsim', branch: 'develop', commit: '30f0538', files: ['src/sbmlsim/fit/runner.py'] },
+  { repo: 'pkpdsim', branch: 'main', commit: 'a41c0de', files: [] },
+];
+
+// ---------------------------------------------------------------- cluster
+const SERVERS = [{ id: 'srv-01', cores: 104, mem: 1024 }];
+for (let i = 2; i <= 12; i++) SERVERS.push({ id: 'srv-' + String(i).padStart(2, '0'), cores: 40, mem: 192 });
+
+// one tick of the mockup is 30 s of the run
+const clock = (t) => { const s = 14 * 3600 + 2 * 60 + Math.round(t * 30); return String(Math.floor(s / 3600)).padStart(2, '0') + ':' + String(Math.floor((s % 3600) / 60)).padStart(2, '0'); };
+const mins = (ticks) => Math.max(0, Math.round(ticks / 2)) + ' min';
+const fmt = (n) => n.toLocaleString('en-US');
+
+// the live run #1287: when each piece runs, in ticks
+const LIVE = {
+  fit: { start: 0, n: 400, pieces: [
+    { piece: 'repeats 1-200', server: 'srv-01', workers: 96, mem: 492, n: 200, start: 0, end: 40 },
+    { piece: 'repeats 201-300', server: 'srv-04', workers: 36, mem: 186, n: 100, start: 0, end: 44 },
+    { piece: 'repeats 301-400', server: 'srv-07', workers: 36, mem: 186, n: 100, start: 0, end: 46 },
+  ] },
+  identifiability: { start: 47, n: 14, pieces: [
+    { piece: '14 profiles', server: 'srv-01', workers: 96, mem: 492, n: 14, start: 47, end: 77 },
+  ] },
+  sobol: { start: 47, n: 4096, pieces: [
+    { piece: 'points 1-1024', server: 'srv-02', workers: 36, mem: 186, n: 1024, start: 47, end: 73 },
+    { piece: 'points 1025-2048', server: 'srv-05', workers: 36, mem: 186, n: 1024, start: 47, end: 75 },
+    { piece: 'points 2049-3072', server: 'srv-08', workers: 36, mem: 186, n: 1024, start: 47, end: 80, preempt: { at: 58, until: 62, resume: 64, frac: 0.4, to: 'srv-12' } },
+    { piece: 'points 3073-4096', server: 'srv-11', workers: 36, mem: 186, n: 1024, start: 47, end: 74 },
+  ] },
+  report: { start: 81, n: 1, pieces: [
+    { piece: 'report', server: 'srv-03', workers: 8, mem: 14, n: 1, start: 81, end: 88 },
+  ] },
+};
+const LIVE_END = 88;
+
+function pieceAt(p, T) {
+  if (T < p.start) return { ...p, status: 'queued', frac: 0 };
+  const q = p.preempt;
+  if (q) {
+    if (T < q.at) return { ...p, status: 'running', frac: q.frac * (T - p.start) / (q.at - p.start) };
+    if (T < q.until) return { ...p, status: 'preempted', frac: q.frac, note: 'preempted for #1290 (owner priority, reserves srv-08); checkpoint at 410 points' };
+    if (T < q.resume) return { ...p, status: 'queued', frac: q.frac, note: 'requeued from its checkpoint at 410 points' };
+    if (T < p.end) return { ...p, server: q.to, status: 'running', frac: q.frac + (1 - q.frac) * (T - q.resume) / (p.end - q.resume), note: 'resumed on srv-12 from its checkpoint' };
+    return { ...p, server: q.to, status: 'done', frac: 1, note: 'preempted once, resumed on srv-12' };
+  }
+  if (T >= p.end) return { ...p, status: 'done', frac: 1 };
+  return { ...p, status: 'running', frac: (T - p.start) / (p.end - p.start) };
+}
+
+function aggregate(pieces, T, start) {
+  if (T < start) return 'waiting';
+  const st = pieces.map((p) => p.status);
+  if (st.every((s) => s === 'done')) return 'done';
+  if (st.includes('running')) return 'running';
+  if (st.includes('preempted')) return 'preempted';
+  return 'queued';
+}
+
+// best cost of the fit, never increasing
+const COST = (() => { const a = []; let best = Infinity; for (let t = 0; t <= 46; t++) { const c = 1.0931 + 4.8 * Math.exp(-t / 5.5) + 0.05 * Math.exp(-t / 18) * Math.abs(Math.sin(t * 1.7)); best = Math.min(best, c); a.push(best); } return a; })();
+
+function liveDetail(T) {
+  const nodes = {
+    model: { status: 'done', frac: 1, metric: 'snapshot ready, image cached', pieces: [] },
+    data: { status: 'done', frac: 1, metric: '287 training · 24 validation · 7 outliers', pieces: [] },
+  };
+  const placements = [];
+  for (const [k, g] of Object.entries(LIVE)) {
+    const pieces = g.pieces.map((p) => pieceAt(p, T));
+    const frac = pieces.reduce((s, p) => s + p.frac * p.n, 0) / g.n;
+    const status = aggregate(pieces, T, g.start);
+    let metric = '';
+    if (status !== 'waiting') {
+      if (k === 'fit') metric = Math.round(frac * 400) + '/400 repeats · cost ' + COST[Math.min(T, 46)].toFixed(4);
+      if (k === 'identifiability') metric = Math.round(frac * 14) + '/14 profiles';
+      if (k === 'sobol') metric = fmt(Math.round(frac * 4096)) + ' / 4,096 points';
+      if (k === 'report') metric = status === 'done' ? 'index.html ready' : 'rendering 64 figures';
+    }
+    nodes[k] = { status, frac, pieces, metric };
+    for (const p of pieces) {
+      if (p.status === 'running') placements.push({ run: 1287, server: p.server, cores: p.workers, mem: p.mem, title: '#1287 ' + k + ', ' + p.piece });
+      if (p.status === 'preempted') placements.push({ run: 1287, server: p.server, cores: p.workers, mem: p.mem, title: '#1287 checkpointing ' + p.piece, checkpoint: true });
+    }
+  }
+  const frac = 0.55 * nodes.fit.frac + 0.15 * nodes.identifiability.frac + 0.25 * nodes.sobol.frac + 0.05 * nodes.report.frac;
+  return { nodes, placements, status: T >= LIVE_END ? 'done' : 'running', frac, note: T >= LIVE_END ? 'done in 44 min' : '' };
+}
+
+// the other runs, simpler: model, data and one fit
+const RUNS = [
+  { id: 1290, who: 'mkoenig', agent: false, via: 'web', model: 'midazolam_pbpk', appears: 55, started: '14:29',
+    state: (T) => T < 62
+      ? { status: 'queued', frac: 0, note: 'benchmark, reserves srv-08: waits for the checkpoint of a lower priority piece' }
+      : { status: 'running', frac: Math.min(0.9, (T - 62) / 50), note: 'benchmark on reserved srv-08',
+          pieces: [{ piece: 'repeats 1-100', server: 'srv-08', workers: 40, mem: 154, reserved: true }] } },
+  { id: 1289, who: 'agent-6', agent: true, via: 'MCP', model: 'glucose_insulin', started: '13:47',
+    state: (T) => ({ status: 'running', frac: Math.min(0.97, (T + 30) / 125), note: 'learned 1.2 GB per worker for this model',
+      pieces: [{ piece: 'repeats 1-200', server: 'srv-03', workers: 30, mem: 38 }] }) },
+  { id: 1288, who: 'agent-1', agent: true, via: 'MCP', model: 'omeprazole_pbpk', started: '13:52',
+    state: (T) => ({ status: 'running', frac: Math.min(0.97, (T + 10) / 105), note: 'retry of #1283 with 1.5× memory, 7.7 GB per worker',
+      pieces: [{ piece: 'repeats 1-400', server: 'srv-10', workers: 24, mem: 187 }] }) },
+  { id: 1287, who: 'agent-4', agent: true, via: 'MCP', model: 'caffeine_pbpk', started: '14:02', live: true },
+  { id: 1286, who: 'agent-3', agent: true, via: 'MCP', model: 'codeine_pbpk', started: '13:41',
+    state: (T) => (T + 40) / 110 >= 1
+      ? { status: 'done', frac: 1, note: 'done in 55 min' }
+      : { status: 'running', frac: (T + 40) / 110,
+          pieces: [{ piece: 'repeats 1-200', server: 'srv-06', workers: 36, mem: 186 }, { piece: 'repeats 201-400', server: 'srv-09', workers: 36, mem: 186 }] } },
+  { id: 1285, who: 'agent-5', agent: true, via: 'MCP', model: 'dextromethorphan_pbpk', started: '13:58',
+    state: (T) => T < 45
+      ? { status: 'queued', frac: 0, note: 'needs 186 GB, next free: srv-04 in ' + mins(45 - T) }
+      : { status: 'running', frac: Math.min(0.97, (T - 45) / 70), pieces: [{ piece: 'repeats 1-400', server: 'srv-04', workers: 36, mem: 186 }] } },
+  { id: 1284, who: 'agent-2', agent: true, via: 'MCP', model: 'simvastatin_pbpk', started: '12:40',
+    state: () => ({ status: 'done', frac: 1, note: 'done in 38 min' }) },
+  { id: 1283, who: 'agent-1', agent: true, via: 'MCP', model: 'omeprazole_pbpk', started: '13:20',
+    state: () => ({ status: 'failed', frac: 0.53, note: 'out of memory on srv-10, 191 of 192 GB at repeat 212; retried as #1288',
+      pieces: [{ piece: 'repeats 1-400', server: 'srv-10', workers: 36, mem: 186, failed: true }] }) },
+];
+
+function runInfo(run, T) {
+  if (run.live) { const d = liveDetail(T); return { status: d.status, frac: d.frac, note: d.note }; }
+  const s = run.state(T);
+  return { status: s.status, frac: s.frac, note: s.note || '' };
+}
+
+function staticDetail(run, T) {
+  const s = run.state(T);
+  const pieces = (s.pieces || []).map((p) => ({ ...p, n: 1,
+    status: p.failed ? 'failed' : s.status === 'done' ? 'done' : s.status === 'queued' ? 'queued' : 'running',
+    frac: p.failed ? s.frac : s.frac,
+    note: p.failed ? 'out of memory: peak 191 GB of the 192 GB of the server' : p.reserved ? 'whole server reserved, no other work placed on it' : '' }));
+  const nodes = {
+    model: { status: 'done', frac: 1, metric: 'snapshot ready, image cached', pieces: [] },
+    data: { status: 'done', frac: 1, metric: 'fit definition resolved', pieces: [] },
+    fit: { status: s.status, frac: s.frac, pieces, metric: s.status === 'queued' ? 'waiting for a server' : Math.round(s.frac * 400) + '/400 repeats' },
+  };
+  for (const k of ['identifiability', 'sobol', 'report']) nodes[k] = { status: s.status === 'done' ? 'done' : 'waiting', frac: s.status === 'done' ? 1 : 0, pieces: [], metric: s.status === 'done' ? 'done' : '' };
+  const placements = s.status === 'running' ? pieces.map((p) => ({ run: run.id, server: p.server, cores: p.reserved ? 40 : p.workers, mem: p.mem, reserved: p.reserved, title: '#' + run.id + ' ' + run.model + (p.reserved ? ' (reserved)' : '') })) : [];
+  return { nodes, placements, ...s };
+}
+
+// ---------------------------------------------------------------- state
+const store = reactive({ mode: 'exec', selectedRun: 1287, selectedNode: 'fit', tick: 14, playing: true, filter: 'all', tab: 'overview', search: '' });
+window.mockup = store;
+
+const detailOf = (run, T) => (run.live ? liveDetail(T) : staticDetail(run, T));
+const view = computed(() => {
+  if (store.mode === 'editor') return { mode: 'editor', nodes: {} };
+  const run = RUNS.find((r) => r.id === store.selectedRun);
+  return { mode: 'exec', run, ...detailOf(run, store.tick) };
+});
+
+const EST = {
+  model: { time: 'snapshot < 10 s' },
+  data: {},
+  fit: { workers: '96 + 2×36', mem: '5.1 GB/w', time: '≈ 23 min', split: '3 pieces' },
+  identifiability: { workers: '96', mem: '5.1 GB/w', time: '≈ 15 min' },
+  sobol: { workers: '4×36', mem: '5.1 GB/w', time: '≈ 14 min', split: '4 pieces' },
+  report: { workers: '8', mem: '1.5 GB/w', time: '≈ 4 min' },
+};
+const NEW_EST = { workers: 'auto', mem: '6 GB/w (default)', time: 'learned after the first run' };
+
+// ---------------------------------------------------------------- components
+const StatusPill = {
+  template: '#tpl-pill',
+  props: { status: String, small: Boolean },
+  setup(props) { return { icon, s: computed(() => STATUS[props.status] || STATUS.waiting) }; },
+};
+
+const TaskNode = {
+  template: '#tpl-node',
+  components: { Handle, StatusPill },
+  props: ['id', 'data', 'selected'],
+  setup(props) {
+    const kind = computed(() => KINDS[props.data.kind]);
+    const state = computed(() => view.value.nodes[props.id]);
+    const mode = computed(() => view.value.mode);
+    return {
+      icon, Position, kind, state, mode, barColor,
+      isInput: computed(() => kind.value.group === 'Inputs'),
+      isSelected: computed(() => store.selectedNode === props.id),
+      title: computed(() => (mode.value === 'exec' && props.data.kind === 'model' && view.value.run ? view.value.run.model : props.data.title)),
+      est: computed(() => EST[props.id] || NEW_EST),
+      dim: computed(() => mode.value === 'exec' && !state.value),
+      stacked: computed(() => (mode.value === 'editor' ? !!(EST[props.id] || {}).split : (state.value && state.value.pieces.length > 1 && state.value.status !== 'waiting'))),
+      hasBar: computed(() => state.value && !['waiting'].includes(state.value.status) && props.data.kind !== 'model' && props.data.kind !== 'data'),
+      border: computed(() => {
+        if (mode.value === 'editor' || !state.value) return 'border-gray-200';
+        return ({ running: 'border-blue-300 shadow-blue-100 shadow-md', done: 'border-emerald-300', failed: 'border-red-300', preempted: 'border-amber-300', queued: 'border-gray-300' })[state.value.status] || 'border-gray-200 border-dashed';
+      }),
+      pieceIcon: (s) => STATUS[s].icon,
+      pieceIconClass: (s) => ({ running: 'text-blue-600 animate-spin', done: 'text-emerald-600', preempted: 'text-amber-600', failed: 'text-red-600' })[s] || 'text-gray-400',
+    };
+  },
+};
+
+const INITIAL_NODES = [
+  { id: 'model', type: 'task', position: { x: 0, y: 40 }, data: { kind: 'model', title: 'caffeine_pbpk', subtitle: 'branch fit-cyp1a2 · 3 uncommitted files' } },
+  { id: 'data', type: 'task', position: { x: 0, y: 260 }, data: { kind: 'data', title: 'fit_caffeine_all', subtitle: '42 studies · 318 mappings' } },
+  { id: 'fit', type: 'task', position: { x: 320, y: 130 }, data: { kind: 'fit', title: '400 repeats', subtitle: 'least squares · 14 parameters · log10' } },
+  { id: 'identifiability', type: 'task', position: { x: 640, y: -10 }, data: { kind: 'identifiability', title: 'profiles, Fisher', subtitle: '14 parameters · level 0.95' } },
+  { id: 'sobol', type: 'task', position: { x: 640, y: 250 }, data: { kind: 'sobol', title: '4,096 points', subtitle: 'fitted values ± 50 % · AUC, Cmax' } },
+  { id: 'report', type: 'task', position: { x: 960, y: 130 }, data: { kind: 'report', title: 'fit report', subtitle: 'fit · identifiability · Sobol' } },
+];
+const BASE_EDGES = [
+  ['model', 'fit'], ['data', 'fit'], ['fit', 'identifiability'], ['fit', 'sobol'], ['identifiability', 'report'], ['sobol', 'report'],
+].map(([s, t]) => ({ id: 'e-' + s + '-' + t, source: s, target: t }));
+
+const PARAMS = ['CYP1A2_Vmax', 'CYP1A2_Km', 'fup', 'Kp_liver', 'Kp_kidney', 'Kp_fat', 'Kp_muscle', 'f_tissue', 'ka', 'F_abs', 'CL_renal', 'BP_ratio', 'Ki_fluvox', 'k_urine'];
+const NON_IDENTIFIABLE = new Set(['Kp_fat', 'f_tissue']);
+const SOBOL = [
+  { p: 'CYP1A2_Vmax', s1: 0.52, st: 0.58 }, { p: 'fup', s1: 0.18, st: 0.22 }, { p: 'Kp_liver', s1: 0.09, st: 0.12 },
+  { p: 'ka', s1: 0.06, st: 0.08 }, { p: 'BP_ratio', s1: 0.04, st: 0.05 }, { p: 'CL_renal', s1: 0.02, st: 0.03 },
+];
+
+const LIVE_LOG = [
+  [0, 'run', 'run #1287 submitted by agent-4 through MCP, priority normal'],
+  [0, 'model', 'environment: zot.lab.local/sbmlsim-env@3f2a91c, uv.lock unchanged, cached'],
+  [0, 'model', 'snapshot: caffeine_pbpk fit-cyp1a2@9e1f2aa +3 files, sbmlsim develop@30f0538 +1 file'],
+  [0, 'data', 'fit_caffeine_all: 287 training, 24 validation, 7 outlier mappings'],
+  [0, 'fit', 'learned 5.1 GB per worker (p95 of 12 runs of caffeine_pbpk fit)'],
+  [0, 'fit', 'no free server fits 400 repeats in time: split into 3 pieces'],
+  [0, 'fit', 'srv-01 96 workers 492 GB · srv-04 36 workers 186 GB · srv-07 36 workers 186 GB (memory-bound)'],
+  [20, 'fit', 'repeat 180: best cost 1.1013'],
+  [40, 'fit', 'piece 1 done on srv-01, 200 repeats'],
+  [44, 'fit', 'piece 2 done on srv-04'],
+  [46, 'fit', 'piece 3 done on srv-07; 400 repeats merged, best cost 1.0931'],
+  [47, 'identifiability', 'srv-01, 96 workers: 14 profiles and the Fisher information'],
+  [47, 'sobol', '4,096 points split into 4 pieces: srv-02, srv-05, srv-08, srv-11'],
+  [55, 'sobol', 'scheduler: #1290 (mkoenig, owner priority) reserves srv-08'],
+  [58, 'sobol', 'piece 3 on srv-08 preempted, checkpoint at 410 points', 'warn'],
+  [62, 'sobol', 'piece 3 requeued from its checkpoint'],
+  [64, 'sobol', 'piece 3 resumed on srv-12'],
+  [73, 'sobol', 'piece 1 done'], [74, 'sobol', 'piece 4 done'], [75, 'sobol', 'piece 2 done'],
+  [77, 'identifiability', '12 identifiable, 2 practically non-identifiable: Kp_fat, f_tissue'],
+  [80, 'sobol', 'piece 3 done; indices S1, ST of AUC and Cmax computed'],
+  [81, 'report', 'srv-03, 8 workers'],
+  [88, 'report', 'report/index.html written; run done in 44 min', 'ok'],
+];
+
+// ---------------------------------------------------------------- app
+const App = {
+  template: '#tpl-app',
+  components: { VueFlow, Background, Controls, MiniMap, StatusPill },
+  setup() {
+    const { screenToFlowCoordinate, addNodes, findNode, onConnect, fitView, onNodesInitialized } = useVueFlow('wf');
+    onNodesInitialized(() => setTimeout(() => fitView({ padding: 0.14 }), 50));
+    const nodeTypes = { task: markRaw(TaskNode) };
+    const extraEdges = Vue.ref([]);
+    let counter = 1;
+
+    onConnect((c) => {
+      if (store.mode !== 'editor') return;
+      extraEdges.value = [...extraEdges.value, { id: 'e-' + c.source + '-' + c.target + '-' + Date.now(), source: c.source, target: c.target }];
+    });
+
+    const edges = computed(() => [...BASE_EDGES, ...extraEdges.value].map((e) => {
+      let stroke = '#94a3b8', animated = false, dash;
+      if (view.value.mode === 'exec') {
+        const a = view.value.nodes[e.source], b = view.value.nodes[e.target];
+        if (!a || !b) { stroke = '#e5e7eb'; dash = '4 4'; }
+        else if (a.status === 'done' && (b.status === 'running' || b.status === 'preempted' || b.status === 'queued')) { stroke = '#3b82f6'; animated = true; }
+        else if (a.status === 'done' && b.status === 'done') stroke = '#10b981';
+        else if (a.status === 'failed') { stroke = '#fca5a5'; dash = '6 5'; }
+        else { stroke = '#cbd5e1'; dash = '6 5'; }
+      }
+      return { ...e, animated, style: { stroke, strokeWidth: 2, strokeDasharray: dash }, markerEnd: { type: MarkerType.ArrowClosed, color: stroke, width: 14, height: 14 } };
+    }));
+
+    function addNode(kind, position) {
+      const id = kind + '-' + counter++;
+      addNodes([{ id, type: 'task', position, data: { kind, title: KINDS[kind].label, subtitle: KINDS[kind].desc } }]);
+      store.selectedNode = id;
+    }
+    const onDragStart = (e, kind) => { e.dataTransfer.setData('application/x-sbmlsim-task', kind); e.dataTransfer.effectAllowed = 'move'; };
+    const onDrop = (e) => {
+      const kind = e.dataTransfer.getData('application/x-sbmlsim-task');
+      if (!kind || store.mode !== 'editor') return;
+      const p = screenToFlowCoordinate({ x: e.clientX, y: e.clientY });
+      addNode(kind, { x: p.x - 128, y: p.y - 40 });
+    };
+    const addNodeAtFree = (kind) => addNode(kind, { x: 960, y: 330 + 60 * counter });
+    const onNodeClick = ({ node }) => { store.selectedNode = node.id; };
+
+    const setMode = (m) => { store.mode = m; store.tab = 'overview'; nextTick(() => setTimeout(() => fitView({ padding: 0.12, duration: 250 }), 30)); };
+    const selectRun = (id) => { store.selectedRun = id; };
+    const replay = () => { store.tick = 0; store.playing = true; };
+    const runWorkflow = () => { store.selectedRun = 1287; store.tick = 0; store.playing = true; setMode('exec'); };
+
+    let timer;
+    onMounted(() => { timer = setInterval(() => { if (store.playing && store.tick < LIVE_END) store.tick++; }, 450); });
+
+    // runs list
+    const runs = computed(() => RUNS.filter((r) => !r.appears || store.tick >= r.appears).map((r) => ({ ...r, info: runInfo(r, store.tick) })));
+    const filters = [{ id: 'all', label: 'All' }, { id: 'mine', label: 'Mine' }, { id: 'agents', label: 'Agents' }, { id: 'active', label: 'Active' }];
+    const visibleRuns = computed(() => runs.value.filter((r) => store.filter === 'all' || (store.filter === 'mine' && !r.agent) || (store.filter === 'agents' && r.agent) || (store.filter === 'active' && ['running', 'queued', 'preempted'].includes(r.info.status))));
+    const run = computed(() => runs.value.find((r) => r.id === store.selectedRun) || runs.value[0]);
+
+    // servers
+    const allPlacements = computed(() => {
+      const out = [];
+      for (const r of RUNS) { if (r.appears && store.tick < r.appears) continue; out.push(...detailOf(r, store.tick).placements); }
+      return out;
+    });
+    const servers = computed(() => SERVERS.map((s) => {
+      const segs = allPlacements.value.filter((p) => p.server === s.id).map((p) => ({
+        cores: p.cores, title: p.title + ': ' + p.cores + ' cores, ' + p.mem + ' GB',
+        cls: p.checkpoint ? 'bg-amber-400' : p.reserved ? 'stripes' : p.run === store.selectedRun ? 'bg-blue-500' : 'bg-slate-300',
+      }));
+      const mine = allPlacements.value.some((p) => p.server === s.id && p.run === store.selectedRun);
+      const placed = allPlacements.value.filter((p) => p.server === s.id);
+      return { ...s, segs, mine, used: placed.reduce((a, p) => a + p.cores, 0), memUsed: placed.reduce((a, p) => a + p.mem, 0) };
+    }));
+    const cluster = computed(() => ({
+      used: servers.value.reduce((a, s) => a + s.used, 0), total: SERVERS.reduce((a, s) => a + s.cores, 0),
+      queued: runs.value.filter((r) => r.info.status === 'queued').length,
+    }));
+
+    // palette
+    const paletteGroups = computed(() => {
+      const q = store.search.toLowerCase();
+      return ['Inputs', 'Analyses', 'Outputs'].map((g) => ({ name: g, kinds: Object.values(KINDS).filter((k) => k.group === g && (!q || (k.label + k.desc).toLowerCase().includes(q))) })).filter((g) => g.kinds.length);
+    });
+
+    // inspector
+    const sel = computed(() => (store.selectedNode ? findNode(store.selectedNode) : null));
+    const selKind = computed(() => (sel.value ? KINDS[sel.value.data.kind] : null));
+    const selTitle = computed(() => (sel.value ? (store.mode === 'exec' && sel.value.data.kind === 'model' ? run.value.model : sel.value.data.title) : ''));
+    const selState = computed(() => (sel.value ? view.value.nodes[sel.value.id] : null));
+    const tabs = ['overview', 'outputs', 'logs'];
+
+    const LEARNED = {
+      fit: { badge: 'learned from 12 runs', perWorker: '5.1 GB (p95)', time: '≈ 23 min on 3 servers', placement: 'srv-01 + 2 × 40 cores', note: 'On a 192 GB server the memory allows 36 of its 40 cores. The limit is the request; a piece out of memory is retried once with 1.5× memory.' },
+      identifiability: { badge: 'learned from 9 runs', perWorker: '5.1 GB (p95)', time: '≈ 15 min', placement: 'one server, 96 workers', note: 'The re-optimizations of the profiles run in the pool of one server.' },
+      sobol: { badge: 'learned from 6 runs', perWorker: '5.1 GB (p95)', time: '≈ 14 min on 4 servers', placement: '4 × 36 workers', note: 'The points are independent, so the pieces merge exactly.' },
+      report: { badge: 'learned from 31 runs', perWorker: '1.5 GB (p95)', time: '≈ 4 min', placement: 'shares a server', note: 'Figures are rendered in 8 workers.' },
+    };
+    const selLearned = computed(() => LEARNED[sel.value && sel.value.id] || { badge: 'no runs yet', perWorker: '6 GB (default)', time: 'unknown', placement: 'one server', note: 'The first run measures memory and time; later runs request what the earlier ones used.' });
+
+    const selStats = computed(() => {
+      const s = selState.value, k = selKind.value && selKind.value.id, T = store.tick;
+      if (!s || s.status === 'waiting' || !run.value.live) {
+        if (s && k === 'fit' && s.status !== 'waiting') return [{ label: 'Repeats', value: Math.round(s.frac * 400) + ' / 400' }, { label: 'Status', value: s.status }];
+        return [];
+      }
+      const g = LIVE[k];
+      if (!g) return [];
+      const end = Math.max(...g.pieces.map((p) => p.end));
+      const elapsed = mins(Math.min(T, end) - g.start), left = s.status === 'done' ? '-' : '≈ ' + mins(end - T);
+      if (k === 'fit') return [{ label: 'Repeats', value: Math.round(s.frac * 400) + ' / 400' }, { label: 'Best cost', value: COST[Math.min(T, 46)].toFixed(4) }, { label: 'Elapsed', value: elapsed }, { label: 'Remaining', value: left }];
+      if (k === 'identifiability') return [{ label: 'Profiles', value: Math.round(s.frac * 14) + ' / 14' }, { label: 'Fisher', value: s.status === 'done' ? 'rank 14' : 'pending' }, { label: 'Elapsed', value: elapsed }, { label: 'Remaining', value: left }];
+      if (k === 'sobol') return [{ label: 'Points', value: fmt(Math.round(s.frac * 4096)) }, { label: 'Pieces done', value: s.pieces.filter((p) => p.status === 'done').length + ' / 4' }, { label: 'Elapsed', value: elapsed }, { label: 'Remaining', value: left }];
+      if (k === 'report') return [{ label: 'Figures', value: s.status === 'done' ? '64' : Math.round(s.frac * 64) + ' / 64' }, { label: 'Elapsed', value: elapsed }];
+      return [];
+    });
+
+    const costLine = computed(() => {
+      const T = run.value.live ? Math.min(store.tick, 46) : 46;
+      const lo = Math.log10(1.0931), hi = Math.log10(COST[0]);
+      return COST.slice(0, T + 1).map((c, t) => (t / 46 * 336 + 2).toFixed(1) + ',' + (84 - (Math.log10(c) - lo) / (hi - lo) * 76).toFixed(1)).join(' ');
+    });
+
+    const profiles = computed(() => {
+      const done = Math.round((selState.value ? selState.value.frac : 0) * 14);
+      return PARAMS.map((p, i) => i < done
+        ? (NON_IDENTIFIABLE.has(p) ? { name: p, cls: 'bg-amber-50 text-amber-800 ring-1 ring-amber-200', title: 'practically non-identifiable' } : { name: p, cls: 'bg-emerald-50 text-emerald-800 ring-1 ring-emerald-200', title: 'identifiable' })
+        : { name: p, cls: 'bg-gray-50 text-gray-400 ring-1 ring-gray-200', title: 'pending' });
+    });
+
+    const peak = (p) => (p.status === 'queued' ? '-' : p.failed ? 191 : Math.round(p.mem * (0.55 + 0.37 * Math.min(1, (p.frac || 0) * 2.5))));
+
+    const selResourceNote = computed(() => {
+      const k = selKind.value && selKind.value.id;
+      if (!selState.value || k === 'model' || k === 'data') return '';
+      if (!run.value.live) return run.value.info.note;
+      return LEARNED[k] ? 'Requested ' + LEARNED[k].perWorker.replace(' (p95)', '') + ' per worker plus 2 GB, from the earlier runs of this model and task. ' + LEARNED[k].note : '';
+    });
+
+    const selOutputs = computed(() => {
+      const s = selState.value, k = selKind.value && selKind.value.id;
+      if (!s || s.status === 'waiting' || s.status === 'queued') return [];
+      if (k === 'model') return [{ name: 'provenance.json', size: '4 KB', icon: 'git-commit-horizontal' }, { name: 'src/ (read-only snapshot)', size: '38 MB', icon: 'folder-open' }];
+      if (k === 'data') return [{ name: 'fit_mappings.tsv', size: '61 KB', icon: 'file-text' }];
+      if (k === 'fit') {
+        const n = Math.round(s.frac * 400), out = [{ name: 'runs/ (' + n + ' of 400 repeats)', size: (n * 0.21).toFixed(0) + ' MB', icon: 'folder-open' }, { name: 'progress.jsonl', size: '212 KB', icon: 'list' }];
+        if (s.status === 'done') out.push({ name: 'optimization_result.json', size: '1.8 MB', icon: 'file-text' }, { name: 'parameters.tsv', size: '3 KB', icon: 'file-text' });
+        return out;
+      }
+      if (k === 'identifiability') return s.status === 'done' ? [{ name: 'profiles.nc', size: '24 MB', icon: 'chart-line' }, { name: 'fisher.json', size: '22 KB', icon: 'file-text' }] : [{ name: 'profiles/ (' + Math.round(s.frac * 14) + ' of 14)', size: '', icon: 'folder-open' }];
+      if (k === 'sobol') return [...s.pieces.filter((p) => p.status === 'done').map((p, i) => ({ name: 'pieces/' + p.piece.replace(/ /g, '_') + '.nc', size: '312 MB', icon: 'layers' })), ...(s.status === 'done' ? [{ name: 'indices.nc', size: '2.1 MB', icon: 'chart-pie' }] : [])];
+      if (k === 'report') return s.status === 'done' ? [{ name: 'index.html', size: '1.2 MB', icon: 'file-text' }, { name: 'figures/ (64)', size: '41 MB', icon: 'folder-open' }] : [];
+      return [];
+    });
+
+    const selLog = computed(() => {
+      const k = selKind.value && selKind.value.id;
+      if (!run.value.live) return [{ time: run.value.started, text: run.value.info.note || run.value.info.status, cls: run.value.info.status === 'failed' ? 'text-red-400' : 'text-gray-300' }];
+      return LIVE_LOG.filter(([t, key]) => t <= store.tick && (key === k || key === 'run')).map(([t, , text, lvl]) => ({ time: clock(t), text, cls: lvl === 'warn' ? 'text-amber-300' : lvl === 'ok' ? 'text-emerald-300' : 'text-gray-300' }));
+    });
+
+    const minimapColor = (n) => (KINDS[n.data && n.data.kind] || {}).color || '#94a3b8';
+
+    return {
+      store, icon, initialNodes: INITIAL_NODES, edges, nodeTypes, onDrop, onDragStart, addNodeAtFree, onNodeClick,
+      setMode, selectRun, replay, runWorkflow, runs, visibleRuns, filters, run, servers, cluster, paletteGroups,
+      sel, selKind, selTitle, selState, tabs, selLearned, selStats, costLine, profiles, peak, selResourceNote, selOutputs, selLog,
+      minimapColor, SOURCES, SOBOL,
+    };
+  },
+};
+
+createApp(App).mount('#app');
+</script>
+</body>
+</html>
