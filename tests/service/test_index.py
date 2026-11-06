@@ -193,3 +193,22 @@ def test_a_record_which_cannot_be_read_at_the_start_is_followed(
         record.write_text(good)
         restarted.controller.reconcile()
         assert restarted.store.index.live_ids() == [run_id]
+
+
+def test_reindex_does_not_rewrite_the_record(tmp_path: Path) -> None:
+    store = IndexedRunStore(tmp_path / "store", RunIndex(tmp_path / "index.db"))
+    RunStore.write(store, _record("r1"))
+    store._unindexed.add("r1")
+    read = store.read
+
+    def read_then_cancel(run_id: str) -> RunRecord:
+        record = read(run_id)
+        # a write of the service between the read of reindex and its index put
+        changed = record.model_copy(update={"pending_cancel": True})
+        RunStore.write(store, changed)
+        return record
+
+    store.read = read_then_cancel  # type: ignore[method-assign]
+    assert store.reindex() == []
+    store.read = read  # type: ignore[method-assign]
+    assert store.read("r1").pending_cancel
