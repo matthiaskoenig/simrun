@@ -1,24 +1,85 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
 [project]
 name = "simrun"
-version = "0.1.0"
-description = "Runner of simulation workflows on a k3s cluster with Argo Workflows and Kueue"
+dynamic = ["version"]
+description = "Runner of simulation workflows on a k3s cluster with Argo Workflows and Kueue."
 readme = "README.md"
-authors = [
-    { name = "Matthias Koenig", email = "konigmatt@googlemail.com" }
-]
 requires-python = ">=3.14"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+	{name="Matthias König", email="konigmatt@googlemail.com"},
+]
+maintainers = [
+	{name="Matthias König", email="konigmatt@googlemail.com"}
+]
+classifiers = [
+	"Development Status :: 3 - Alpha",
+	"Environment :: Console",
+	"Framework :: FastAPI",
+	"Intended Audience :: Science/Research",
+	"Intended Audience :: System Administrators",
+	"Operating System :: POSIX :: Linux",
+	"Programming Language :: Python :: 3.14",
+	"Programming Language :: Python :: 3.15",
+	"Programming Language :: Python :: Implementation :: CPython",
+	"Topic :: Scientific/Engineering",
+	"Topic :: System :: Clustering",
+	"Topic :: System :: Distributed Computing",
+]
+keywords = [
+	"simulation",
+	"workflow",
+	"kubernetes",
+	"k3s",
+	"argo workflows",
+	"kueue",
+	"mcp",
+	"computational modeling",
+]
 dependencies = [
-    "fastapi>=0.162",
-    "fastmcp>=4.1",
-    "hera>=7.2",
-    "httpx>=0.28.1",
-    "kubernetes>=37",
-    "pydantic>=2.14",
-    "pyyaml>=6.0.3",
-    "rich>=14",
-    "tomlkit>=0.15.2",
-    "typer>=0.27",
-    "uvicorn>=0.54.0",
+	# the service: the API and its server
+	"fastapi>=0.162",
+	"uvicorn>=0.54.0",
+	# the MCP server of the agents
+	"fastmcp>=4.1",
+	# the cluster: Argo workflows and the API of Kubernetes
+	"hera>=7.2",
+	"kubernetes>=37",
+	# the client, the command line and the models
+	"httpx>=0.28.1",
+	"pydantic>=2.14",
+	"pyyaml>=6.0.3",
+	"rich>=14",
+	"typer>=0.27",
+	# the pyproject.toml of the temporary project of an environment
+	"tomlkit>=0.15.2",
+]
+
+[project.optional-dependencies]
+# the CWL export of a run (`simrun.cwl`), validated with cwl-utils and run with
+# cwltool, locally or on Slurm
+cwl = [
+	"cwl-utils>=0.46",
+	"cwltool>=3.3.20260925135507",
+]
+dev = [
+	"simrun[cwl]",
+	"bump-my-version>=1.6.7",
+	"ruff>=0.17.4",
+	"pre-commit>=4.7.0",
+	"ty>=0.0.98",
+	# 4.67.5 rejects its own `.tox/.tmp/package` under umask 002 (tox-dev/tox#4357)
+	"tox>=4.64.9,!=4.67.5",
+	# tox creates its environments with uv, as the continuous integration does
+	"tox-uv>=1.36.1",
+	"pytest>=9.2.0",
+	"pytest-xdist>=3.8.0",
+	"zensical>=0.0.73",
+	"mkdocstrings-python>=2.0.10",
 ]
 
 [project.scripts]
@@ -28,23 +89,30 @@ simrun-worker = "simrun.worker:main"
 simrun-merge = "simrun.worker:merge_main"
 simrun-exec = "simrun.worker:exec_main"
 
-[project.optional-dependencies]
-dev = [
-    "cwl-utils>=0.46",
-    "cwltool>=3.3.20260925135507",
-    "pre-commit>=4.7.0",
-    "pytest>=9.2.0",
-    "pytest-xdist>=3.8.0",
-    "ruff>=0.17.4",
-    "ty>=0.0.98",
-]
+[project.entry-points."simrun.task_types"]
+command = "simrun.plugins_builtin:COMMAND"
+"demo.squares" = "simrun.demo:SQUARES"
 
-[build-system]
-requires = ["uv_build>=0.13.7,<0.14.0"]
-build-backend = "uv_build"
+[project.urls]
+Homepage = "https://matthiaskoenig.github.io/simrun"
+Documentation = "https://matthiaskoenig.github.io/simrun"
+Source = "https://github.com/matthiaskoenig/simrun"
+Issues = "https://github.com/matthiaskoenig/simrun/issues"
+Changelog = "https://github.com/matthiaskoenig/simrun/tree/develop/release-notes"
+Download = "https://pypi.org/project/simrun"
+
+[tool.hatch.version]
+path = "./src/simrun/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+# the package with its data, `build_constraints.txt`
+packages = ["src/simrun"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# the tests run in parallel (pytest-xdist), `pytest -n 0` runs them in one process.
+# The tests on the k3d cluster are not part of a normal run, they need docker and
+# create a cluster: `SIMRUN_K3D=1 pytest -m cluster` runs them
 addopts = "-n auto -m 'not cluster'"
 filterwarnings = [
     # beartype (through fastmcp and py-key-value) checks a protocol which is not
@@ -56,16 +124,19 @@ markers = [
 ]
 
 [tool.ty.environment]
-# the helpers of the cluster tests are imported by the module name
+# the package lives in the src layout, the helpers of the cluster tests are
+# imported by the module name; the checked python version is inferred from
+# `project.requires-python` (i.e. the oldest supported version)
 root = ["./src", "./tests/cluster"]
 
 [tool.ty.src]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts"]
 
 [tool.ty.terminal]
 # warnings are failures: keep the codebase free of any diagnostic
 error-on-warning = true
 
-[project.entry-points."simrun.task_types"]
-command = "simrun.plugins_builtin:COMMAND"
-"demo.squares" = "simrun.demo:SQUARES"
+[tool.uv]
+# the version is read from `__init__.py`: a bump of it refreshes the metadata
+# of the editable install, which `importlib.metadata` reads
+cache-keys = [{ file = "pyproject.toml" }, { file = "src/simrun/__init__.py" }]

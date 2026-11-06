@@ -34,7 +34,6 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from cwl_utils.parser import load_document_by_uri
 
 from simrun import podspec
 from simrun.config import ClusterConfig
@@ -260,6 +259,9 @@ def export_cwl(
 ) -> Path:
     """Write the CWL workflow of a run as YAML and validate it with cwl-utils.
 
+    cwl-utils is the optional extra `cwl` (`pip install "simrun[cwl]"`), which also
+    installs cwltool, the runner of the workflow.
+
     Args:
         record: The run.
         plans: The plan of every task, by task id.
@@ -270,6 +272,12 @@ def export_cwl(
     Returns:
         The path.
     """
+    try:
+        from cwl_utils.parser import load_document_by_uri
+    except ImportError as error:
+        raise ImportError(
+            'the CWL export needs cwl-utils: pip install "simrun[cwl]"'
+        ) from error
     document = to_cwl(record, plans, types, **options)
     path.write_text(yaml.safe_dump(document, sort_keys=False))
     load_document_by_uri(path)
