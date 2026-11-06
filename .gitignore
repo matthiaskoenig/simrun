@@ -1,11 +1,36 @@
-.venv/
-.tools/
+# python
 __pycache__/
 *.py[cod]
-.pytest_cache/
-.ruff_cache/
-.ty_cache/
-.tox/
+
+# packaging artifacts (hatchling builds into dist/)
 dist/
 build/
 *.egg-info/
+
+# environments, tool caches
+.venv/
+.tox/
+.pytest_cache/
+.ruff_cache/
+.ty_cache/
+# build cache of zensical
+.cache/
+
+# rendered documentation, built by the `documentation` workflow
+site/
+
+# k3d, kubectl, the kubeconfig and the store of the cluster tests
+.tools/
+
+# working files of coding agents, their design documents and plans are not committed
+.superpowers/
+docs/superpowers/
+.claude/plans/
+.claude/specs/
+.claude/worktrees/
+
+# editors, operating system
+.idea/
+.vscode/
+*~
+.DS_Store
