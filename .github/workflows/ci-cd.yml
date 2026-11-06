@@ -1,0 +1,241 @@
+name: CI-CD
+
+on:
+  push:
+    # feature branches are tested through their pull request, tags release
+    branches: [develop, main]
+    tags: ['*']
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+# least privilege by default, the release job raises what it needs
+permissions:
+  contents: read
+
+concurrency:
+  # a newer run supersedes the running one of the same pull request. A push is
+  # a group of its own, so it is never superseded: a release waits for the run
+  # of its commit on develop (see the job `tested`), and two merges in a row
+  # would otherwise leave the first commit untested. A release is never
+  # superseded either, every tag is a group of its own
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || format('{0}-{1}', github.ref, github.sha) }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    # a tag is not tested again, see the job `tested`
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        # simrun runs on linux only (cgroups, k3s); every supported python
+        python-version: ["3.14", "3.15"]
+
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - name: Set up the environment
+      # the dependencies are the versions of uv.lock, the package is installed
+      # as a wheel and not editable, so the tests run against what is
+      # published. The key of the cache has the os and the python version but
+      # not the job, so every entry of the matrix has a key of its own and
+      # saves it; the other jobs with python 3.14 (ty, docs, cluster) share the
+      # key of the entry 3.14 and only restore it
+      uses: ./.github/actions/setup
+      with:
+        python-version: ${{ matrix.python-version }}
+        sync: --extra dev --no-editable
+        save-cache: "true"
+    - name: Test
+      # in parallel on every core (`addopts` of pyproject.toml), without the
+      # tests on the cluster (`-m 'not cluster'` of `addopts`, see the job
+      # `cluster`); the slowest tests are listed at the end of the log
+      run: uv run --no-sync pytest --durations=15
+
+  install:
+    # the package as `pip install simrun` installs it, without extras: the
+    # environment of the test matrix has the extras of `dev`, which would hide
+    # a dependency the package needs and does not declare. It is the one job
+    # which does not use uv.lock: it resolves from pyproject.toml as the
+    # install of a user does, i.e. the newest releases within the bounds, so a
+    # release of a dependency which breaks simrun shows up here before
+    # dependabot moves the lock to it
+    name: plain install
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - name: Set up uv and python
+      uses: ./.github/actions/setup
+      with:
+        python-version: "3.14"
+    - name: Install the package without extras
+      run: |
+        uv venv "$RUNNER_TEMP/plain"
+        uv pip install --python "$RUNNER_TEMP/plain/bin/python" .
+    - name: Import every module and run the command line
+      # isolated (-I) and outside of the repository, so the package is the
+      # installed one and not the sources. Every module but `simrun.cwl`, whose
+      # export needs the extra `cwl`, imports at the top what it needs
+      working-directory: ${{ runner.temp }}
+      run: |
+        "$RUNNER_TEMP/plain/bin/python" -I -c '
+        import importlib, pkgutil, simrun
+        names = [m.name for m in pkgutil.walk_packages(simrun.__path__, "simrun.")]
+        for name in names:
+            importlib.import_module(name)
+        print(f"simrun {simrun.__version__}: {len(names)} modules imported")
+        '
+        "$RUNNER_TEMP/plain/bin/simrun" --help
+        "$RUNNER_TEMP/plain/bin/simrun" submit --help
+
+  tests:
+    # the one check the branch protection requires; the names of the matrix
+    # jobs change with the matrix, this name does not, see .github/rulesets/
+    name: tests
+    needs: [test, install]
+    if: ${{ always() && !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+    - name: Check the results of the test matrix and of the plain install
+      env:
+        RESULT: ${{ needs.test.result }}
+        INSTALL: ${{ needs.install.result }}
+      run: |
+        echo "test matrix: $RESULT, plain install: $INSTALL"
+        test "$RESULT" = "success" && test "$INSTALL" = "success"
+
+  cluster:
+    # the tests on a k3d cluster with Kueue, Argo Workflows and BuildKit, on a
+    # push to develop, on a release and when the workflow is started by hand.
+    # A pull request runs them with the label `cluster`, see cluster.yml
+    if: github.event_name != 'pull_request'
+    uses: ./.github/workflows/cluster.yml
+
+  tested:
+    # a release does not run the test matrix again. The tag is on a commit of
+    # develop, and the push of that commit ran the matrix on exactly this
+    # tree; the job waits for that run and fails unless it succeeded, so the
+    # tag can be pushed right after the merge of the release
+    name: tested on develop
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    permissions:
+      actions: read  # the runs of this workflow
+      contents: read
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        fetch-depth: 0
+        persist-credentials: false
+    - name: Check that the tag is on develop
+      run: |
+        if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/develop; then
+          echo "::error::$GITHUB_REF_NAME is not on develop, a release is tagged on develop"
+          exit 1
+        fi
+    - name: Wait for the run of the commit on develop
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        api="repos/$GITHUB_REPOSITORY/actions"
+        # the run starts with the merge, a tag pushed right after it may be first
+        run_id=""
+        for attempt in $(seq 1 20); do
+          run_id=$(gh api "$api/workflows/ci-cd.yml/runs?branch=develop&event=push&head_sha=$GITHUB_SHA" \
+            --jq '.workflow_runs[0].id // empty' || true)
+          [ -n "$run_id" ] && break
+          sleep 15
+        done
+        if [ -z "$run_id" ]; then
+          echo "::error::no CI-CD run of the push of $GITHUB_SHA to develop"
+          exit 1
+        fi
+        url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id"
+        echo "waiting for $url"
+        # a failed request answers nothing, which is not `completed` either
+        until [ "$(gh api "$api/runs/$run_id" --jq .status || true)" = "completed" ]; do
+          sleep 30
+        done
+        conclusion=$(gh api "$api/runs/$run_id" --jq .conclusion)
+        echo "$url: $conclusion"
+        if [ "$conclusion" != "success" ]; then
+          echo "::error::the tests of $GITHUB_SHA on develop did not pass ($url); once they do, re-run the failed jobs of this release"
+          exit 1
+        fi
+
+  release:
+    needs: [tested, cluster]
+    if: >-
+      ${{ !cancelled() && startsWith(github.ref, 'refs/tags/')
+      && needs.tested.result == 'success'
+      && needs.cluster.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: pypi
+      url: https://pypi.org/p/simrun
+    permissions:
+      id-token: write  # trusted publishing to PyPI
+      contents: write  # create the GitHub release
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - name: Set up uv
+      uses: ./.github/actions/setup
+      with:
+        python-version: "3.14"
+        cache: "false"
+    - name: Check that the tag is the version of the package
+      run: |
+        version=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/simrun/__init__.py)
+        if [ "$version" != "$GITHUB_REF_NAME" ]; then
+          echo "::error::the tag $GITHUB_REF_NAME is not the version $version of src/simrun/__init__.py"
+          exit 1
+        fi
+    - name: Build package
+      # the sdist and the wheel
+      run: uvx hatch build
+    - name: Check the package
+      run: uvx twine check --strict dist/*
+    - name: Publish to PyPI
+      # trusted publishing: the environment `pypi` of this repository is the
+      # publisher of the project on pypi.org, no token
+      uses: pypa/gh-action-pypi-publish@release/v1
+      with:
+        packages-dir: dist
+    - name: Create GitHub release
+      # the release triggers the archive on Zenodo
+      uses: softprops/action-gh-release@v3
+      with:
+        body_path: "release-notes/${{ github.ref_name }}.md"
+        files: dist/*
+        draft: false
+        prerelease: false
+
+  sync-main:
+    # main tracks the latest published release, see docs/development.md
+    needs: release
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write  # fast-forward main to the released commit
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        # a shallow clone cannot be pushed to another branch
+        fetch-depth: 0
+    - name: Fast-forward main to the release
+      # no --force: the push fails loudly if it would not be a fast-forward
+      run: git push origin HEAD:main
