@@ -35,4 +35,43 @@ Each test runs the service in its process with an `ArgoBackend` and the store `.
 
 At the end the cluster, the registry, the store and the images are deleted (the files the pods of an environment wrote as root are given back to the user first), unless `SIMRUN_K3D_KEEP=1`; a kept cluster is used by the next session. The tests run in one worker of pytest-xdist, which shares the nodes, and take about nine minutes on a created cluster.
 
-In continuous integration the job `cluster` runs them on a push to `develop`, on a release, when the workflow `CI-CD` is started by hand and on a pull request with the label `cluster`, see [Development](development.md#pull-requests).
+## A local test system { #a-local-test-system }
+
+The k3d cluster of the cluster tests also serves as a local test system: the service runs on the host against it, and runs are submitted with the command line or the MCP server as on the real cluster. It needs docker, about 20 GiB of free disk and the network, like the tests.
+
+```bash
+uv sync --extra dev
+uv run python tests/cluster/local.py up      # about two minutes, reuses a cluster which exists
+```
+
+`up` creates the cluster `simrun-test` as the session of the cluster tests does (or reuses it), builds the image of the runs from the working tree and pushes it, and writes the settings and the tokens of the service into `.tools/k3d/local`. It ends with the commands of the next two steps. Start the service in one shell:
+
+```bash
+export KUBECONFIG=$PWD/.tools/kubeconfig
+export SIMRUN_CONFIG=$PWD/.tools/k3d/local/settings.yaml
+uv run uvicorn --factory simrun.service.app:serve --port 8000
+```
+
+and submit from another, e.g. the `squares.yaml` of [A first run](index.md#a-first-run):
+
+```bash
+export SIMRUN_URL=http://localhost:8000
+export SIMRUN_TOKEN=t-mk                       # the owner; t-mk-bot, t-alice and t-alice-bot test the priorities
+export SIMRUN_STORE=$PWD/.tools/k3d/store      # the run store, mounted into every node
+
+uv run simrun submit squares.yaml
+uv run simrun wait <run>
+uv run simrun status <run>
+```
+
+The service knows the task types installed in `.venv`; the runs without sources use the image built by `up`, a model submitted with `--source` gets an image of its environment built by BuildKit in the cluster. The workflows and pods are seen with `.tools/bin/kubectl --kubeconfig .tools/kubeconfig -n simrun get workflows,pods`.
+
+After a change of the code of the pods, run `up` again, which builds a new image, and restart the service. The cluster is the one `SIMRUN_K3D_KEEP=1` keeps, so the cluster tests and the local system share it. `down` deletes the cluster, the registry, the store and the settings:
+
+```bash
+uv run python tests/cluster/local.py down
+```
+
+## Continuous integration
+
+In continuous integration the job `cluster` runs the tests on the k3d cluster on a push to `develop`, on a release, when the workflow `CI-CD` is started by hand and on a pull request with the label `cluster`, see [Development](development.md#pull-requests).
