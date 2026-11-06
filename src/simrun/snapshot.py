@@ -2,7 +2,10 @@
 
 A snapshot is a copy of the files git knows of a working tree (tracked and
 untracked, not ignored, uncommitted changes included) in the run store. Files
-unchanged since the latest snapshot of the same name are hard links to it.
+unchanged since the latest snapshot of the same name are hard links to it. The files
+of a snapshot are read-only (`a-w`, part of the hash of its content): a snapshot is
+named by its content and never changes, and a build backend which writes through a
+link of a shadow tree into one fails loudly instead.
 Submodules are out of scope: their content is not copied.
 """
 
@@ -98,9 +101,11 @@ def _split(data: bytes) -> list[str]:
     return [os.fsdecode(p) for p in data.split(b"\0") if p]
 
 
-def _write_atomic(path: Path, data: bytes) -> None:
+def _write_atomic(path: Path, data: bytes, mode: int | None = None) -> None:
     tmp = path.with_name(f".tmp-{secrets.token_hex(6)}-{path.name}")
     tmp.write_bytes(data)
+    if mode is not None:
+        tmp.chmod(mode)
     os.replace(tmp, path)
 
 
@@ -147,7 +152,10 @@ def snapshot(repo: Path, store: Path, name: str) -> SourceProvenance:
     try:
         # --checksum: link only files of identical content; exit 24 (a file
         # vanished before the copy) leaves it out of the snapshot and its hash
-        cmd = ["rsync", "-a", "--checksum", "--files-from=-", "--from0"]
+        # --chmod: the files read-only, also the ones linked to the latest snapshot,
+        # whose modes then match
+        cmd = ["rsync", "-a", "--checksum", "--chmod=F-w", "--files-from=-"]
+        cmd.append("--from0")
         if latest.is_dir():
             cmd.append(f"--link-dest={latest.resolve()}")
         cmd += [f"{repo}/", f"{tmp}/"]
@@ -170,7 +178,7 @@ def snapshot(repo: Path, store: Path, name: str) -> SourceProvenance:
     if dirty:
         patch_path = parent / f"{dirname}.patch"
         if not patch_path.exists():
-            _write_atomic(patch_path, patch)
+            _write_atomic(patch_path, patch, mode=0o444)
         patch_rel = str(patch_path.relative_to(store))
 
     link = parent / f".tmp-link-{secrets.token_hex(6)}"

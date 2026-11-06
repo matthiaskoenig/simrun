@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from simrun.snapshot import snapshot
+from simrun.worker import shadow_tree
 
 
 def git(repo: Path, *args: str) -> str:
@@ -179,3 +180,29 @@ def test_directory_symlink_target_is_hashed(repo: Path, tmp_path: Path) -> None:
     assert p1.snapshot != p2.snapshot
     assert os.readlink(store / p1.snapshot / "l") == "d1"
     assert os.readlink(store / p2.snapshot / "l") == "d2"
+
+
+def test_snapshot_files_are_read_only(repo: Path, tmp_path: Path) -> None:
+    (repo / "run.sh").write_text("#!/bin/sh\n")
+    (repo / "run.sh").chmod(0o755)
+    (repo / "dirty.py").write_text("x = 1\n")
+    store = tmp_path / "store"
+    prov = snapshot(repo, store, "model")
+    root = store / prov.snapshot
+    files = [p for p in root.rglob("*") if p.is_file() and not p.is_symlink()]
+    assert files
+    for path in files:
+        assert not path.stat().st_mode & 0o222, path
+    assert (root / "run.sh").stat().st_mode & 0o111  # still executable
+    assert prov.patch is not None
+    assert not (store / prov.patch).stat().st_mode & 0o222
+    # a build backend which writes into a file of a shadow tree of the snapshot
+    # fails loudly instead of changing the content-addressed snapshot
+    shadow = shadow_tree(root, tmp_path / "shadow")
+    with pytest.raises(PermissionError):
+        (shadow / "same.txt").write_text("changed\n")
+    assert (root / "same.txt").read_text() == "same\n"
+    # unchanged files of the next snapshot are still hard links
+    (repo / "dirty.py").write_text("x = 2\n")
+    second = store / snapshot(repo, store, "model").snapshot
+    assert os.stat(root / "same.txt").st_ino == os.stat(second / "same.txt").st_ino
