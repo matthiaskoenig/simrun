@@ -1,0 +1,29 @@
+# The run store: an NFS export (`store-settings.yaml`) mounted by csi-driver-nfs into
+# the pods of the runs at `ClusterConfig.store_mount`; the data of the store is the
+# directory `store` of the share, kept when the claim is deleted.
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: simrun-nfs
+provisioner: nfs.csi.k8s.io
+parameters:
+  server: SERVER
+  share: SHARE
+  subDir: store
+reclaimPolicy: Retain
+volumeBindingMode: Immediate
+mountOptions:
+  - nfsvers=4.2
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: simrun-store
+  namespace: simrun
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: simrun-nfs
+  resources:
+    requests:
+      storage: 4Ti

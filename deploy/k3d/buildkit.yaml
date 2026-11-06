@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: buildkitd-config
+  namespace: simrun
+data:
+  buildkitd.toml: |
+    [registry."k3d-simrun-registry:5000"]
+      http = true
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: buildkitd
+  namespace: simrun
+spec:
+  template:
+    spec:
+      containers:
+        - name: buildkitd
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1Gi

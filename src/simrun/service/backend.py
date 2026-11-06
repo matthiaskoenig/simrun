@@ -9,6 +9,8 @@ from simrun.planner import Node
 
 # phases of an Argo workflow or node which do not change any more
 FINAL_PHASES = frozenset({"Succeeded", "Failed", "Error"})
+# the phase of a task node whose pod was evicted (or lost) and waits for its retry
+PREEMPTED_PHASE = "Preempted"
 
 
 class BackendStatus(BaseModel):
@@ -21,7 +23,8 @@ class BackendStatus(BaseModel):
         phase: Phase of the workflow, e.g. `Pending`, `Running`, `Succeeded`.
         tasks: Phase of every node of the DAG by its name: `<task>-w0`,
             `<task>-extra(<i>:<item>)` and `<task>-merge` of a split task, `<task>` of
-            an unsplit one; a node not yet created is missing.
+            an unsplit one; a node not yet created is missing. A node whose pod was
+            evicted and whose retry waits is `Preempted` (`PREEMPTED_PHASE`).
         oom: Pods killed for memory per worker id (`<task>-w<i>`), over all attempts.
     """
 

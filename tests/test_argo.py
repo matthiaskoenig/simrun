@@ -290,14 +290,17 @@ def test_reservation() -> None:
     assert "tolerations" not in plain
     reserved = _manifest(reserve="srv-01")["spec"]
     assert reserved["nodeSelector"] == {"simrun/reserved": RUN}
+    # no effect: the run tolerates its taint whatever its effect (NoExecute)
     assert reserved["tolerations"] == [
-        {
-            "key": "simrun/reserved",
-            "operator": "Equal",
-            "value": RUN,
-            "effect": "NoSchedule",
-        }
+        {"key": "simrun/reserved", "operator": "Equal", "value": RUN}
     ]
+
+
+def test_service_account() -> None:
+    assert _manifest()["spec"]["serviceAccountName"] == "simrun-workflow"
+    config = CONFIG.model_copy(update={"service_account": "runner"})
+    manifest = to_argo(_record(), PLANS, TYPES, config)
+    assert manifest["spec"]["serviceAccountName"] == "runner"
 
 
 def test_workflow_metadata() -> None:

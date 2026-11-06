@@ -37,7 +37,12 @@ from datetime import UTC, datetime
 
 from simrun.plugins import TaskType
 from simrun.resources import GIB, ResourceKey, ResourceStore
-from simrun.service.backend import FINAL_PHASES, Backend, BackendStatus
+from simrun.service.backend import (
+    FINAL_PHASES,
+    PREEMPTED_PHASE,
+    Backend,
+    BackendStatus,
+)
 from simrun.store import RunRecord, RunState, RunStore, TaskState
 from simrun.worker import MERGED_MARKER, WORKERS_DIR, WorkerReport
 from simrun.workflow import Workflow
@@ -71,6 +76,8 @@ def _split_state(task_id: str, nodes: dict[str, str]) -> TaskState:
         return TaskState.SKIPPED
     if "Running" in (w0, merge, *extras) or w0 == "Succeeded":
         return TaskState.RUNNING
+    if PREEMPTED_PHASE in (w0, merge, *extras):
+        return TaskState.PREEMPTED
     if w0 is not None or merge is not None or extras:
         return TaskState.QUEUED
     return TaskState.WAITING
@@ -87,6 +94,8 @@ def _unsplit_state(phase: str | None) -> TaskState:
         return TaskState.SKIPPED
     if phase == "Running":
         return TaskState.RUNNING
+    if phase == PREEMPTED_PHASE:
+        return TaskState.PREEMPTED
     return TaskState.QUEUED
 
 
@@ -96,7 +105,8 @@ def task_states(
     """The state of every task of a workflow from the phases of its DAG nodes.
 
     A task is running when one of its pods runs (or its coordinator is done and the
-    merge waits), queued when it has pods of which none runs, waiting without pods.
+    merge waits), preempted when none runs and a pod evicted waits for its retry,
+    queued when it has pods of which none runs, waiting without pods.
 
     Args:
         workflow: The workflow of the run.

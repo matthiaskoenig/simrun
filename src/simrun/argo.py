@@ -26,7 +26,11 @@ directory of the store mounted read-write and the snapshots read-only, a scratch
 directory on the local disk (`<run>/<task>/<worker>` for a worker, `<run>/<task>/merge`
 for a merge, `<run>/<task>` for an unsplit task), and the environment of the worker
 harness (`simrun.worker`). The label `simrun/group` is the group made a valid label
-value (`label_value`), the annotation `simrun/group` the group as given.
+value (`label_value`), the annotation `simrun/group` the group as given. The pods run
+as the service account `ClusterConfig.service_account`, which the wait container of
+the executor needs to write its results. The pods of a run with a reserved node select
+the node by its label `simrun/reserved=<run id>` and tolerate its taint of the same
+key and value whatever its effect (the backend taints with `NoExecute`).
 
 The Argo features this relies on (Argo Workflows v4.1.6):
 
@@ -400,10 +404,9 @@ def to_argo(
     tolerations = None
     if record.reserve is not None:
         node_selector = {RESERVED_KEY: record.id}
+        # no effect: tolerates the taint of the reservation whatever its effect
         tolerations = [
-            m.Toleration(
-                key=RESERVED_KEY, operator="Equal", value=record.id, effect="NoSchedule"
-            )
+            m.Toleration(key=RESERVED_KEY, operator="Equal", value=record.id)
         ]
     volumes = [
         m.Volume(
@@ -425,6 +428,7 @@ def to_argo(
         labels=labels,
         annotations=annotations,
         entrypoint=ENTRYPOINT,
+        service_account_name=config.service_account,
         templates=list(templates),  # a list of the union hera declares
         volumes=volumes,
         node_selector=node_selector,

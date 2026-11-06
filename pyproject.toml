@@ -50,7 +50,8 @@ markers = [
 ]
 
 [tool.ty.environment]
-root = ["./src"]
+# the helpers of the cluster tests are imported by the module name
+root = ["./src", "./tests/cluster"]
 
 [tool.ty.src]
 include = ["src", "tests"]

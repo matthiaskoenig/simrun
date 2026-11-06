@@ -1,0 +1,11 @@
+# The NFS export of the run store, substituted into the StorageClass by the
+# replacements of the kustomization; never applied to the cluster (local-config).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simrun-store-settings
+  annotations:
+    config.kubernetes.io/local-config: "true"
+data:
+  server: storage.cluster.internal
+  share: /tank/simrun

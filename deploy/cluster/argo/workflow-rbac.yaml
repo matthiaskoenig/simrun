@@ -1,0 +1,31 @@
+# The service account of the pods of the workflows: the wait container of the
+# emissary executor writes the result of its node as a WorkflowTaskResult.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: simrun-workflow
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: simrun-workflow
+rules:
+  - apiGroups:
+      - argoproj.io
+    resources:
+      - workflowtaskresults
+    verbs:
+      - create
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: simrun-workflow
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: simrun-workflow
+subjects:
+  - kind: ServiceAccount
+    name: simrun-workflow

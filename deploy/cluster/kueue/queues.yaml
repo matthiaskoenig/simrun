@@ -1,0 +1,57 @@
+# The queue of simrun: one flavor over the nodes labelled `simrun/worker=true` (the
+# label is required by a flavor with a topology) with topology aware scheduling by
+# host (every pod requires one node), one ClusterQueue whose quotas are the
+# allocatable resources of the worker nodes, preempting lower priorities within it.
+# The quotas are the ones of the cluster of the design; an overlay sets its own.
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: Topology
+metadata:
+  name: simrun-hosts
+spec:
+  levels:
+    - nodeLabel: kubernetes.io/hostname
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ResourceFlavor
+metadata:
+  name: simrun-nodes
+spec:
+  nodeLabels:
+    simrun/worker: "true"
+  topologyName: simrun-hosts
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: simrun
+spec:
+  namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: simrun
+  preemption:
+    withinClusterQueue: LowerPriority
+  resourceGroups:
+    - coveredResources:
+        - cpu
+        - memory
+        - nvidia.com/gpu
+        - ephemeral-storage
+      flavors:
+        - name: simrun-nodes
+          resources:
+            - name: cpu
+              nominalQuota: "544"
+            - name: memory
+              nominalQuota: 3068Gi
+            - name: nvidia.com/gpu
+              nominalQuota: "0"
+            - name: ephemeral-storage
+              nominalQuota: 10Ti
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: LocalQueue
+metadata:
+  name: simrun
+  namespace: simrun
+spec:
+  clusterQueue: simrun

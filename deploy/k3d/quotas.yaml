@@ -1,0 +1,23 @@
+# the allocatable resources of the three agents (k3d `--agents-memory 6g`: 6442450Ki)
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: ClusterQueue
+metadata:
+  name: simrun
+spec:
+  resourceGroups:
+    - coveredResources:
+        - cpu
+        - memory
+        - nvidia.com/gpu
+        - ephemeral-storage
+      flavors:
+        - name: simrun-nodes
+          resources:
+            - name: cpu
+              nominalQuota: "60"
+            - name: memory
+              nominalQuota: 18874350Ki
+            - name: nvidia.com/gpu
+              nominalQuota: "0"
+            - name: ephemeral-storage
+              nominalQuota: 1Ti
