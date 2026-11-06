@@ -252,7 +252,9 @@ def test_paths_from_env(tmp_path: Path) -> None:
     assert paths.scratch == Path("/scratch/r1")
 
 
-def test_install_editable_command(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_install_editable_command(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     calls: list[list[str]] = []
 
     def run(command: list[str], check: bool) -> None:
@@ -263,7 +265,13 @@ def test_install_editable_command(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(worker.site, "addsitedir", lambda directory: None)
     worker.install_editable([])
     assert calls == []
-    worker.install_editable(["/store/snapshots/a/1", "/store/snapshots/b/2"])
+    snapshots = [tmp_path / "snapshots/a/1", tmp_path / "snapshots/b/2"]
+    for snapshot in snapshots:
+        (snapshot / "pkg").mkdir(parents=True)
+        (snapshot / "pkg/__init__.py").write_text("")
+    root = tmp_path / "sources"
+    worker.install_editable([str(s) for s in snapshots], root=root)
+    # every snapshot is installed from a writable tree of links to its files
     assert calls == [
         [
             "uv",
@@ -273,12 +281,83 @@ def test_install_editable_command(monkeypatch: pytest.MonkeyPatch) -> None:
             sys.executable,
             "--no-deps",
             "--no-index",
+            "--no-build-isolation",
             "-e",
-            "/store/snapshots/a/1",
+            str(root / "0-1"),
             "-e",
-            "/store/snapshots/b/2",
+            str(root / "1-2"),
         ]
     ]
+    link = root / "0-1/pkg/__init__.py"
+    assert link.is_symlink() and link.resolve() == snapshots[0] / "pkg/__init__.py"
+
+
+HATCH_PROJECT = """
+[project]
+name = "hlib"
+version = "0.1"
+[project.entry-points."simrun.task_types"]
+x = "hlib:X"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+"""
+
+SETUPTOOLS_PROJECT = """
+[project]
+name = "slib"
+version = "0.1"
+dependencies = ["packaging"]
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+[tool.setuptools.packages.find]
+where = ["."]
+"""
+
+
+def _files(root: Path) -> list[str]:
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*"))
+
+
+def test_install_read_only_snapshots(tmp_path: Path) -> None:
+    # as in a pod: the snapshots are read-only, the image has the build backends,
+    # no index; offline from the cache of uv
+    venv = tmp_path / "venv"
+    env = {**os.environ, "UV_OFFLINE": "1"}
+    subprocess.run(["uv", "venv", "-q", str(venv)], check=True, env=env)
+    python = str(venv / "bin" / "python")
+    backends = ["hatchling", "editables", "setuptools", "packaging"]
+    install = ["uv", "pip", "install", "-q", "--python", python, *backends]
+    if subprocess.run(install, env=env, check=False).returncode != 0:
+        pytest.skip("the build backends are not in the cache of uv")
+    snapshots = tmp_path / "snapshots"
+    hlib = snapshots / "hlib/1"
+    (hlib / "src/hlib").mkdir(parents=True)
+    (hlib / "pyproject.toml").write_text(HATCH_PROJECT)
+    (hlib / "src/hlib/__init__.py").write_text("X = 1\n")
+    slib = snapshots / "slib/2"
+    (slib / "slib").mkdir(parents=True)
+    (slib / "pyproject.toml").write_text(SETUPTOOLS_PROJECT)
+    (slib / "slib/__init__.py").write_text("Y = 2\n")
+    before = _files(snapshots)
+    for path in [snapshots, *snapshots.rglob("*")]:
+        path.chmod(path.stat().st_mode & ~0o222)
+    try:
+        worker.install_editable(
+            [str(hlib), str(slib)], python=python, root=tmp_path / "sources"
+        )
+        assert _files(snapshots) == before
+    finally:
+        for path in [snapshots, *snapshots.rglob("*")]:
+            path.chmod(path.stat().st_mode | 0o200)
+    code = (
+        "import hlib, slib; from importlib.metadata import entry_points; "
+        "assert (hlib.X, slib.Y) == (1, 2); "
+        "assert [e.value for e in entry_points(group='simrun.task_types')] == "
+        "['hlib:X']"
+    )
+    subprocess.run([python, "-P", "-c", code], check=True, cwd=tmp_path)
 
 
 def test_merge_incomplete_raises(tmp_path: Path) -> None:

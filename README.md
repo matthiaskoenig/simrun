@@ -23,6 +23,20 @@ and the planner count as free for the runs.
 
 `deploy/k3d` is the overlay of the integration tests.
 
+## Environments
+
+The image of a run whose model has a `pyproject.toml` holds the third party
+dependencies of the model and its snapshotted libraries, locked with `uv lock`
+against the snapshots, and their build backends: `[build-system].requires` of every
+source (the legacy backend of setuptools without one) and what the backend asks for
+an editable build (`get_requires_for_build_editable`, e.g. `editables` of
+hatchling), asked at resolve time. The code comes from the snapshots, which a pod
+mounts read-only and installs at its start with `uv pip install --no-deps
+--no-index --no-build-isolation -e`, each from a writable tree of links to its files
+(a backend may write a version file or metadata into the tree it builds). The image
+is named by the hash of the lock, the python version and the simrun version, and
+built only when the registry does not have it.
+
 ## Pods and their harness
 
 A split task runs `simrun-worker` in its pods and `simrun-merge` in its merge; an
