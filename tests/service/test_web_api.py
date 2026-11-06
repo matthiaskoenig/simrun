@@ -1,6 +1,9 @@
+import json
+from pathlib import Path
 from typing import Any
 
 from simrun.ledger import Ledger
+from simrun.service.app import openapi_document
 from simrun.service.backend import Placement
 from simrun.worker import WorkerReport, write_report
 
@@ -136,3 +139,42 @@ def test_workers_unknown_task(service):
     run_id = service.submit()["id"]
     assert service.get(f"/runs/{run_id}/tasks/nope/workers").status_code == 404
     assert service.get("/runs/nope/tasks/squares/workers").status_code == 404
+
+
+def test_web_served_without_token(service_factory, tmp_path):
+    web = tmp_path / "web"
+    web.mkdir()
+    (web / "index.html").write_text("<p>app</p>")
+    with service_factory(web=web) as service:
+        got = service.client.get("/ui/")
+        assert got.status_code == 200
+        assert got.text == "<p>app</p>"
+        assert service.client.get("/runs").status_code == 401
+
+
+def test_no_web_without_setting(service):
+    assert service.client.get("/ui/").status_code == 404
+    assert service.client.get("/runs").status_code == 401
+
+
+def test_openapi_document_is_current():
+    expected = json.loads(Path("frontend/src/api/openapi.json").read_text())
+    assert openapi_document() == expected, (
+        "frontend/src/api/openapi.json is out of date: run "
+        "`uv run python scripts/openapi.py`"
+    )
+
+
+def test_openapi_document_has_the_schemas_of_the_frontend():
+    names = set(openapi_document()["components"]["schemas"])
+    assert {
+        "RunItem",
+        "RunSummary",
+        "RunRecord",
+        "TaskProgress",
+        "ServerUsage",
+        "PodUsage",
+        "WorkerView",
+        "Identity",
+        "OutputFile",
+    } <= names

@@ -1,0 +1,2344 @@
+{
+  "components": {
+    "schemas": {
+      "CleanupRequest": {
+        "description": "Which ended runs a cleanup removes.\n\nAttributes:\n    older_than_days: Runs which ended at least this many days ago.\n    group: Only the runs of this group.\n    failed_only: Only failed runs.\n    dry_run: List what would be removed, remove nothing.",
+        "properties": {
+          "dry_run": {
+            "default": false,
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "failed_only": {
+            "default": false,
+            "title": "Failed Only",
+            "type": "boolean"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "older_than_days": {
+            "minimum": 0.0,
+            "title": "Older Than Days",
+            "type": "number"
+          }
+        },
+        "required": [
+          "older_than_days"
+        ],
+        "title": "CleanupRequest",
+        "type": "object"
+      },
+      "CleanupResult": {
+        "description": "What a cleanup or a deletion removed, paths relative to the store.",
+        "properties": {
+          "bytes_freed": {
+            "title": "Bytes Freed",
+            "type": "integer"
+          },
+          "dry_run": {
+            "title": "Dry Run",
+            "type": "boolean"
+          },
+          "runs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Runs",
+            "type": "array"
+          },
+          "snapshots": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Snapshots",
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs",
+          "snapshots",
+          "bytes_freed",
+          "dry_run"
+        ],
+        "title": "CleanupResult",
+        "type": "object"
+      },
+      "CompareRequest": {
+        "description": "The runs to compare.",
+        "properties": {
+          "runs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Runs",
+            "type": "array"
+          }
+        },
+        "required": [
+          "runs"
+        ],
+        "title": "CompareRequest",
+        "type": "object"
+      },
+      "CompareTable": {
+        "description": "A table of runs.\n\nAttributes:\n    columns: The columns in order: `run`, `group`, `agent`, `state`, then per\n        source `<source>.changed_files` and `<source>.diff_sha256`, then every\n        key of `out/summary.json` of every task as `<task>.<key>`.\n    rows: One row per run, with every column (None where a run has no value).",
+        "properties": {
+          "columns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Columns",
+            "type": "array"
+          },
+          "rows": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Rows",
+            "type": "array"
+          }
+        },
+        "required": [
+          "columns",
+          "rows"
+        ],
+        "title": "CompareTable",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Identity": {
+        "description": "Who calls the service: a person or an agent acting for a person.\n\nAttributes:\n    name: Name of the person or the agent.\n    kind: `person` or `agent`.\n    owner: The person responsible; a person's owner is the person.",
+        "properties": {
+          "kind": {
+            "enum": [
+              "person",
+              "agent"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "kind",
+          "owner"
+        ],
+        "title": "Identity",
+        "type": "object"
+      },
+      "LedgerCounts": {
+        "description": "The number of units per state.",
+        "properties": {
+          "claimed": {
+            "title": "Claimed",
+            "type": "integer"
+          },
+          "done": {
+            "title": "Done",
+            "type": "integer"
+          },
+          "pending": {
+            "title": "Pending",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pending",
+          "claimed",
+          "done",
+          "total"
+        ],
+        "title": "LedgerCounts",
+        "type": "object"
+      },
+      "OutputFile": {
+        "description": "A file of the output of a task, its path relative to the store.",
+        "properties": {
+          "bytes": {
+            "title": "Bytes",
+            "type": "integer"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "bytes"
+        ],
+        "title": "OutputFile",
+        "type": "object"
+      },
+      "PodShape": {
+        "description": "The resources of a worker pod.\n\nAttributes:\n    cores: Number of cores.\n    memory_gb: Memory in GiB, rounded up.\n    processes: Number of worker processes.\n    per_worker_gb: Memory per worker process in GiB.\n    retry_memory_gb: Memory of a retry in GiB.\n    retry_per_worker_gb: Memory per worker process of a retry in GiB.\n    scratch_gb: Local scratch in GiB.\n    gpus: Number of GPUs.",
+        "properties": {
+          "cores": {
+            "title": "Cores",
+            "type": "integer"
+          },
+          "gpus": {
+            "title": "Gpus",
+            "type": "integer"
+          },
+          "memory_gb": {
+            "title": "Memory Gb",
+            "type": "integer"
+          },
+          "per_worker_gb": {
+            "title": "Per Worker Gb",
+            "type": "number"
+          },
+          "processes": {
+            "title": "Processes",
+            "type": "integer"
+          },
+          "retry_memory_gb": {
+            "title": "Retry Memory Gb",
+            "type": "integer"
+          },
+          "retry_per_worker_gb": {
+            "title": "Retry Per Worker Gb",
+            "type": "number"
+          },
+          "scratch_gb": {
+            "title": "Scratch Gb",
+            "type": "number"
+          }
+        },
+        "required": [
+          "cores",
+          "memory_gb",
+          "processes",
+          "per_worker_gb",
+          "retry_memory_gb",
+          "retry_per_worker_gb",
+          "scratch_gb",
+          "gpus"
+        ],
+        "title": "PodShape",
+        "type": "object"
+      },
+      "PodUsage": {
+        "description": "A pod of a run on a server.\n\nAttributes:\n    run_id: The run of the pod, None when the pod belongs to no known run.\n    task_id: The task of the pod.\n    pod: The name of the pod.\n    phase: The phase of the pod.\n    cores: The cores it requests.\n    memory_gb: The GiB of memory it requests.",
+        "properties": {
+          "cores": {
+            "title": "Cores",
+            "type": "number"
+          },
+          "memory_gb": {
+            "title": "Memory Gb",
+            "type": "number"
+          },
+          "phase": {
+            "title": "Phase",
+            "type": "string"
+          },
+          "pod": {
+            "title": "Pod",
+            "type": "string"
+          },
+          "run_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Run Id"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "task_id",
+          "pod",
+          "phase",
+          "cores",
+          "memory_gb"
+        ],
+        "title": "PodUsage",
+        "type": "object"
+      },
+      "Priority": {
+        "description": "The priority of a run in the queue.",
+        "enum": [
+          "owner",
+          "standard",
+          "agent"
+        ],
+        "title": "Priority",
+        "type": "string"
+      },
+      "ResolvedResources": {
+        "description": "The resources requested for a task.\n\nAttributes:\n    memory_base_gb: Base memory in GiB.\n    memory_per_worker_gb: Memory per worker in GiB.\n    scratch_gb: Local scratch in GiB.\n    gpus: Number of GPUs.\n    seconds_per_unit: Median seconds of a unit in one process, None without\n        records.\n    samples: Number of memory observations the memory was learned from.\n    source: `learned from N runs`, `plugin hint`, `default` or `override`.",
+        "properties": {
+          "gpus": {
+            "title": "Gpus",
+            "type": "integer"
+          },
+          "memory_base_gb": {
+            "title": "Memory Base Gb",
+            "type": "number"
+          },
+          "memory_per_worker_gb": {
+            "title": "Memory Per Worker Gb",
+            "type": "number"
+          },
+          "samples": {
+            "title": "Samples",
+            "type": "integer"
+          },
+          "scratch_gb": {
+            "title": "Scratch Gb",
+            "type": "number"
+          },
+          "seconds_per_unit": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds Per Unit"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "memory_base_gb",
+          "memory_per_worker_gb",
+          "scratch_gb",
+          "gpus",
+          "seconds_per_unit",
+          "samples",
+          "source"
+        ],
+        "title": "ResolvedResources",
+        "type": "object"
+      },
+      "ResourceOverride": {
+        "description": "Resources of a task which replace the learned or default ones.",
+        "properties": {
+          "gpus": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Gpus"
+          },
+          "memory_per_worker_gb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Per Worker Gb"
+          },
+          "scratch_gb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scratch Gb"
+          },
+          "workers": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Workers"
+          }
+        },
+        "title": "ResourceOverride",
+        "type": "object"
+      },
+      "RunItem": {
+        "description": "A run of the list of runs: its summary with its owner and workflow name.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "finished": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "submitted_by": {
+            "title": "Submitted By",
+            "type": "string"
+          },
+          "tasks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TaskState"
+            },
+            "title": "Tasks",
+            "type": "object"
+          },
+          "workflow": {
+            "title": "Workflow",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "group",
+          "submitted_by",
+          "agent",
+          "priority",
+          "tasks",
+          "created",
+          "finished",
+          "message",
+          "owner",
+          "workflow"
+        ],
+        "title": "RunItem",
+        "type": "object"
+      },
+      "RunRecord": {
+        "description": "The record of a run.\n\nAttributes:\n    id: Run id, `YYYYMMDD-HHMMSS-<6 hex>`.\n    submitted_by: Submitting user.\n    owner: Owner of the run.\n    agent: Agent which submitted the run.\n    priority: Priority in the queue.\n    group: Group of the run.\n    workflow: The workflow.\n    sources: Provenance of the snapshots of the sources.\n    image: Container image.\n    reserve: Reservation.\n    state: State of the run.\n    tasks: State of every task.\n    plans: The task plans as dicts.\n    backend_name: Name of the backend workflow.\n    created: Time of creation.\n    built: Time the image of the run was ready and the submission of its workflow\n        began, None while its environment is resolved and built.\n    finished: Time of the end.\n    message: A message, e.g. the failure.\n    oom_kills: The attempts of the pods killed for memory per worker (the worker\n        id, the task id of an unsplit task, `<task>-merge` of a merge).\n    pending_release: A reserved node whose release failed, retried by the service.\n    pending_cancel: Whether the workflow must still be cancelled, e.g. one which\n        may have been created by a submission that failed.\n    pending_logs: Whether the logs of the pods of an ended run must still be\n        kept in the store (`simrun.service.logs`).",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "backend_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Backend Name"
+          },
+          "built": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Built"
+          },
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "finished": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "image": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Image"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "oom_kills": {
+            "additionalProperties": {
+              "items": {
+                "type": "integer"
+              },
+              "type": "array"
+            },
+            "title": "Oom Kills",
+            "type": "object"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "pending_cancel": {
+            "default": false,
+            "title": "Pending Cancel",
+            "type": "boolean"
+          },
+          "pending_logs": {
+            "default": false,
+            "title": "Pending Logs",
+            "type": "boolean"
+          },
+          "pending_release": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Pending Release"
+          },
+          "plans": {
+            "additionalProperties": true,
+            "title": "Plans",
+            "type": "object"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority"
+          },
+          "reserve": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserve"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceProvenance"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "submitted_by": {
+            "title": "Submitted By",
+            "type": "string"
+          },
+          "tasks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TaskState"
+            },
+            "title": "Tasks",
+            "type": "object"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
+          }
+        },
+        "required": [
+          "id",
+          "submitted_by",
+          "owner",
+          "agent",
+          "priority",
+          "group",
+          "workflow",
+          "sources",
+          "image",
+          "reserve",
+          "state",
+          "tasks",
+          "plans",
+          "backend_name",
+          "created",
+          "finished",
+          "message"
+        ],
+        "title": "RunRecord",
+        "type": "object"
+      },
+      "RunState": {
+        "description": "State of a run.",
+        "enum": [
+          "submitting",
+          "queued",
+          "running",
+          "succeeded",
+          "failed",
+          "cancelled"
+        ],
+        "title": "RunState",
+        "type": "string"
+      },
+      "RunSummary": {
+        "description": "The state of a run without its workflow and plans.",
+        "properties": {
+          "agent": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent"
+          },
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "finished": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "message": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Message"
+          },
+          "priority": {
+            "$ref": "#/components/schemas/Priority"
+          },
+          "state": {
+            "$ref": "#/components/schemas/RunState"
+          },
+          "submitted_by": {
+            "title": "Submitted By",
+            "type": "string"
+          },
+          "tasks": {
+            "additionalProperties": {
+              "$ref": "#/components/schemas/TaskState"
+            },
+            "title": "Tasks",
+            "type": "object"
+          }
+        },
+        "required": [
+          "id",
+          "state",
+          "group",
+          "submitted_by",
+          "agent",
+          "priority",
+          "tasks",
+          "created",
+          "finished",
+          "message"
+        ],
+        "title": "RunSummary",
+        "type": "object"
+      },
+      "ServerUsage": {
+        "description": "A server of the cluster with the pods of runs on it.",
+        "properties": {
+          "cores": {
+            "title": "Cores",
+            "type": "integer"
+          },
+          "gpus": {
+            "title": "Gpus",
+            "type": "integer"
+          },
+          "memory_gb": {
+            "title": "Memory Gb",
+            "type": "number"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "pods": {
+            "items": {
+              "$ref": "#/components/schemas/PodUsage"
+            },
+            "title": "Pods",
+            "type": "array"
+          },
+          "reserved_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserved By"
+          }
+        },
+        "required": [
+          "name",
+          "cores",
+          "memory_gb",
+          "gpus",
+          "reserved_by",
+          "pods"
+        ],
+        "title": "ServerUsage",
+        "type": "object"
+      },
+      "SourceProvenance": {
+        "description": "Where the files of a snapshot come from.\n\nAttributes:\n    name: Name of the source.\n    branch: Branch of the working tree, `None` for a detached HEAD.\n    commit: Commit of HEAD.\n    dirty: Whether the working tree differs from HEAD.\n    changed_files: Porcelain status lines, e.g. `M src/a.py`.\n    diff_sha256: Hash of the snapshot tree (paths, types, modes, contents);\n        the patch stays as provenance.\n    snapshot: Directory of the snapshot, relative to the store root.\n    patch: Stored `git diff HEAD --binary`, relative to the store root.",
+        "properties": {
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Files",
+            "type": "array"
+          },
+          "commit": {
+            "title": "Commit",
+            "type": "string"
+          },
+          "diff_sha256": {
+            "title": "Diff Sha256",
+            "type": "string"
+          },
+          "dirty": {
+            "title": "Dirty",
+            "type": "boolean"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "patch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Patch"
+          },
+          "snapshot": {
+            "title": "Snapshot",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "branch",
+          "commit",
+          "dirty",
+          "changed_files",
+          "diff_sha256",
+          "snapshot",
+          "patch"
+        ],
+        "title": "SourceProvenance",
+        "type": "object"
+      },
+      "SplitMode": {
+        "description": "How the pieces of a task are placed on the nodes.",
+        "enum": [
+          "fastest",
+          "single-server"
+        ],
+        "title": "SplitMode",
+        "type": "string"
+      },
+      "SubmitRequest": {
+        "description": "A submission of a workflow.\n\nAttributes:\n    workflow: The workflow.\n    sources: The snapshots of the sources, the model first.\n    group: Group of the run, e.g. a study.\n    split: Split mode of every task, else the one of the task or the workflow.\n    reserve: A node reserved for the run, else the one of the workflow.",
+        "properties": {
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "reserve": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserve"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceProvenance"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "split": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SplitMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
+          }
+        },
+        "required": [
+          "workflow"
+        ],
+        "title": "SubmitRequest",
+        "type": "object"
+      },
+      "TaskEstimate": {
+        "description": "The resources, the plan and the expected duration of a task.\n\nAttributes:\n    resources: The resolved resources.\n    plan: The plan of the pods.\n    seconds: The expected seconds of a split task: the median time of a unit in\n        one process of past runs times the rounds of its units over the\n        processes of its pods, None without past runs.",
+        "properties": {
+          "plan": {
+            "$ref": "#/components/schemas/TaskPlan"
+          },
+          "resources": {
+            "$ref": "#/components/schemas/ResolvedResources"
+          },
+          "seconds": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Seconds"
+          }
+        },
+        "required": [
+          "resources",
+          "plan",
+          "seconds"
+        ],
+        "title": "TaskEstimate",
+        "type": "object"
+      },
+      "TaskPlan": {
+        "description": "The plan of a task.\n\nAttributes:\n    task_id: Id of the task.\n    pods: Number of worker pods.\n    shape: Shape of a pod.\n    base_priority: Priority class of the first pods.\n    extra_priority: Priority class of the further pods.\n    units: Number of units, None for an unsplit task.",
+        "properties": {
+          "base_priority": {
+            "title": "Base Priority",
+            "type": "string"
+          },
+          "extra_priority": {
+            "title": "Extra Priority",
+            "type": "string"
+          },
+          "pods": {
+            "title": "Pods",
+            "type": "integer"
+          },
+          "shape": {
+            "$ref": "#/components/schemas/PodShape"
+          },
+          "task_id": {
+            "title": "Task Id",
+            "type": "string"
+          },
+          "units": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Units"
+          }
+        },
+        "required": [
+          "task_id",
+          "pods",
+          "shape",
+          "base_priority",
+          "extra_priority",
+          "units"
+        ],
+        "title": "TaskPlan",
+        "type": "object"
+      },
+      "TaskProgress": {
+        "description": "The progress of a task: its ledger and the last line of its progress file.",
+        "properties": {
+          "counts": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/LedgerCounts"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "last": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last"
+          }
+        },
+        "required": [
+          "counts",
+          "last"
+        ],
+        "title": "TaskProgress",
+        "type": "object"
+      },
+      "TaskSpec": {
+        "description": "A task of a workflow.\n\nAttributes:\n    id: Identifier of the task within the workflow.\n    type: Name of the task plugin.\n    settings: Settings handed to the plugin.\n    inputs: Input port to the output of another task, `<task>.<port>`.\n    split: Split mode of the task, the one of the workflow by default.\n    resources: Resources replacing the learned or default ones.\n    stage: Input ports copied to local scratch.",
+        "properties": {
+          "id": {
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "title": "Id",
+            "type": "string"
+          },
+          "inputs": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Inputs",
+            "type": "object"
+          },
+          "resources": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ResourceOverride"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settings": {
+            "additionalProperties": true,
+            "title": "Settings",
+            "type": "object"
+          },
+          "split": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SplitMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stage": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Stage",
+            "type": "array"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "type"
+        ],
+        "title": "TaskSpec",
+        "type": "object"
+      },
+      "TaskState": {
+        "description": "State of a task of a run.",
+        "enum": [
+          "waiting",
+          "queued",
+          "running",
+          "preempted",
+          "retrying",
+          "done",
+          "failed",
+          "skipped"
+        ],
+        "title": "TaskState",
+        "type": "string"
+      },
+      "Usage": {
+        "description": "Bytes of the run store per run and per group (`\"\"` without a group).",
+        "properties": {
+          "groups": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Groups",
+            "type": "object"
+          },
+          "runs": {
+            "additionalProperties": {
+              "type": "integer"
+            },
+            "title": "Runs",
+            "type": "object"
+          }
+        },
+        "required": [
+          "runs",
+          "groups"
+        ],
+        "title": "Usage",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "ValidationResult": {
+        "description": "The result of a validation: the errors of a workflow, none when valid.",
+        "properties": {
+          "errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Errors",
+            "type": "array"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "ok",
+          "errors"
+        ],
+        "title": "ValidationResult",
+        "type": "object"
+      },
+      "WorkerView": {
+        "description": "A worker of a task, from its reports, its pod and its claims.\n\nAttributes:\n    worker: The worker id.\n    node: The server of the worker, None while its pod is not bound.\n    state: `running` while its pod lives and the last attempt has no final\n        report, `failed` when the last attempt was killed for memory, else\n        `done`.\n    attempts: The attempts of the worker (reports, and the running one).\n    processes: The processes of its pool, None before a report.\n    units_done: The units its reports count as done.\n    units_claimed: The units it holds claimed now.\n    peak_memory_gb: The peak memory of the last report.\n    memory_limit_gb: The memory limit of the last report.\n    oom_killed: Whether the last attempt was killed for memory.",
+        "properties": {
+          "attempts": {
+            "title": "Attempts",
+            "type": "integer"
+          },
+          "memory_limit_gb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Memory Limit Gb"
+          },
+          "node": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Node"
+          },
+          "oom_killed": {
+            "title": "Oom Killed",
+            "type": "boolean"
+          },
+          "peak_memory_gb": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Peak Memory Gb"
+          },
+          "processes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Processes"
+          },
+          "state": {
+            "enum": [
+              "running",
+              "done",
+              "failed"
+            ],
+            "title": "State",
+            "type": "string"
+          },
+          "units_claimed": {
+            "title": "Units Claimed",
+            "type": "integer"
+          },
+          "units_done": {
+            "title": "Units Done",
+            "type": "integer"
+          },
+          "worker": {
+            "title": "Worker",
+            "type": "string"
+          }
+        },
+        "required": [
+          "worker",
+          "node",
+          "state",
+          "attempts",
+          "processes",
+          "units_done",
+          "units_claimed",
+          "peak_memory_gb",
+          "memory_limit_gb",
+          "oom_killed"
+        ],
+        "title": "WorkerView",
+        "type": "object"
+      },
+      "Workflow": {
+        "description": "A workflow: tasks which read the outputs of each other.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "reserve": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserve"
+          },
+          "split": {
+            "$ref": "#/components/schemas/SplitMode",
+            "default": "fastest"
+          },
+          "tasks": {
+            "items": {
+              "$ref": "#/components/schemas/TaskSpec"
+            },
+            "title": "Tasks",
+            "type": "array"
+          }
+        },
+        "required": [
+          "name",
+          "tasks"
+        ],
+        "title": "Workflow",
+        "type": "object"
+      }
+    },
+    "securitySchemes": {
+      "HTTPBearer": {
+        "scheme": "bearer",
+        "type": "http"
+      }
+    }
+  },
+  "info": {
+    "title": "simrun",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/cleanup": {
+      "post": {
+        "operationId": "cleanup_cleanup_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CleanupRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CleanupResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cleanup"
+      }
+    },
+    "/compare": {
+      "post": {
+        "operationId": "compare_compare_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CompareRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CompareTable"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Compare"
+      }
+    },
+    "/estimate": {
+      "post": {
+        "operationId": "estimate_estimate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/TaskEstimate"
+                  },
+                  "title": "Response Estimate Estimate Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Estimate"
+      }
+    },
+    "/events": {
+      "get": {
+        "operationId": "events_events_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "group",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Group"
+            }
+          },
+          {
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RunState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Events"
+      }
+    },
+    "/me": {
+      "get": {
+        "operationId": "me_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Identity"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Me"
+      }
+    },
+    "/runs": {
+      "get": {
+        "operationId": "list_runs_runs_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "group",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Group"
+            }
+          },
+          {
+            "in": "query",
+            "name": "owner",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Owner"
+            }
+          },
+          {
+            "in": "query",
+            "name": "agent",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Agent"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "$ref": "#/components/schemas/RunState"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunSummary"
+                  },
+                  "title": "Response List Runs Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Runs"
+      },
+      "post": {
+        "operationId": "submit_runs_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SubmitRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Submit"
+      }
+    },
+    "/runs/{run_id}": {
+      "delete": {
+        "operationId": "delete_runs__run_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CleanupResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Delete"
+      },
+      "get": {
+        "operationId": "get_run_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Run"
+      }
+    },
+    "/runs/{run_id}/cancel": {
+      "post": {
+        "operationId": "cancel_runs__run_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Cancel"
+      }
+    },
+    "/runs/{run_id}/events": {
+      "get": {
+        "operationId": "run_events_runs__run_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Run Events"
+      }
+    },
+    "/runs/{run_id}/logs/{task_id}": {
+      "get": {
+        "description": "The logs of the pods of a task, the last `tail_lines` of each (0: all).\n\nThe logs kept in the store once the task was final, else the ones of its\nlive pods.",
+        "operationId": "logs_runs__run_id__logs__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "tail_lines",
+            "required": false,
+            "schema": {
+              "default": 300,
+              "minimum": 0,
+              "title": "Tail Lines",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Logs"
+      }
+    },
+    "/runs/{run_id}/outputs/{task_id}": {
+      "get": {
+        "operationId": "outputs_runs__run_id__outputs__task_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/OutputFile"
+                  },
+                  "title": "Response Outputs Runs  Run Id  Outputs  Task Id  Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Outputs"
+      }
+    },
+    "/runs/{run_id}/progress": {
+      "get": {
+        "operationId": "progress_runs__run_id__progress_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "$ref": "#/components/schemas/TaskProgress"
+                  },
+                  "title": "Response Progress Runs  Run Id  Progress Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Progress"
+      }
+    },
+    "/runs/{run_id}/tasks/{task_id}/workers": {
+      "get": {
+        "operationId": "workers_runs__run_id__tasks__task_id__workers_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "task_id",
+            "required": true,
+            "schema": {
+              "title": "Task Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WorkerView"
+                  },
+                  "title": "Response Workers Runs  Run Id  Tasks  Task Id  Workers Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Workers"
+      }
+    },
+    "/runs/{run_id}/wait": {
+      "get": {
+        "operationId": "wait_runs__run_id__wait_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeout",
+            "required": false,
+            "schema": {
+              "default": 60.0,
+              "maximum": 300.0,
+              "minimum": 0,
+              "title": "Timeout",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Wait"
+      }
+    },
+    "/servers": {
+      "get": {
+        "operationId": "servers_servers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ServerUsage"
+                  },
+                  "title": "Response Servers Servers Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Servers"
+      }
+    },
+    "/usage": {
+      "get": {
+        "operationId": "usage_usage_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Usage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Usage"
+      }
+    },
+    "/validate": {
+      "post": {
+        "operationId": "validate_validate_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "additionalProperties": true,
+                "title": "Body",
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Validate"
+      }
+    }
+  }
+}
