@@ -1,6 +1,5 @@
 import shutil
-import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -363,11 +362,13 @@ def test_cancel_during_submit_cancels_the_workflow(service):
     assert not record.pending_cancel
 
 
-def _submitting(service, age_s: float) -> str:
+def _submitting(service, age_s: float, since=None) -> str:
+    """A run submitting since `age_s` seconds before `since` (default now)."""
     run_id = service.submit(reserve="srv-02")["id"]
     store = RunStore(service.settings.store)
     record = store.read(run_id)
-    created = datetime.fromtimestamp(time.time() - age_s, UTC)
+    since = since or datetime.now(UTC)
+    created = since - timedelta(seconds=age_s)
     store.write(
         record.model_copy(update={"state": RunState.SUBMITTING, "created": created})
     )
@@ -380,9 +381,10 @@ def test_young_submission_is_left_alone(service):
     assert RunStore(service.settings.store).read(run_id).state == "submitting"
 
 
-@pytest.mark.parametrize("age_s", [1.0, SUBMIT_GRACE_S + 1])
+@pytest.mark.parametrize("age_s", [0.001, SUBMIT_GRACE_S + 1])
 def test_recover_fails_lost_submission(service, age_s):
-    run_id = _submitting(service, age_s)
+    # created before the controller started: no submission of it is in flight
+    run_id = _submitting(service, age_s, since=service.controller.started)
     service.controller.recover()
     record = RunStore(service.settings.store).read(run_id)
     assert record.state == "failed"
@@ -390,6 +392,37 @@ def test_recover_fails_lost_submission(service, age_s):
     assert not record.pending_cancel and record.pending_release is None
     assert ("cancel", service.name(run_id)) in service.backend.calls
     assert ("unreserve", "srv-02", run_id) in service.backend.calls
+
+
+def test_recover_keeps_submission_after_start(service):
+    run_id = _submitting(service, 0.0)  # created after the controller started
+    assert RunStore(service.settings.store).read(run_id).created > (
+        service.controller.started
+    )
+    service.controller.recover()
+    record = RunStore(service.settings.store).read(run_id)
+    assert record.state == "submitting"
+    assert ("cancel", service.name(run_id)) not in service.backend.calls
+
+
+def test_cancel_and_delete_during_submit(service):
+    backend = service.backend
+    original = FakeBackend.submit
+
+    def submit(self, manifest):
+        run_id = manifest["metadata"]["labels"]["simrun/run"]
+        service.controller.cancel(run_id)
+        shutil.rmtree(service.run_dir(run_id))  # as DELETE does
+        return original(self, manifest)
+
+    backend.submit = submit.__get__(backend)
+    body = {"workflow": service.workflow(), "sources": []}
+    response = service.post("/runs", body)
+    assert response.status_code == 409
+    assert "deleted while it was submitted" in response.json()["detail"]
+    (name,) = backend.manifests
+    assert backend.calls[-2:] == [("submit", name), ("cancel", name)]
+    assert backend.status(name).phase == "Failed"
 
 
 def test_reconcile_fails_old_submission(service):

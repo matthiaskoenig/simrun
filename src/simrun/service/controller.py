@@ -212,15 +212,19 @@ class Controller:
         # never held during a call of the backend or a walk of the store
         self.lock = threading.RLock()
         self._reports_lock = threading.Lock()
+        # a submission created before the controller started is not in flight
+        self.started = datetime.now(UTC)
 
     def recover(self) -> None:
         """Settle what a stopped service left: called at the start of the service.
 
-        No submission is in flight when the service starts (it is one process), so
-        every submitting run failed: its workflow (named before the submission) is
-        cancelled and its node released. A record which is not terminal and has no
-        workflow name was written before names were stored, and fails too. The
-        pending releases and cancellations of terminal runs are retried.
+        The service is one process, so a run submitting since before the controller
+        started has lost its submission: it fails, its workflow (named before the
+        submission) is cancelled and its node released. A submission created later
+        may be in flight (the API accepts runs while this runs) and is left to the
+        grace of `reconcile`. A record which is not terminal and has no workflow name
+        was written before names were stored, and fails too. The pending releases and
+        cancellations of terminal runs are retried.
         """
         for run_id in run_ids(self.store):
             try:
@@ -230,7 +234,8 @@ class Controller:
 
     def _recover(self, run_id: str) -> None:
         record = self.store.read(run_id)
-        if record.state == RunState.SUBMITTING or (
+        lost = record.state == RunState.SUBMITTING and record.created < self.started
+        if lost or (
             record.state not in TERMINAL_RUN_STATES and record.backend_name is None
         ):
             self._submission_lost(record)
