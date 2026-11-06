@@ -17,6 +17,7 @@ from simrun.workflow import TaskSpec
 
 WORKER_COMMAND = "simrun-worker"
 MERGE_COMMAND = "simrun-merge"
+EXEC_COMMAND = "simrun-exec"
 # seconds beyond the grace after which the coordinator takes a worker as gone
 STALE_MARGIN_S = 60
 
@@ -112,7 +113,12 @@ def merge_shape(shape: PodShape, base_gb: float) -> PodShape:
 def unsplit_command(
     record: RunRecord, task: TaskSpec, task_type: TaskType, store: str
 ) -> tuple[str, list[str]]:
-    """The image and argv of an unsplit task."""
+    """The image and argv of an unsplit task.
+
+    The command of a plugin type runs through `simrun-exec`, which installs the
+    snapshots, sets the thread variables and writes a report; a `command` task runs
+    its argv as given in its image.
+    """
     if task_type.name == COMMAND.name:
         settings = CommandSettings.model_validate(task.settings)
         return settings.image, settings.args
@@ -122,7 +128,7 @@ def unsplit_command(
             "nor has a command"
         )
     directory = task_dir(record, task.id, store)
-    argv = [
+    argv = [EXEC_COMMAND] + [
         part.replace("{settings}", f"{directory}/{SETTINGS_FILE}").replace(
             "{out}", f"{directory}/out"
         )

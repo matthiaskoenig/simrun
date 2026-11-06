@@ -2,7 +2,9 @@
 
 `simrun-worker` (`main`) claims units of the ledger of its task, computes them in a
 local process pool with the functions of the task type and writes a report;
-`simrun-merge` (`merge_main`) merges the units once the ledger is complete. A pod
+`simrun-merge` (`merge_main`) merges the units once the ledger is complete;
+`simrun-exec` (`exec_main`) runs the command of an unsplit plugin task and writes a
+report of it. A pod
 is evicted with SIGTERM and killed after its grace period, and is restarted with the
 same worker id, which releases the claims of the incarnation before.
 """
@@ -54,6 +56,8 @@ POLL_S = 0.2
 HEARTBEAT_S = 30.0
 # seconds between two samples of the anonymous memory of the cgroup
 SAMPLE_S = 1.0
+# seconds a command of `simrun-exec` gets after SIGTERM, the grace of a worker
+GRACE_S = 60.0
 COORDINATOR_POLL_S = 5.0
 # a heartbeat is stale this long after the grace of a worker
 STALE_MARGIN_S = 60.0
@@ -493,7 +497,7 @@ def run_worker(
     memory_bytes: int | None,
     base_gb: float,
     per_worker_gb: float,
-    grace_s: float = 60.0,
+    grace_s: float = GRACE_S,
     attempt: int = 0,
     stop: threading.Event | None = None,
     heartbeat_s: float = HEARTBEAT_S,
@@ -902,3 +906,99 @@ def _merge(stop: threading.Event) -> int:
         logger.exception("the merge of %s failed", paths.task_dir)
         return EXIT_ANALYSIS
     return EXIT_DONE
+
+
+def exec_main() -> None:
+    """Run `simrun-exec <command...>`, the command of an unsplit plugin task.
+
+    The harness installs the snapshots (`SIMRUN_EDITABLE`), stages the inputs, sets
+    the thread variables of BLAS and OpenMP to 1 and runs the command as its child,
+    while its heartbeat thread samples the memory. A SIGTERM is passed on to the
+    command, which is killed after `GRACE_S`. The report
+    `task_dir/workers/<task>-<attempt>.json` (the worker is the task id, or
+    `SIMRUN_WORKER`) is written in every case after the command started, so the
+    controller learns the memory of the task.
+
+    Exit codes: 0 done, 3 the command failed, 4 a configuration error (also a
+    command which cannot be started), 137 the command was killed (by the out of
+    memory killer, retried with more memory) or exited 137, 143 stopped on SIGTERM
+    (retried).
+    """
+    stop = threading.Event()
+    with _stop_on_sigterm(stop):
+        sys.exit(_exec(sys.argv[1:], stop))
+
+
+def _exec(argv: list[str], stop: threading.Event) -> int:
+    """Prepare and run the command of `exec_main`; returns its exit code."""
+    _logging()
+    env = os.environ
+    if argv[:1] == ["--"]:
+        argv = argv[1:]
+    try:
+        if not argv:
+            raise ConfigurationError("simrun-exec needs a command")
+        install_editable(_editable(env))
+        paths = paths_from_env(env)
+        attempt = _attempt(env)
+        stage(_pairs(env.get("SIMRUN_STAGE", "")), paths.store, paths.scratch)
+        per_worker_gb = _gb(env, "SIMRUN_MEMORY_PER_WORKER_GB", 0.0)
+    except CONFIGURATION_ERRORS as error:
+        logger.error("configuration error: %s", error)
+        return EXIT_CONFIGURATION
+    if stop.is_set():
+        logger.info("stopped on SIGTERM before the command")
+        return EXIT_TERMINATED
+    for name in THREAD_VARIABLES:
+        os.environ[name] = "1"
+    worker = env.get("SIMRUN_WORKER") or paths.task_dir.name
+    start = time.monotonic()
+    try:
+        process = subprocess.Popen(argv)
+    except OSError as error:
+        logger.error("configuration error: the command cannot start: %s", error)
+        return EXIT_CONFIGURATION
+    sampler = MemorySampler()
+    try:
+        with _heartbeats(None, worker, HEARTBEAT_S, sampler):
+            returncode = _wait_for(process, stop, GRACE_S)
+    finally:
+        report = WorkerReport(
+            worker=worker,
+            node=os.environ.get("SIMRUN_NODE") or socket.gethostname(),
+            processes=cgroup.cpu_quota() or os.process_cpu_count() or 1,
+            seconds=time.monotonic() - start,
+            peak_memory_bytes=sampler.peak,
+            memory_limit_bytes=cgroup.memory_limit(),
+            per_worker_gb=per_worker_gb,
+        )
+        write_report(report, paths.task_dir, attempt)
+    if stop.is_set():
+        logger.info("stopped on SIGTERM, the command exited %d", returncode)
+        return EXIT_TERMINATED
+    if returncode == 0:
+        return EXIT_DONE
+    if returncode in (-signal.SIGKILL, EXIT_POOL_BROKEN):
+        logger.error("the command was killed (exit %d)", returncode)
+        return EXIT_POOL_BROKEN
+    logger.error("the command failed with exit code %d", returncode)
+    return EXIT_ANALYSIS
+
+
+def _wait_for(
+    process: subprocess.Popen[bytes], stop: threading.Event, grace_s: float
+) -> int:
+    """Wait for a command; on `stop` send it SIGTERM, after `grace_s` SIGKILL."""
+    deadline: float | None = None
+    while True:
+        try:
+            return process.wait(timeout=POLL_S)
+        except subprocess.TimeoutExpired:
+            pass
+        if stop.is_set() and deadline is None:
+            logger.info("SIGTERM: passed on to the command, waiting %s s", grace_s)
+            process.send_signal(signal.SIGTERM)
+            deadline = time.monotonic() + grace_s
+        if deadline is not None and time.monotonic() >= deadline:
+            logger.warning("the command did not stop within %s s: killed", grace_s)
+            process.kill()

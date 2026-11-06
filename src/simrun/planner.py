@@ -122,7 +122,9 @@ def _fit(node: Node, base: float, per_worker: float) -> int | None:
         return None
 
 
-def shape(resources: ResolvedResources, nodes: list[Node]) -> PodShape:
+def shape(
+    resources: ResolvedResources, nodes: list[Node], max_processes: int | None = None
+) -> PodShape:
     """Sizes a pod for the most common node which is not reserved.
 
     When one worker does not fit that node, the largest usable node is taken.
@@ -130,6 +132,7 @@ def shape(resources: ResolvedResources, nodes: list[Node]) -> PodShape:
     Args:
         resources: The resources of the task.
         nodes: The nodes of the cluster.
+        max_processes: At most this many processes, as many as fit by default.
 
     Returns:
         The shape of a pod.
@@ -149,6 +152,8 @@ def shape(resources: ResolvedResources, nodes: list[Node]) -> PodShape:
             f"one worker needs {per_worker} GiB besides {base} GiB base, more than "
             f"the largest node {node.name} with {node.memory_gb} GiB"
         )
+    if max_processes is not None:
+        n = min(n, max_processes)
     retry_per_worker = per_worker * RETRY_FACTOR
     retry_node = node
     retry_n = _fit(retry_node, base, retry_per_worker)
@@ -252,7 +257,8 @@ def plan_task(
         if task_type.name == COMMAND.name:
             pod = _command_shape(CommandSettings.model_validate(task.settings), nodes)
         else:
-            pod = shape(resources, nodes)
+            # a single command is one process, unless it uses the cores of its pod
+            pod = shape(resources, nodes, None if task_type.uses_cores else 1)
         return TaskPlan(task.id, 1, pod, base, extra, None)
     pod = shape(resources, nodes)
     pods = 1

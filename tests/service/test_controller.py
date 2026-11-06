@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from simrun.demo import SQUARES
+from simrun.plugins_builtin import COMMAND
 from simrun.resources import GIB, ResourceKey, ResourceStore
 from simrun.service.backend import BackendStatus
 from simrun.service.controller import (
@@ -286,8 +287,6 @@ WORKFLOW = Workflow(
 
 
 def _states(**nodes: str) -> dict[str, TaskState]:
-    from simrun.plugins_builtin import COMMAND
-
     status = BackendStatus(phase="Running", tasks=nodes, oom={})
     return task_states(WORKFLOW, {**TYPES, COMMAND.name: COMMAND}, status)
 
@@ -483,3 +482,44 @@ def test_second_memory_kill_of_a_merge_or_unsplit_task_fails_the_run(service):
         assert record.state == "failed"
         assert f"{key} was killed for memory 2 times" in (record.message or "")
         assert f"retry memory of {retry} GiB per process)" in (record.message or "")
+
+
+def test_unsplit_plugin_task_learns_its_memory(service):
+    workflow = {"name": "r", "tasks": [{"id": "report", "type": "demo.report"}]}
+    run_id = service.submit(workflow=workflow)["id"]
+    name = service.name(run_id)
+    task_dir = service.run_dir(run_id) / "tasks/report"
+    service.backend.start(name)
+    service.backend.oom_kill(name, "report")  # attempt 0, by the task id
+    report = WorkerReport(
+        worker="report",
+        node="srv-02",
+        processes=1,
+        peak_memory_bytes=1 * GIB,
+        memory_limit_bytes=3 * GIB,
+    )
+    write_report(report, task_dir, 1)
+    service.backend.finish(name)
+    service.controller.reconcile()
+    key = ResourceKey("demo.report", "", "")
+    hint = service.controller.types["demo.report"].hint
+    resolved = ResourceStore(service.settings.db).resolve(key, hint, None)
+    # measured (1 - 0.5) / 1 process; the kill of the pod of one process of
+    # 2 GiB, 1.5 GiB per process times 1.5
+    assert resolved.samples == 2
+    assert resolved.memory_per_worker_gb == 2.3
+    marks = sorted(p.name for p in (task_dir / "recorded").iterdir())
+    assert marks == ["report-0.oom", "report-1.json"]
+
+
+def test_command_tasks_are_not_learned(service):
+    run_id = service.submit(workflow=_two_tasks(service))["id"]
+    name = service.name(run_id)
+    service.backend.start(name)
+    service.backend.oom_kill(name, "cmd")
+    service.backend.finish(name)
+    service.controller.reconcile()
+    key = ResourceKey("command", "", "")
+    resources = ResourceStore(service.settings.db)
+    assert resources.resolve(key, COMMAND.hint, None).samples == 0
+    assert not (service.run_dir(run_id) / "tasks/cmd/recorded").exists()
