@@ -20,6 +20,7 @@ from simrun.plugins import ResourceHint, TaskType
 from simrun.plugins_builtin import COMMAND
 from simrun.service.app import ServiceSettings, create_app
 from simrun.service.controller import Controller
+from simrun.service.index import IndexedRunStore
 from simrun.testing import TOKENS, FakeBackend
 
 
@@ -83,6 +84,11 @@ class Service:
     @property
     def controller(self) -> Controller:
         return self.client.app.state.controller  # ty: ignore[unresolved-attribute]
+
+    @property
+    def store(self) -> IndexedRunStore:
+        """The store of the service: a record written through it is indexed."""
+        return self.controller.store
 
     def get(self, path: str, token: str = "t-mk", **kw: Any) -> Any:
         return self.client.get(path, headers=self.auth(token), **kw)

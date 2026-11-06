@@ -40,11 +40,12 @@ from simrun.resources import ResolvedResources, ResourceStore, resource_key
 from simrun.service.auth import Identity, authenticate, load_tokens, priority_of
 from simrun.service.backend import Backend
 from simrun.service.compare import CompareTable, compare_runs
-from simrun.service.controller import TERMINAL_RUN_STATES, Controller, read_records
+from simrun.service.controller import TERMINAL_RUN_STATES, Controller
+from simrun.service.index import IndexedRunStore, RunIndex
 from simrun.service.logs import DEFAULT_TAIL_LINES, read_kept, render
 from simrun.service.submission import Submitter, has_model_project
 from simrun.snapshot import SourceProvenance
-from simrun.store import RunRecord, RunState, RunStore, TaskState
+from simrun.store import RunRecord, RunState, RunSummary, TaskState
 from simrun.worker import MERGED_MARKER, PROGRESS_FILE, SETTINGS_FILE, UNITS_DIR
 from simrun.workflow import Priority, SplitMode, Workflow
 
@@ -66,7 +67,8 @@ class ServiceSettings(BaseModel):
 
     Attributes:
         store: Root of the run store.
-        db: SQLite file of the resource observations, on a local volume.
+        db: SQLite file of the resource observations and the index of the runs, on
+            a local volume.
         tokens: YAML file of the tokens, see `simrun.service.auth.load_tokens`.
         owner: The person who owns the cluster; their runs have the top priority.
         cluster: The cluster.
@@ -105,26 +107,6 @@ class SubmitRequest(BaseModel):
     group: str | None = None
     split: SplitMode | None = None
     reserve: str | None = None
-
-
-class RunSummary(BaseModel):
-    """The state of a run without its workflow and plans."""
-
-    id: str
-    state: RunState
-    group: str | None
-    submitted_by: str
-    agent: str | None
-    priority: Priority
-    tasks: dict[str, TaskState]
-    created: datetime
-    finished: datetime | None
-    message: str | None
-
-    @classmethod
-    def of(cls, record: RunRecord) -> RunSummary:
-        """The summary of a record."""
-        return cls.model_validate(record.model_dump(include=set(cls.model_fields)))
 
 
 class ValidationResult(BaseModel):
@@ -336,7 +318,9 @@ class _Service:
         self.settings = settings
         self.backend = backend
         self.types = types
-        self.store = RunStore(settings.store)
+        # the index is rebuilt from the records, the store is the source of truth
+        self.store = IndexedRunStore(settings.store, RunIndex(settings.db))
+        self.store.rebuild()
         self.resources = ResourceStore(settings.db)
         self.controller = Controller(self.store, self.resources, backend, types)
         self.submitter = Submitter(
@@ -601,10 +585,11 @@ class _Service:
                 return None
             trash = self.store.root / "runs" / f"{TRASH_PREFIX}{run_id}-{os.getpid()}"
             os.rename(self.store.run_dir(run_id), trash)
+            self.store.forget(run_id)
         return trash
 
     def _unreferenced_snapshots(
-        self, kept: list[RunRecord], cutoff: datetime
+        self, referenced: set[str], cutoff: datetime
     ) -> list[Path]:
         """The snapshots older than `cutoff` which no kept run references.
 
@@ -614,7 +599,6 @@ class _Service:
         root = self.settings.store / "snapshots"
         if not root.is_dir():
             return []
-        referenced = {s.snapshot for r in kept for s in r.sources}
         young = datetime.now(UTC).timestamp() - SNAPSHOT_GRACE_S
         found: list[Path] = []
         for parent in sorted(p for p in root.iterdir() if p.is_dir()):
@@ -641,18 +625,20 @@ class _Service:
     def cleanup(self, request: CleanupRequest) -> CleanupResult:
         """Remove ended runs and the snapshots no remaining run references."""
         cutoff = datetime.now(UTC) - timedelta(days=request.older_than_days)
-        records = list(read_records(self.store))
+        runs = self.store.index.runs()
         chosen = [
-            r.id
-            for r in records
-            if r.state in TERMINAL_RUN_STATES
-            and (r.finished or r.created) <= cutoff
-            and (request.group is None or r.group == request.group)
-            and (not request.failed_only or r.state == RunState.FAILED)
-            and not _pending(r)
+            r.summary.id
+            for r in runs
+            if r.summary.state in TERMINAL_RUN_STATES
+            and (r.summary.finished or r.summary.created) <= cutoff
+            and (request.group is None or r.summary.group == request.group)
+            and (not request.failed_only or r.summary.state == RunState.FAILED)
+            and not r.pending
         ]
-        kept = [r for r in records if r.id not in chosen]
-        snapshots = self._unreferenced_snapshots(kept, cutoff)
+        referenced = {
+            s for r in runs if r.summary.id not in chosen for s in r.snapshots
+        }
+        snapshots = self._unreferenced_snapshots(referenced, cutoff)
         patches = [
             p for s in snapshots if (p := s.with_name(f"{s.name}.patch")).is_file()
         ]
@@ -692,10 +678,10 @@ class _Service:
         """The bytes of every run and every group."""
         runs: dict[str, int] = {}
         groups: dict[str, int] = {}
-        for record in read_records(self.store):
-            size = disk_usage(self.store.run_dir(record.id))
-            runs[record.id] = size
-            group = record.group or ""
+        for run in self.store.index.runs():
+            size = disk_usage(self.store.run_dir(run.summary.id))
+            runs[run.summary.id] = size
+            group = run.summary.group or ""
             groups[group] = groups.get(group, 0) + size
         return Usage(runs=runs, groups=groups)
 
@@ -813,14 +799,8 @@ def create_app(
         agent: str | None = None,
         state: RunState | None = None,
     ) -> list[RunSummary]:
-        return [
-            RunSummary.of(r)
-            for r in read_records(service.store)
-            if (group is None or r.group == group)
-            and (owner is None or r.owner == owner)
-            and (agent is None or r.agent == agent)
-            and (state is None or r.state == state)
-        ]
+        runs = service.store.index.runs(group, owner, agent, state)
+        return [r.summary for r in runs]
 
     @app.get("/runs/{run_id}")
     def get_run(run_id: str) -> RunRecord:
