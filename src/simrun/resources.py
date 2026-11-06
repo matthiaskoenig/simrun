@@ -10,15 +10,20 @@ anonymous memory (see `simrun.worker.MemorySampler`), and a worker counts as out
 memory only when the backend reports its pod killed for memory.
 """
 
+import json
 import logging
 import math
 import sqlite3
 import time
+from collections.abc import Mapping
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from simrun.plugins import ResourceHint
+from pydantic import ValidationError
+
+from simrun.plugins import ResourceHint, TaskType
 from simrun.worker import WorkerReport
 from simrun.workflow import ResourceOverride
 
@@ -51,6 +56,32 @@ class ResourceKey:
     def text(self) -> str:
         """Returns the key as stored."""
         return "\x1f".join((self.task_type, self.model, self.variant))
+
+
+def resource_key(
+    task_type: TaskType, settings: Mapping[str, Any], model: str
+) -> ResourceKey:
+    """The key of the observations of a task, the one place it is derived.
+
+    Args:
+        task_type: The type of the task.
+        settings: The settings of the task as submitted.
+        model: The name of the model, the first source of the run, empty without.
+
+    Returns:
+        The key; its variant is the value of the `cost_setting` of the type (the
+        default of the settings when the task does not set it), text as is and other
+        values as JSON, empty for a type without one.
+    """
+    variant = ""
+    if task_type.cost_setting is not None:
+        try:
+            values = task_type.settings.model_validate(settings).model_dump(mode="json")
+        except ValidationError:
+            values = dict(settings)
+        value = values.get(task_type.cost_setting)
+        variant = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    return ResourceKey(task_type.name, model, variant)
 
 
 @dataclass(frozen=True)

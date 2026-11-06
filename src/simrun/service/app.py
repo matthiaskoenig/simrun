@@ -36,7 +36,7 @@ from simrun.ledger import Ledger, LedgerCounts
 from simrun.planner import Node, PlanError, TaskPlan, plan_task
 from simrun.plugins import TaskType, load_task_types, resolve
 from simrun.plugins_builtin import COMMAND
-from simrun.resources import ResolvedResources, ResourceKey, ResourceStore
+from simrun.resources import ResolvedResources, ResourceStore, resource_key
 from simrun.service.auth import Identity, authenticate, load_tokens, priority_of
 from simrun.service.backend import Backend
 from simrun.service.compare import CompareTable, compare_runs
@@ -353,6 +353,7 @@ class _Service:
         errors = validate_workflow(workflow, self.types)
         if errors:
             raise HTTPException(422, "; ".join(errors))
+        self._check_sources(request.sources)
         nodes = self._nodes(request.reserve or workflow.reserve)
         model = request.sources[0].name if request.sources else ""
         planned: dict[str, tuple[ResolvedResources, TaskPlan]] = {}
@@ -362,7 +363,7 @@ class _Service:
             if task_type.splittable and task_type.count_units is not None:
                 settings = task_type.settings.model_validate(task.settings)
                 units = resolve(task_type.count_units)(settings)
-            key = ResourceKey(task.type, model, "")
+            key = resource_key(task_type, task.settings, model)
             resources = self.resources.resolve(key, task_type.hint, task.resources)
             mode = request.split or task.split or workflow.split
             try:
@@ -370,11 +371,18 @@ class _Service:
                     task, task_type, resources, nodes, mode, priority, units
                 )
             except PlanError as error:
-                raise HTTPException(422, str(error)) from error
+                raise HTTPException(422, f"task {task.id!r}: {error}") from error
             planned[task.id] = (resources, plan)
         return planned
 
     def _check_sources(self, sources: list[SourceProvenance]) -> None:
+        """Check that the snapshots are below the store and exist in it.
+
+        Raises:
+            HTTPException: 422 for a path outside the store or a snapshot which the
+                store of the service does not have, e.g. one a client wrote with a
+                `SIMRUN_STORE` other than the store of the service.
+        """
         for source in sources:
             for rel in (source.snapshot, source.patch):
                 if rel is None:
@@ -385,6 +393,13 @@ class _Service:
                         422,
                         f"source {source.name!r}: {rel!r} is not relative to the store",
                     )
+            if not (self.settings.store / source.snapshot).is_dir():
+                raise HTTPException(
+                    422,
+                    f"source {source.name!r}: the snapshot {source.snapshot!r} is not "
+                    "in the store of the service; is SIMRUN_STORE the mount of its "
+                    "store?",
+                )
 
     def _needs_run_image(self, workflow: Workflow) -> bool:
         return any(
@@ -420,7 +435,6 @@ class _Service:
         The environment, the image and the workflow are resolved, built and
         submitted by the `Submitter` in the pool of the controller.
         """
-        self._check_sources(request.sources)
         priority = priority_of(identity, self.settings.owner)
         planned = self.plan(request, priority)
         image = self._image(request)

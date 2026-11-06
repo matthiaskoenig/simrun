@@ -1,3 +1,4 @@
+import dataclasses
 import os
 import subprocess
 import time
@@ -14,7 +15,7 @@ from pydantic import BaseModel
 
 from simrun.client import Client
 from simrun.config import ClusterConfig
-from simrun.demo import SQUARES
+from simrun.demo import SQUARES, SquaresSettings
 from simrun.plugins import ResourceHint, TaskType
 from simrun.plugins_builtin import COMMAND
 from simrun.service.app import ServiceSettings, create_app
@@ -33,7 +34,22 @@ REPORT = TaskType(
     command="report --settings {settings} --out {out}",
     hint=ResourceHint(memory_base_gb=0.5, memory_per_worker_gb=1.0),
 )
-TYPES = {SQUARES.name: SQUARES, COMMAND.name: COMMAND, REPORT.name: REPORT}
+
+
+class SubsetSettings(SquaresSettings):
+    subset: str = "all"
+
+
+# a split type whose cost depends on a setting: its observations are kept apart
+SUBSET = dataclasses.replace(
+    SQUARES, name="demo.subset", settings=SubsetSettings, cost_setting="subset"
+)
+TYPES = {
+    SQUARES.name: SQUARES,
+    COMMAND.name: COMMAND,
+    REPORT.name: REPORT,
+    SUBSET.name: SUBSET,
+}
 
 
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:

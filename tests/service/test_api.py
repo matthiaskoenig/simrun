@@ -136,9 +136,43 @@ def test_plan_error_is_422(service):
     }
     response = service.post("/runs", body)
     assert response.status_code == 422
+    # the task is named: a workflow has several
+    assert response.json()["detail"].startswith("task 'squares': ")
     assert "one worker needs 2000.0 GiB" in response.json()["detail"]
     assert "largest node srv-01" in response.json()["detail"]
     assert not (service.settings.store / "runs").exists()
+
+
+def test_missing_snapshot_is_422(service):
+    body = {
+        "workflow": service.workflow(),
+        "sources": [provenance("model", "snapshots/model/gone")],
+    }
+    for route in ("/runs", "/estimate"):
+        response = service.post(route, body)
+        assert response.status_code == 422, response.text
+        detail = response.json()["detail"]
+        assert "snapshots/model/gone" in detail
+        assert "SIMRUN_STORE" in detail
+    assert not (service.settings.store / "runs").exists()
+
+
+class _RegistryDown(FakeBackend):
+    def has_image(self, ref):
+        raise RuntimeError(f"the registry answered 401 for {ref}")
+
+
+def test_registry_error_lands_in_the_record(service_factory, tmp_path, monkeypatch):
+    # the registry is asked in the background: its error is the message of the run
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    wheel = _wheel(tmp_path)
+    with service_factory(_RegistryDown(), simrun_wheel=wheel, default_image=None) as (
+        service
+    ):
+        record = service.submit(sources=[_model(service.settings.store)])
+        assert record["state"] == "failed"
+        assert "the registry cannot tell whether it has" in record["message"]
+        assert "answered 401" in record["message"]
 
 
 def test_estimate(service):

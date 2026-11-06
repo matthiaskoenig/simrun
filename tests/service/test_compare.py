@@ -17,6 +17,7 @@ def _source(changed: list[str], digest: str) -> dict:
 
 
 def test_compare_rows(service):
+    (service.settings.store / "snapshots/model/x").mkdir(parents=True)
     a = service.submit(group="g1", sources=[_source(["M a.py"], "aa")])["id"]
     b = service.submit("t-mk-bot", group="g1", sources=[_source([], "bb")])["id"]
     for run_id, total in ((a, 30), (b, 14)):
