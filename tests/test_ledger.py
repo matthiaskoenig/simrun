@@ -261,3 +261,13 @@ def test_heartbeat_creates_the_file(tmp_path: Path) -> None:
     ledger = Ledger.create(tmp_path / "units", 1)
     ledger.heartbeat("w0")
     assert (tmp_path / "units" / "heartbeats" / "w0").is_file()
+
+
+def test_claims(tmp_path: Path) -> None:
+    ledger = Ledger.create(tmp_path / "units", 5)
+    assert ledger.claims() == {}
+    assert ledger.claim("a") == 0
+    assert ledger.claim("a") == 1
+    assert ledger.claim("b") == 2
+    ledger.complete(0, "a")
+    assert ledger.claims() == {"a": [1], "b": [2]}

@@ -9,7 +9,13 @@ from pathlib import Path
 from typing import Any
 
 from simrun.planner import Node
-from simrun.service.backend import FINAL_PHASES, BackendStatus, FailedAttempt, PodLog
+from simrun.service.backend import (
+    FINAL_PHASES,
+    BackendStatus,
+    FailedAttempt,
+    Placement,
+    PodLog,
+)
 
 # the tokens of the tests of the service: the owner, the owner's agent, another
 # person and the agent of the other person
@@ -87,6 +93,7 @@ class FakeBackend:
         self.pod_logs: dict[tuple[str, str], list[PodLog]] = {}
         self._status: dict[str, BackendStatus] = {}
         self._submitted: dict[str, float] = {}
+        self._placed: list[Placement] = []
 
     def submit(self, manifest: dict[str, Any]) -> str:
         """Accept a workflow, pending without nodes; one which exists is kept."""
@@ -207,6 +214,21 @@ class FakeBackend:
         """The nodes, with their reservations."""
         with self._lock:
             return list(self._nodes.values())
+
+    def place(self, placement: Placement) -> None:
+        """Place a pod, listed by `placements` until its workflow has ended."""
+        with self._lock:
+            self._placed.append(placement)
+
+    def placements(self) -> list[Placement]:
+        """The pods placed for the workflows which have not ended."""
+        with self._lock:
+            return [
+                p
+                for p in self._placed
+                if p.workflow in self._status
+                and self._status[p.workflow].phase not in FINAL_PHASES
+            ]
 
     def reserve(self, node: str, run_id: str) -> None:
         """Reserve a node; KeyError for an unknown one."""

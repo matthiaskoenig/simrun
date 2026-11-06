@@ -14,6 +14,7 @@ from simrun.service import app as app_module
 from simrun.service import controller as controller_module
 from simrun.service.app import serve, unknown_settings
 from simrun.service.auth import Identity, load_tokens, priority_of
+from simrun.service.backend import Placement
 from simrun.snapshot import SourceProvenance
 from simrun.store import RunStore
 from simrun.testing import FakeBackend
@@ -861,3 +862,22 @@ def test_the_build_constraints_of_the_service(service_factory, tmp_path, monkeyp
         record = service.submit(sources=[_model(service.settings.store)])
         assert record["state"] == "failed"
         assert "setuptools==1.0.0" in record["message"]
+
+
+def test_fake_placements_end_with_the_workflow(service):
+    run_id = service.submit()["id"]
+    name = service.name(run_id)
+    placement = Placement(
+        workflow=name,
+        dag_task="squares-w0",
+        pod="p",
+        node="n1",
+        phase="Running",
+        cores=2.0,
+        memory_gb=1.0,
+    )
+    service.backend.place(placement)
+    service.backend.start(name)
+    assert service.backend.placements() == [placement]
+    service.backend.finish(name)
+    assert service.backend.placements() == []
