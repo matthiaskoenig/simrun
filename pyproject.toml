@@ -46,6 +46,11 @@ build-backend = "uv_build"
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-n auto -m 'not cluster'"
+filterwarnings = [
+    # beartype (through fastmcp and py-key-value) checks a protocol which is not
+    # runtime checkable with issubclass, which python 3.15 deprecates
+    "ignore:<class 'key_value.aio.protocols.key_value.AsyncKeyValue'> isn't explicitly decorated with @runtime_checkable:DeprecationWarning",
+]
 markers = [
     "cluster: needs a running k3s cluster, run on demand with `-m cluster`",
 ]
