@@ -15,12 +15,15 @@ dependencies = [
     "kubernetes>=37",
     "pydantic>=2.14",
     "pyyaml>=6.0.3",
+    "rich>=14",
     "tomlkit>=0.15.2",
     "typer>=0.27",
     "uvicorn>=0.54.0",
 ]
 
 [project.scripts]
+simrun = "simrun.cli:app"
+simrun-mcp = "simrun.mcp:main"
 simrun-worker = "simrun.worker:main"
 simrun-merge = "simrun.worker:merge_main"
 
