@@ -368,7 +368,8 @@ class Controller:
         """
         unindexed: list[str] = []
         try:
-            unindexed = self.store.reindex()
+            with self.lock:
+                unindexed = self.store.reindex()
         except Exception:
             logger.exception("indexing the runs missing from the index failed")
         for run_id in sorted({*self.store.index.live_ids(), *unindexed}):

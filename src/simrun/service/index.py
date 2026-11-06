@@ -256,7 +256,9 @@ class IndexedRunStore(RunStore):
         """Index the runs whose index row is missing, from their records.
 
         A record which cannot be read is logged at every call, so a run the
-        controller cannot follow is never silent.
+        controller cannot follow is never silent. Only the index row is written,
+        never the record file, so the caller holds the lock of the record writes
+        around the call: a record is read and indexed without a write in between.
 
         Returns:
             The runs whose records were read but whose index rows still cannot be
@@ -279,8 +281,12 @@ class IndexedRunStore(RunStore):
                     error,
                 )
                 continue
-            self.write(record)
+            try:
+                self.index.put(record)
+            except Exception:
+                logger.exception("indexing run %s failed, retried later", run_id)
+                unindexed.append(run_id)
+                continue
             with self._lock:
-                if run_id in self._unindexed:
-                    unindexed.append(run_id)
+                self._unindexed.discard(run_id)
         return unindexed
