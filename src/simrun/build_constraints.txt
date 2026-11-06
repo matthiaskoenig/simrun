@@ -1,0 +1,20 @@
+# The versions of the build backends of the environments of the runs: the
+# requirements of their build systems and what a backend asks for an editable
+# build are resolved with these pins (when the uv.lock of the model does not
+# have them), so a new release of a backend changes no lock and rebuilds no
+# image. Raise a pin here (or point `build_constraints` of the service settings
+# at a file of your own); the images of the models which use it are built again.
+editables==0.6
+flit-core==4.2.0
+hatch-vcs==0.5.0
+hatchling==1.33.0
+packaging==26.3
+pathspec==1.1.1
+pdm-backend==2.5.0
+pluggy==1.7.0
+poetry-core==2.5.0
+setuptools==84.2.1
+setuptools-scm==10.3.4
+trove-classifiers==2026.9.21.13
+uv-build==0.13.7
+wheel==0.48.0

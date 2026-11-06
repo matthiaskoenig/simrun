@@ -827,3 +827,18 @@ def test_a_workflow_submitted_twice_is_submitted_once(service):
     # a resumed submission submits the workflow of the run again
     assert service.backend.submit(manifest) == name
     assert service.backend.status(name).phase == "Running"
+
+
+def test_the_build_constraints_of_the_service(service_factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    constraints = tmp_path / "constraints.txt"
+    constraints.write_text("setuptools==1.0.0\n")
+    with service_factory(
+        simrun_wheel=_wheel(tmp_path),
+        default_image=None,
+        build_constraints=constraints,
+    ) as service:
+        # the model has no build system: the legacy backend of setuptools, pinned
+        record = service.submit(sources=[_model(service.settings.store)])
+        assert record["state"] == "failed"
+        assert "setuptools==1.0.0" in record["message"]

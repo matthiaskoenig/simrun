@@ -76,6 +76,9 @@ class ServiceSettings(BaseModel):
         default_image: Image of a run whose model has no `pyproject.toml`.
         simrun_wheel: The simrun wheel the images of the environments install.
         python: Python version of the images.
+        build_constraints: The pinned versions of the build backends of the
+            environments, the file of simrun (`simrun.environment.BUILD_CONSTRAINTS`)
+            by default.
         backend: `module:callable` returning the backend, for `serve`.
     """
 
@@ -88,6 +91,7 @@ class ServiceSettings(BaseModel):
     default_image: str | None = None
     simrun_wheel: Path | None = None
     python: str = "3.14"
+    build_constraints: Path | None = None
     backend: str | None = None
 
 
@@ -331,6 +335,7 @@ class _Service:
             settings.cluster,
             settings.python,
             settings.simrun_wheel,
+            settings.build_constraints,
         )
         self.controller.resume = self.submitter.run
         self.tokens = load_tokens(settings.tokens)
