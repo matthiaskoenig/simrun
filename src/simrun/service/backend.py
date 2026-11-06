@@ -11,6 +11,9 @@ from simrun.planner import Node
 FINAL_PHASES = frozenset({"Succeeded", "Failed", "Error"})
 # the phase of a task node whose pod was evicted (or lost) and waits for its retry
 PREEMPTED_PHASE = "Preempted"
+# the phase of a task node whose pod failed of itself (no kill for memory, no
+# eviction) and waits for its retry
+RETRYING_PHASE = "Retrying"
 
 
 class FailedAttempt(BaseModel):
@@ -55,7 +58,8 @@ class BackendStatus(BaseModel):
         tasks: Phase of every node of the DAG by its name: `<task>-w0`,
             `<task>-extra(<i>:<item>)` and `<task>-merge` of a split task, `<task>` of
             an unsplit one; a node not yet created is missing. A node whose pod was
-            evicted and whose retry waits is `Preempted` (`PREEMPTED_PHASE`).
+            evicted and whose retry waits is `Preempted` (`PREEMPTED_PHASE`), one
+            whose pod failed otherwise `Retrying` (`RETRYING_PHASE`).
         failed: The attempts of pods which failed, in the order of their number: per
             worker id (`<task>-w<i>`), per task id of an unsplit task and per
             `<task>-merge` of a merge.

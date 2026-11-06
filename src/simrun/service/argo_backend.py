@@ -4,9 +4,10 @@ A run is an Argo `Workflow` (`simrun.argo.to_argo`) in the namespace of the clus
 Kueue admits its pods (plain pods with a queue label) and preempts lower priorities.
 The status of a workflow is read from the nodes of its DAG (`workflow_status`): a node
 retried by Argo (a `Retry` node) is `Pending` while its attempt waits for admission,
-`Preempted` while the attempt after a failure which was not a kill for memory waits
-(an eviction by Kueue, a lost pod, a pod killed after its grace period), `Running`
-while its attempt runs; the failed attempts are listed per worker with their exit
+`Preempted` while the attempt after an eviction waits (a pod deleted by Kueue or lost,
+or a worker stopped on SIGTERM), `Retrying` while the attempt after another failure
+waits (a crash, a pod killed after its grace period), `Running` while its attempt
+runs; the failed attempts are listed per worker with their exit
 codes and whether the kernel killed them for memory (`OOMKilled`).
 
 The nodes are the ones labelled `simrun/worker=true` (the nodes of the ResourceFlavor
@@ -52,10 +53,12 @@ from simrun.service.app import CONFIG_ENV, load_settings
 from simrun.service.backend import (
     FINAL_PHASES,
     PREEMPTED_PHASE,
+    RETRYING_PHASE,
     BackendStatus,
     FailedAttempt,
     PodLog,
 )
+from simrun.worker import EXIT_TERMINATED
 
 logger = logging.getLogger(__name__)
 
@@ -169,9 +172,20 @@ def _phase(node: dict[str, Any], nodes: dict[str, dict[str, Any]]) -> str:
     if failed is None and len(attempts) > 1:
         before = attempts[-2]
         failed = before if before.get("phase") in FAILED_PHASES else None
-    if failed is not None and not _killed_for_memory(failed):
+    if failed is None or _killed_for_memory(failed):
+        return "Pending"
+    if _evicted(failed):
         return PREEMPTED_PHASE
-    return "Pending"
+    return RETRYING_PHASE
+
+
+def _evicted(node: dict[str, Any]) -> bool:
+    """Whether a failed attempt was evicted.
+
+    Its pod was deleted (no exit code of the main container) or the worker stopped
+    on SIGTERM (143).
+    """
+    return _exit_code(node) in (None, EXIT_TERMINATED)
 
 
 def workflow_status(workflow: dict[str, Any]) -> BackendStatus:

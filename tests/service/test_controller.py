@@ -375,6 +375,14 @@ def test_preempted_task_states():
     assert _states(b="Preempted")["b"] == TaskState.PREEMPTED
 
 
+def test_retrying_task_states():
+    # a pod which failed of itself and waits for its retry
+    assert _states(**{"a-w0": "Retrying"})["a"] == TaskState.RETRYING
+    assert _states(b="Retrying")["b"] == TaskState.RETRYING
+    running = _states(**{"a-w0": "Running", "a-extra(0:1)": "Retrying"})
+    assert running["a"] == TaskState.RUNNING
+
+
 def test_late_release_keeps_a_later_reservation(service_factory):
     with service_factory(_BrokenRelease()) as service:
         run_id = service.submit(reserve="srv-02")["id"]

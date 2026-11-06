@@ -57,6 +57,7 @@ from simrun.service import logs
 from simrun.service.backend import (
     FINAL_PHASES,
     PREEMPTED_PHASE,
+    RETRYING_PHASE,
     Backend,
     BackendStatus,
     FailedAttempt,
@@ -99,6 +100,8 @@ def _split_state(task_id: str, nodes: dict[str, str]) -> TaskState:
         return TaskState.RUNNING
     if PREEMPTED_PHASE in (w0, merge, *extras):
         return TaskState.PREEMPTED
+    if RETRYING_PHASE in (w0, merge, *extras):
+        return TaskState.RETRYING
     if w0 is not None or merge is not None or extras:
         return TaskState.QUEUED
     return TaskState.WAITING
@@ -117,6 +120,8 @@ def _unsplit_state(phase: str | None) -> TaskState:
         return TaskState.RUNNING
     if phase == PREEMPTED_PHASE:
         return TaskState.PREEMPTED
+    if phase == RETRYING_PHASE:
+        return TaskState.RETRYING
     return TaskState.QUEUED
 
 
@@ -127,6 +132,7 @@ def task_states(
 
     A task is running when one of its pods runs (or its coordinator is done and the
     merge waits), preempted when none runs and a pod evicted waits for its retry,
+    retrying when none runs and a pod which failed otherwise waits for its retry,
     queued when it has pods of which none runs, waiting without pods.
 
     Args:
@@ -529,7 +535,12 @@ class Controller:
         if status.phase in FINAL_PHASES:
             message = f"the workflow ended with phase {status.phase}"
             return closed(record, RunState.FAILED, tasks, message)
-        started = {TaskState.RUNNING, TaskState.PREEMPTED, TaskState.DONE}
+        started = {
+            TaskState.RUNNING,
+            TaskState.PREEMPTED,
+            TaskState.RETRYING,
+            TaskState.DONE,
+        }
         state = (
             RunState.RUNNING
             if any(s in started for s in tasks.values())
