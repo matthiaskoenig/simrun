@@ -1,0 +1,57 @@
+# CLAUDE.md
+
+This file provides guidance when working with code in this repository.
+
+## Project
+
+`simrun` is a runner of simulation workflows on a small k3s cluster with Argo Workflows and Kueue, for people and agents (sbmlsim#440): a workflow is a YAML file of tasks of task types from plugins, submitted with snapshots of the working trees of the model and its libraries, and run as an Argo workflow of pods which Kueue admits and preempts. Requires python >= 3.14, Linux only (cgroups v2, k3s), packaged with hatchling (version read from `src/simrun/__init__.py`). Runtime dependencies are `fastapi` and `uvicorn` (the service), `fastmcp` (the MCP server), `hera` and `kubernetes` (Argo and the cluster), `httpx`, `pydantic`, `pyyaml`, `rich`, `typer` (client, models, command line) and `tomlkit` (the temporary project of an environment). The extra `cwl` (`cwl-utils`, `cwltool`) is the CWL export of a run, `simrun.cwl`, which imports `cwl_utils` lazily in `write_cwl`; `dev` includes it. Entry points: `simrun` (CLI), `simrun-mcp` (MCP server on stdio), `simrun-worker`, `simrun-merge`, `simrun-exec` (the harness of the pods), and the task types `command` and `demo.squares` of the group `simrun.task_types`.
+
+## Commands
+
+```bash
+# environment (uv based), the versions of the committed uv.lock
+uv sync --extra dev
+uv run pre-commit install
+uv lock                                            # after every change of a dependency in pyproject.toml
+
+# tests
+pytest                                             # the unit tests, in parallel with pytest-xdist (`-m 'not cluster'` of addopts)
+pytest -n 0                                        # in one process, e.g. for --pdb
+SIMRUN_K3D=1 uv run pytest -m cluster tests/cluster                     # the tests on a k3d cluster (docker, ~20 GiB disk)
+SIMRUN_K3D=1 SIMRUN_K3D_KEEP=1 uv run pytest -m cluster tests/cluster   # keep the cluster for the next session
+tox r -e py3.15                                    # single tox env (py3.14, py3.15)
+tox run-parallel                                   # every supported python, before opening a pull request
+
+# lint / format / types
+ruff check
+ruff format
+uv run ty check                                    # config in [tool.ty] of pyproject.toml
+
+# documentation
+uv run zensical build --clean --strict             # into the gitignored site/
+uv run python scripts/llms_txt.py                  # llms.txt, llms-full.txt and the markdown of every page into site/
+```
+
+`develop` is the default branch and takes every change through a pull request; the rulesets in `.github/rulesets/` (applied with `.github/rulesets/apply.sh`) require the checks `tests`, `ruff`, `ty` and `docs`. `tests` (`ci-cd.yml`) aggregates the unit tests on python 3.14 and 3.15 on Linux and the `plain install` (the package from `pyproject.toml` without the lock and without extras, every module imported, `simrun --help`). The job `cluster` (`cluster.yml`, called by `ci-cd.yml`) runs the k3d tests on a push to `develop`, on a tag and on `workflow_dispatch`, and on a pull request with the label `cluster`; it is not required. Every job sets up uv and python with `.github/actions/setup` (`uv sync --locked`). A release: bump on a branch with `uvx bump-my-version bump [major|minor|patch]` (`src/simrun/__init__.py`, `CITATION.cff`, no tag), merge, tag the merged commit on `develop`; the tag waits for the run of its commit on develop (`tested on develop`) and the cluster job, publishes to PyPI with trusted publishing (environment `pypi`), creates the GitHub release from `release-notes/<version>.md` (Zenodo archives it) and fast-forwards `main` (`sync-main`). Details in `docs/development.md`. The documentation is Zensical (`zensical.toml`, `docs/`), published from `develop` to https://matthiaskoenig.github.io/simrun; a page in `docs/api/` is just `::: simrun.<module>`.
+
+## Architecture
+
+- **`workflow.py`** the model of a workflow (`Workflow`, `TaskSpec`, `SplitMode` `fastest`/`single-server`, `Priority` `owner`/`standard`/`agent`, `ResourceOverride`), inputs `<task>.<port>`, order by inputs, cycles refused.
+- **`plugins.py`** `TaskType` (settings model, ports, `ResourceHint`, `count_units`/`setup`/`compute_unit`/`merge` as `"module:function"` strings, `command`, `uses_cores`, `image`, `cost_setting`), `TaskPaths`, discovery from the entry points; `plugins_builtin.py` the type `command`; `demo.py` the split demo `demo.squares`.
+- **`client.py`, `cli.py`, `mcp.py`** the client (`Client.from_env`: `SIMRUN_URL`, `SIMRUN_TOKEN`, `SIMRUN_STORE`; snapshots the sources, then calls the API), the typer CLI on it (every command `--json`, a refusal to stderr with exit 1, `wait` exits 2 on timeout) and the FastMCP server on it (answers carry `store`, a refusal is `{"error", "status"}`).
+- **`snapshot.py`** the copy of the files git knows of a working tree into `snapshots/<name>/` of the store, hard links to the last snapshot, read-only, named by content, with provenance; **`environment.py`** the lock of a run (`uv lock` in a writable shadow tree against the snapshots) with the build backends at the pins of `build_constraints.txt`, the Dockerfile of the image, named by the hash of the lock, the python and the simrun version.
+- **`planner.py`** the pod shape (processes the cores and memory of the most common node allow, the retry shape with `RETRY_FACTOR`) and the number of pods (`fastest`: min of `MAX_PIECES` 8, units, slots), the six priority classes (`PRIORITY_VALUES`); **`resources.py`** learned resources in SQLite (95th percentile of the last 20 observations times 1.1, floor after a kill for memory), keyed by type, model and `cost_setting`.
+- **`ledger.py`** the unit ledger (`pending/`, `claimed/<i>@<worker>`, `done/`, heartbeats), one `os.rename` per transition (NFS >= 4.1); **`worker.py`** the harness: `simrun-worker` (coordinator `SIMRUN_ROLE=base` waits for the whole ledger and releases stale claims, extra workers exit when nothing is pending, a pool of processes, memory sampling of the cgroup, reports), `simrun-merge`, `simrun-exec` (exit codes 0, 3, 4, 137, 143); **`cgroup.py`** the limits and usage of the cgroup v2.
+- **`store.py`** the run record (`RunRecord`, `RunState`, `TaskState`) and the layout `runs/<id>/` (`run.json`, `tasks/<task>/{settings.json,out/,units/,workers/,logs/,progress.jsonl}`); **`config.py`** `ClusterConfig`; **`podspec.py`** what every backend shares (image, shapes, command, environment `SIMRUN_*`); **`argo.py`** the Argo workflow of a run (Hera: `<task>-w0`, `<task>-extra`, `<task>-merge`, retry strategy and `podSpecPatch` for the retry memory, Kueue labels); **`cwl.py`** the same run as CWL; **`testing.py`** `FakeBackend`, the backend in memory of the tests.
+- **`service/`** `app.py` the FastAPI app (`ServiceSettings` from `SIMRUN_CONFIG`, `uvicorn --factory simrun.service.app:serve`, every route needs a bearer token), `auth.py` identities and priorities, `backend.py` the backend protocol, `argo_backend.py` Argo, Kueue, node capacity, reservations (taint and label `simrun/reserved`) and BuildKit jobs, `submission.py` the background submission (environment, image, workflow), `controller.py` the stateless reconciliation (task states, OOM evidence, observations, logs, release, cancel), `index.py` the SQLite index of the runs rebuilt from the store, `logs.py` the kept logs, `compare.py` the comparison of runs.
+- **`deploy/`** `cluster/` the kustomization of the cluster (Kueue v0.20.5 and Argo v4.1.6 release manifests committed unchanged, priorities, queue, NFS store, Zot, BuildKit, service), `k3d/` the overlay of the tests, `service/Dockerfile` the service image. **`tests/cluster/`** the k3d tests (`k3d_cluster.py` creates the cluster, `.tools/` holds k3d, kubectl, the kubeconfig and the store).
+
+## Conventions
+
+- Type checking with ty, `error-on-warning = true`, zero diagnostics; suppress with a rule-specific `# ty: ignore[rule-name]`, never `# type: ignore`.
+- Every module, class and function of the package carries type annotations and a google style docstring (ruff `D`; `tests/` exempt). Modules log with `logging.getLogger(__name__)` and lazy `%s` formatting (ruff `G`), the CLI prints.
+- The store is the source of truth: a record is written first, the index after it; the controller keeps no state in memory, and no call of the backend is made while the record lock is held.
+- A unit output depends on the settings and the index only and is written atomically (temporary file, rename); the result of a split task does not depend on the number of pods.
+- The release manifests of Argo and Kueue in `deploy/cluster` are committed as released and excluded from pre-commit; never edit them by hand.
+- Markdown carries no hard line wraps. Release notes go in `release-notes/` as part of a release and are included in `docs/release-notes.md`.
+- `uv.lock` is committed; the plain install job, tox and the `uvx` tools of the release do not use it. Dependabot moves the lock monthly (`build`) and the actions (`ci`); the revisions of the ruff and ty hooks follow the lock by hand.

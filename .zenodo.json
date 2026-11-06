@@ -1,0 +1,33 @@
+{
+  "upload_type": "software",
+  "title": "simrun: a runner of simulation workflows on a k3s cluster",
+  "creators": [
+    {
+      "orcid": "0000-0003-1725-179X",
+      "affiliation": "Humboldt-University Berlin, Faculty of Life Science, Institute for Biology, Biology, Berlin; University Lübeck; University Hospital Schleswig-Holstein, Campus Lübeck, First Department of Medicine, Germany",
+      "name": "König, Matthias"
+    }
+  ],
+  "description": "<p><code>simrun</code> is a runner of simulation workflows on a small <a href=\"https://k3s.io\">k3s</a> cluster with <a href=\"https://argoproj.github.io/workflows/\">Argo Workflows</a> and <a href=\"https://kueue.sigs.k8s.io\">Kueue</a>, with source code available from <a href=\"https://github.com/matthiaskoenig/simrun\">https://github.com/matthiaskoenig/simrun</a></p>\n<p>Features include among others<ul><li>workflows of tasks in YAML, task types from plugins, submitted with the working trees of the model and the libraries</li><li>split tasks whose units spread over the idle servers and are taken back by runs of higher priority</li><li>the memory of the pods learned from earlier runs</li><li>a command line, an HTTP API and an MCP server for people and agents</li></ul></p>\n<p>The documentation is available on <a href=\"https://matthiaskoenig.github.io/simrun\">https://matthiaskoenig.github.io/simrun</a></p>\n<p>If you have any questions or issues please <a href=\"https://github.com/matthiaskoenig/simrun/issues\">open an issue</a></p>\n<h2>Funding</h2><p>Matthias König is supported by the Federal Ministry of Education and Research (BMBF, Germany) within the research network Systems Medicine of the Liver (<strong>LiSyM</strong>, grant number 031L0054) and by the German Research Foundation (DFG) within the Research Unit Programme FOR 5151 <strong><a href=\"https://qualiperf.de\">QuaLiPerF</a></strong> (Quantifying Liver Perfusion-Function Relationship in Complex Resection - A Systems Medicine Approach) by grant number 436883643 and by grant number 465194077 (Priority Programme SPP 2311, Subproject SimLivA). Matthias König has received funds from the EOSCsecretariat.eu which has received funding from the European Union's Horizon Programme call H2020-INFRAEOSC-05-2018-2019, grant Agreement number 831644.</p>",
+  "access_right": "open",
+  "license": "MIT",
+  "keywords": [
+    "simulation",
+    "workflow",
+    "kubernetes",
+    "Argo Workflows",
+    "Kueue",
+    "MCP",
+    "computational modeling"
+  ],
+  "communities": [
+    {
+      "identifier": "eoscsecretariat"
+    }
+  ],
+  "grants": [
+    {
+      "id": "831644"
+    }
+  ]
+}
