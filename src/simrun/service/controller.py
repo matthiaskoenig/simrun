@@ -59,8 +59,6 @@ SKIPPED_PHASES = frozenset({"Skipped", "Omitted"})
 SUBMIT_GRACE_S = 120.0
 # a marker per report of a task recorded as an observation
 RECORDED_DIR = "recorded"
-# a report whose peak memory reached this fraction of its limit was out of memory
-OOM_FRACTION = 0.95
 
 
 def _split_state(task_id: str, nodes: dict[str, str]) -> TaskState:
@@ -134,7 +132,10 @@ def _attempt(name: str) -> int:
 
 
 def is_oom(report: WorkerReport, attempt: int, kills: dict[str, int]) -> bool:
-    """Whether a report is of a worker which ran out of memory.
+    """Whether a report is of a worker which was killed for memory.
+
+    Only the kills the backend reports count (Ruling 34): a peak near the limit is
+    no kill, the kernel reclaims the page cache there.
 
     Args:
         report: The report.
@@ -142,14 +143,10 @@ def is_oom(report: WorkerReport, attempt: int, kills: dict[str, int]) -> bool:
         kills: The pods killed for memory per worker, over all attempts.
 
     Returns:
-        True when the peak memory reached `OOM_FRACTION` of the limit, or when the
-        backend counts more kills of the worker than the attempt (the first attempts
-        of a worker are the killed ones, the retries have more memory).
+        True when the backend counts more kills of the worker than the attempt (the
+        first attempts of a worker are the killed ones, the retries have more
+        memory).
     """
-    peak = report.peak_memory_bytes
-    limit = report.memory_limit_bytes
-    if peak is not None and limit is not None and peak >= OOM_FRACTION * limit:
-        return True
     return attempt < kills.get(report.worker, 0)
 
 
@@ -478,7 +475,7 @@ class Controller:
                 (marks / name).touch()
                 continue
             oom = is_oom(report, _attempt(name), record.oom_kills)
-            self.resources.record(key, report, base, oom=oom)
+            self.resources.record(key, report, base, oom=oom, run=record.id)
             (marks / name).touch()
         shape = record.plans.get(task_id, {}).get("shape")
         for w, attempt in sorted(kills):
@@ -491,5 +488,5 @@ class Controller:
                 processes=shape["processes"],
                 memory_limit_bytes=int(shape["memory_gb"] * GIB),
             )
-            self.resources.record(key, report, base, oom=True)
+            self.resources.record(key, report, base, oom=True, run=record.id)
             mark.touch()

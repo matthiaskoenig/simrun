@@ -6,7 +6,12 @@ import pytest
 from simrun.demo import SQUARES
 from simrun.resources import GIB, ResourceKey, ResourceStore
 from simrun.service.backend import BackendStatus
-from simrun.service.controller import SUBMIT_GRACE_S, Controller, task_states
+from simrun.service.controller import (
+    SUBMIT_GRACE_S,
+    Controller,
+    is_oom,
+    task_states,
+)
 from simrun.store import RunState, RunStore, TaskState
 from simrun.testing import FakeBackend
 from simrun.worker import MERGED_MARKER, WorkerReport, write_report
@@ -55,7 +60,8 @@ def test_oom_reports(service):
     name = service.name(run_id)
     service.backend.start(name)
     service.backend.oom_kill(name, "squares-w1")  # attempt 0 killed without a report
-    write_report(_report("squares-w0", 7.9), task_dir, 0)  # 99 % of the limit
+    # 99 % of the limit, but no kill: a healthy worker, not out of memory
+    write_report(_report("squares-w0", 7.9), task_dir, 0)
     write_report(_report("squares-w1", 1.0), task_dir, 1)
     service.controller.reconcile()
     assert _samples(service) == 0  # the task runs: nothing recorded yet
@@ -64,11 +70,19 @@ def test_oom_reports(service):
     service.controller.reconcile()
     resolved = ResourceStore(service.settings.db).resolve(KEY, SQUARES.hint, None)
     assert resolved.samples == 3
-    # oom: w0 at its limit, (8 - 0.5) / 2 = 3.75 GiB, and w1 at the pod shape of 21
-    # GiB with 40 processes, 0.5125 GiB; the larger times 1.5, rounded up
-    assert resolved.memory_per_worker_gb == 5.7
+    # measured (7.9 - 0.5) / 2 = 3.7 and (1.0 - 0.5) / 2 = 0.25 GiB, p95 3.5275
+    # times 1.1; the kill of w1 at the pod shape of 21 GiB with 40 processes,
+    # 0.5125 GiB times 1.5, is smaller
+    assert resolved.memory_per_worker_gb == 3.9
     marks = sorted(p.name for p in (task_dir / "recorded").iterdir())
     assert marks == ["squares-w0-0.json", "squares-w1-0.oom", "squares-w1-1.json"]
+
+
+def test_is_oom_only_from_kills():
+    report = _report("squares-w0", 8.0)  # at its limit
+    assert not is_oom(report, 0, {})
+    assert is_oom(report, 0, {"squares-w0": 1})
+    assert not is_oom(report, 1, {"squares-w0": 1})
 
 
 def test_reservation_released(service):

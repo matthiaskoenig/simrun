@@ -52,6 +52,8 @@ DEFAULT_SCRATCH = "/scratch"
 THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
 POLL_S = 0.2
 HEARTBEAT_S = 30.0
+# seconds between two samples of the anonymous memory of the cgroup
+SAMPLE_S = 1.0
 COORDINATOR_POLL_S = 5.0
 # a heartbeat is stale this long after the grace of a worker
 STALE_MARGIN_S = 60.0
@@ -94,7 +96,8 @@ class WorkerReport:
         processes: The number of processes of the pool.
         units_done: The units the worker completed.
         seconds: The duration of the worker.
-        peak_memory_bytes: The peak memory of the cgroup.
+        peak_memory_bytes: The largest sample of the anonymous memory of the cgroup
+            (`MemorySampler`), without the page cache.
         memory_limit_bytes: The memory limit of the cgroup.
         per_worker_gb: The memory per process in GiB the worker was sized with.
     """
@@ -326,14 +329,49 @@ class _Coordination:
     poll_s: float
 
 
+class MemorySampler:
+    """The maximum of the anonymous memory of the cgroup over its samples.
+
+    The anonymous memory (`memory.stat` `anon`) is what the processes allocated;
+    `memory.peak` also counts the page cache of staging, installing and writing
+    outputs, which the kernel reclaims at the limit instead of killing.
+
+    Attributes:
+        peak: The largest sample in bytes, None before one was taken.
+    """
+
+    def __init__(self) -> None:
+        """Create a sampler without samples."""
+        self.peak: int | None = None
+
+    def sample(self) -> None:
+        """Read the anonymous memory and keep it when it is the largest."""
+        value = cgroup.memory_anon()
+        if value is not None and (self.peak is None or value > self.peak):
+            self.peak = value
+
+
 @contextmanager
-def _heartbeats(ledger: Ledger, worker: str, heartbeat_s: float) -> Generator[None]:
-    """Touch the heartbeat of `worker` now and every `heartbeat_s` until the end."""
-    ledger.heartbeat(worker)
+def _heartbeats(
+    ledger: Ledger | None, worker: str, heartbeat_s: float, sampler: MemorySampler
+) -> Generator[None]:
+    """Heartbeat and sample the memory in a thread until the end.
+
+    The heartbeat of `worker` is touched now and every `heartbeat_s` (not without a
+    ledger), the memory is sampled now, every `SAMPLE_S` and at the end.
+    """
+    if ledger is not None:
+        ledger.heartbeat(worker)
+    sampler.sample()
     done = threading.Event()
 
     def beat() -> None:
-        while not done.wait(heartbeat_s):
+        next_beat = time.monotonic() + heartbeat_s
+        while not done.wait(max(0.0, min(SAMPLE_S, next_beat - time.monotonic()))):
+            sampler.sample()
+            if ledger is None or time.monotonic() < next_beat:
+                continue
+            next_beat = time.monotonic() + heartbeat_s
             try:
                 ledger.heartbeat(worker)
             except OSError as error:
@@ -346,6 +384,7 @@ def _heartbeats(ledger: Ledger, worker: str, heartbeat_s: float) -> Generator[No
     finally:
         done.set()
         thread.join()
+        sampler.sample()
 
 
 def _compute_units(
@@ -520,12 +559,13 @@ def run_worker(
         n_processes = processes(cores, memory_bytes, base_gb, per_worker_gb)
         logger.info("worker %s: %d processes, %d units", worker, n_processes, n_units)
         units = _Units(ledger, worker, paths.task_dir / PROGRESS_FILE)
+        sampler = MemorySampler()
         coordination = None
         if coordinator:
             stale = grace_s + STALE_MARGIN_S if stale_s is None else stale_s
             coordination = _Coordination(stale_s=stale, poll_s=poll_s)
         try:
-            with _heartbeats(ledger, worker, heartbeat_s):
+            with _heartbeats(ledger, worker, heartbeat_s, sampler):
                 _compute_units(
                     task_type,
                     settings,
@@ -543,7 +583,7 @@ def run_worker(
                 processes=n_processes,
                 units_done=sorted(units.done),
                 seconds=time.monotonic() - start,
-                peak_memory_bytes=cgroup.memory_peak(),
+                peak_memory_bytes=sampler.peak,
                 memory_limit_bytes=cgroup.memory_limit(),
                 per_worker_gb=per_worker_gb,
             )

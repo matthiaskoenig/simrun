@@ -23,6 +23,19 @@ and the planner count as free for the runs.
 
 `deploy/k3d` is the overlay of the integration tests.
 
+## Learned resources
+
+A pod requests `base + per_worker x processes` of memory, limit equal to request.
+Every worker (and every unsplit plugin task, see below) writes a report with the
+largest sample of the anonymous memory of its cgroup (`memory.stat` `anon`, sampled
+every second by its heartbeat thread); `memory.peak` is not used, since it counts
+the page cache of staging, installing and writing outputs, which the kernel
+reclaims at the limit instead of killing. A worker counts as out of memory only
+when the backend reports its pod killed for memory. A request is resolved from the
+last 20 observations of its key (task type, model): the 95th percentile of the
+measured memory per process times 1.1, and at least 1.5 times the memory per
+process of a pod killed for memory, until a later run of the key succeeded.
+
 ## Integration tests on k3d
 
 ```bash
