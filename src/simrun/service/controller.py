@@ -348,9 +348,16 @@ class Controller:
         """Bring the records of the live runs up to date with the backend.
 
         The live runs are the ones of the index which have not ended or have a
-        release or a cancellation pending; an ended run is not read again.
+        release or a cancellation pending; an ended run is not read again. Runs
+        missing from the index are indexed first (`IndexedRunStore.reindex`) and
+        followed also while their index rows cannot be written.
         """
-        for run_id in self.store.index.live_ids():
+        unindexed: list[str] = []
+        try:
+            unindexed = self.store.reindex()
+        except Exception:
+            logger.exception("indexing the runs missing from the index failed")
+        for run_id in sorted({*self.store.index.live_ids(), *unindexed}):
             try:
                 self._reconcile(run_id)
             except Exception:

@@ -13,6 +13,7 @@ pending); `GET /runs`, a cleanup and the usage filter in the index.
 import json
 import logging
 import sqlite3
+import threading
 from collections.abc import Iterable
 from contextlib import closing
 from dataclasses import dataclass
@@ -180,7 +181,14 @@ def _marks() -> str:
 
 
 class IndexedRunStore(RunStore):
-    """The run store of the service: every record it writes is indexed too."""
+    """The run store of the service: every record it writes is indexed too.
+
+    A record whose index row could not be written (the index raised after the
+    record was written) and a record which could not be read when the index was
+    rebuilt are kept aside and indexed again at every `reindex`, which the
+    controller calls at every poll; the ones which still cannot be read are logged
+    then.
+    """
 
     def __init__(self, root: Path, index: RunIndex) -> None:
         """Create the store.
@@ -191,14 +199,30 @@ class IndexedRunStore(RunStore):
         """
         super().__init__(root)
         self.index = index
+        self._lock = threading.Lock()
+        self._unindexed: set[str] = set()
 
     def write(self, record: RunRecord) -> None:
-        """Write a record, then index it."""
+        """Write a record, then index it.
+
+        A failure of the index is logged and the run indexed at the next `reindex`:
+        the record is written, so the caller goes on.
+        """
         super().write(record)
-        self.index.put(record)
+        try:
+            self.index.put(record)
+        except Exception:
+            logger.exception("indexing run %s failed, retried later", record.id)
+            with self._lock:
+                self._unindexed.add(record.id)
+            return
+        with self._lock:
+            self._unindexed.discard(record.id)
 
     def forget(self, run_id: str) -> None:
         """Remove a run from the index, once it was moved out of the runs."""
+        with self._lock:
+            self._unindexed.discard(run_id)
         self.index.remove(run_id)
 
     def ids(self) -> list[str]:
@@ -211,9 +235,11 @@ class IndexedRunStore(RunStore):
     def rebuild(self) -> None:
         """Rebuild the index from the records.
 
-        A record which cannot be read is logged and left out.
+        A record which cannot be read is logged, left out and tried again at every
+        `reindex`.
         """
         records: list[RunRecord] = []
+        unreadable: set[str] = set()
         for run_id in self.ids():
             try:
                 records.append(self.read(run_id))
@@ -221,4 +247,40 @@ class IndexedRunStore(RunStore):
                 continue
             except (ValueError, OSError) as error:
                 logger.warning("the record of run %s cannot be read: %s", run_id, error)
+                unreadable.add(run_id)
         self.index.rebuild(records)
+        with self._lock:
+            self._unindexed = unreadable
+
+    def reindex(self) -> list[str]:
+        """Index the runs whose index row is missing, from their records.
+
+        A record which cannot be read is logged at every call, so a run the
+        controller cannot follow is never silent.
+
+        Returns:
+            The runs whose records were read but whose index rows still cannot be
+            written, which the controller follows besides the live runs.
+        """
+        with self._lock:
+            pending = sorted(self._unindexed)
+        unindexed: list[str] = []
+        for run_id in pending:
+            try:
+                record = self.read(run_id)
+            except KeyError:
+                with self._lock:
+                    self._unindexed.discard(run_id)
+                continue
+            except (ValueError, OSError) as error:
+                logger.warning(
+                    "the record of run %s cannot be read, the run is not followed: %s",
+                    run_id,
+                    error,
+                )
+                continue
+            self.write(record)
+            with self._lock:
+                if run_id in self._unindexed:
+                    unindexed.append(run_id)
+        return unindexed
