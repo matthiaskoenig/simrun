@@ -107,6 +107,11 @@ class WorkerReport:
             (`MemorySampler`), without the page cache.
         memory_limit_bytes: The memory limit of the cgroup.
         per_worker_gb: The memory per process in GiB the worker was sized with.
+        unit_seconds: The seconds of the units it completed, each measured in the
+            process which computed it (the setup of a process in its first unit),
+            summed: `unit_seconds / len(units_done)` is the time of a unit in one
+            process, without the waits of the worker (for the units of other
+            workers, a coordinator) and the processes idle at its end.
     """
 
     worker: str
@@ -117,6 +122,7 @@ class WorkerReport:
     peak_memory_bytes: int | None = None
     memory_limit_bytes: int | None = None
     per_worker_gb: float = 0.0
+    unit_seconds: float = 0.0
 
 
 def processes(
@@ -194,16 +200,21 @@ def _kill(pids: set[int]) -> None:
 
 def _compute(
     setup: str | None, ref: str, settings: BaseModel, index: int, paths: TaskPaths
-) -> None:
+) -> float:
     """Compute one unit in a process of the pool, after the setup of the process.
 
     The setup runs in the first unit of a process, so its exception is the exception
     of that unit, and a broken pool only means that a process died.
+
+    Returns:
+        The seconds the unit took in the process, its setup included.
     """
+    start = time.monotonic()
     if setup is not None and setup not in _SETUPS_DONE:
         resolve(setup)(settings, paths)
         _SETUPS_DONE.add(setup)
     resolve(ref)(settings, index, paths)
+    return time.monotonic() - start
 
 
 @contextmanager
@@ -274,8 +285,9 @@ class _Units:
     done: list[int] = field(default_factory=list)
     failed: int | None = None
     broken: BrokenProcessPool | None = None
+    seconds: float = 0.0
 
-    def complete(self, index: int) -> None:
+    def complete(self, index: int, seconds: float) -> None:
         try:
             self.ledger.complete(index, self.worker)
         except ValueError:
@@ -287,6 +299,7 @@ class _Units:
             )
             return
         self.done.append(index)
+        self.seconds += seconds
         _append_progress(self.progress, self.worker, index)
 
     def release(self, index: int) -> None:
@@ -299,18 +312,18 @@ class _Units:
                 self.worker,
             )
 
-    def settle(self, future: Future[None], index: int) -> None:
+    def settle(self, future: Future[float], index: int) -> None:
         """Complete the unit of a future which succeeded, else release it."""
         if future.done() and not future.cancelled() and future.exception() is None:
-            self.complete(index)
+            self.complete(index, future.result())
         else:
             self.release(index)
 
-    def finished(self, future: Future[None], index: int) -> None:
+    def finished(self, future: Future[float], index: int) -> None:
         """Complete the unit of a finished future, or release it and note why."""
         error = None if future.cancelled() else future.exception()
         if not future.cancelled() and error is None:
-            self.complete(index)
+            self.complete(index, future.result())
             return
         self.release(index)
         if isinstance(error, BrokenProcessPool):
@@ -422,7 +435,7 @@ def _compute_units(
         mp_context=multiprocessing.get_context("forkserver"),
         initializer=_init_process,
     )
-    in_flight: dict[Future[None], int] = {}
+    in_flight: dict[Future[float], int] = {}
     # the processes the pool started, which it starts in `submit` only
     started: set[int] = set()
     deadline: float | None = None
@@ -598,6 +611,7 @@ def run_worker(
                 peak_memory_bytes=sampler.peak,
                 memory_limit_bytes=cgroup.memory_limit(),
                 per_worker_gb=per_worker_gb,
+                unit_seconds=units.seconds,
             )
             write_report(report, paths.task_dir, attempt)
     if units.failed is not None:

@@ -27,6 +27,7 @@ def report(
         processes=36,
         units_done=list(range(units)),
         seconds=40.0,
+        unit_seconds=10.0 * units,
         peak_memory_bytes=None if peak_gb is None else int(peak_gb * GIB),
         memory_limit_bytes=None if limit_gb is None else int(limit_gb * GIB),
     )
@@ -199,3 +200,18 @@ def test_resource_key_from_the_cost_setting() -> None:
     assert resource_key(by_subset, {}, "hctz").variant == "all"
     by_data = TaskType(name="fit", settings=_FitSettings, cost_setting="data")
     assert resource_key(by_data, {"data": [3]}, "").variant == "[3]"
+
+
+def test_seconds_per_unit_is_the_time_of_a_unit_in_a_process(tmp_path: Path) -> None:
+    # 360 units of 10 s on 36 processes take 100 s; the worker waited 20 s more
+    store = ResourceStore(tmp_path / "res.db")
+    done = WorkerReport(
+        worker="w",
+        node="n",
+        processes=36,
+        units_done=list(range(360)),
+        seconds=120.0,
+        unit_seconds=3600.0,
+    )
+    store.record(KEY, done, base_gb=2.0)
+    assert store.resolve(KEY, ResourceHint(), None).seconds_per_unit == 10.0

@@ -702,6 +702,9 @@ def test_coordinator_recomputes_the_units_of_a_dead_worker(tmp_path: Path) -> No
     assert Ledger(task_dir / "units", 6).complete_ledger()
     assert held <= set(report["units_done"])
     assert time.monotonic() - start >= 0.5
+    # the time of a unit in a process, without the wait for the stale heartbeat
+    per_unit = report["unit_seconds"] / len(report["units_done"])
+    assert 0.3 <= per_unit < 0.45
     run_merge(SQUARES, settings, task_paths(task_dir))
     summary = json.loads((task_dir / "out" / "summary.json").read_text())
     assert summary["sum"] == sum(i * i for i in range(6))
@@ -720,8 +723,14 @@ def test_coordinator_waits_for_a_live_worker(tmp_path: Path) -> None:
     finally:
         kill_tree(process)
     assert report["units_done"] == []
+    # it waited for the units of w1, it computed none
+    assert report["unit_seconds"] == 0.0
     assert Ledger(task_dir / "units", 4).complete_ledger()
-    assert sorted(read_report(task_dir, "w1")["units_done"]) == [0, 1, 2, 3]
+    w1 = read_report(task_dir, "w1")
+    assert sorted(w1["units_done"]) == [0, 1, 2, 3]
+    # four units of 1.5 s side by side: 6 s of units in about 1.5 s
+    assert 6.0 <= w1["unit_seconds"] < 7.0
+    assert w1["seconds"] < 4.0
 
 
 def test_extra_worker_returns_while_others_hold_claims(tmp_path: Path) -> None:

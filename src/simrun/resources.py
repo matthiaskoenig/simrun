@@ -1,7 +1,7 @@
 """Resources learned from the reports of workers.
 
-An observation is the memory per worker process and the seconds per unit of one
-report of a worker, keyed by the task type, the model and a variant. A request is
+An observation is the memory per worker process and the seconds of a unit in one
+process of one report of a worker, keyed by the task type, the model and a variant. A request is
 resolved from the last `WINDOW` observations of its key: the 95th percentile of the
 measured memory per worker times `MARGIN`, and at least `RETRY_FACTOR` times the
 memory per worker of a pod killed for memory, until a later run of the key
@@ -93,7 +93,8 @@ class ResolvedResources:
         memory_per_worker_gb: Memory per worker in GiB.
         scratch_gb: Local scratch in GiB.
         gpus: Number of GPUs.
-        seconds_per_unit: Median seconds per unit, None without records.
+        seconds_per_unit: Median seconds of a unit in one process, None without
+            records.
         samples: Number of memory observations the memory was learned from.
         source: `learned from N runs`, `plugin hint`, `default` or `override`.
     """
@@ -189,9 +190,11 @@ class ResourceStore:
             value = (measured / GIB - base_gb) / max(report.processes, 1)
             if value > 0:
                 per_worker = value
+        # the time of a unit in one process, which an estimate multiplies by the
+        # rounds of the units over the processes of the pods
         seconds = None
         if report.units_done:
-            seconds = report.seconds / len(report.units_done)
+            seconds = report.unit_seconds / len(report.units_done)
         if per_worker is None and seconds is None:
             return
         with self._connect() as con:
