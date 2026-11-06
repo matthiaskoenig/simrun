@@ -3,7 +3,12 @@ from pathlib import Path
 import pytest
 
 from simrun.plugins import ResourceHint
-from simrun.resources import DEFAULT_PER_WORKER_GB, ResourceKey, ResourceStore
+from simrun.resources import (
+    DEFAULT_PER_WORKER_GB,
+    WINDOW,
+    ResourceKey,
+    ResourceStore,
+)
 from simrun.worker import WorkerReport
 from simrun.workflow import ResourceOverride
 
@@ -120,3 +125,56 @@ def test_oom_without_limit_warns(
     with caplog.at_level("WARNING", logger="simrun.resources"):
         store.record(KEY, report(None, limit_gb=None), base_gb=2.0, oom=True)
     assert "without a memory limit" in caplog.text
+
+
+def test_window_of_the_last_observations(tmp_path: Path) -> None:
+    store = ResourceStore(tmp_path / "res.db")
+    for _ in range(5):  # older than the window: never read again
+        store.record(KEY, report(2 + 20.0 * 36), base_gb=2.0, run="old")
+    for _ in range(WINDOW):
+        store.record(KEY, report(2 + 4.6 * 36), base_gb=2.0, run="new")
+    res = store.resolve(KEY, ResourceHint(), None)
+    assert res.memory_per_worker_gb == 5.1
+    assert res.samples == WINDOW == 20
+
+
+def test_oom_counts_until_a_later_run_succeeds(tmp_path: Path) -> None:
+    store = ResourceStore(tmp_path / "res.db")
+    store.record(
+        KEY, report(None, limit_gb=2 + 4.0 * 36), base_gb=2.0, oom=True, run="r1"
+    )
+    # the retry of the same run succeeds: the kill still teaches the next run
+    store.record(KEY, report(2 + 4.5 * 36), base_gb=2.0, run="r1")
+    assert store.resolve(KEY, ResourceHint(), None).memory_per_worker_gb == 6.0
+    # a later run succeeds at the learned request: the kill no longer counts
+    store.record(KEY, report(2 + 4.5 * 36), base_gb=2.0, run="r2")
+    res = store.resolve(KEY, ResourceHint(), None)
+    assert res.memory_per_worker_gb == 5.0
+    assert res.samples == 2
+
+
+def test_oom_alone_raises_the_request(tmp_path: Path) -> None:
+    store = ResourceStore(tmp_path / "res.db")
+    store.record(
+        KEY, report(None, limit_gb=2 + 4.0 * 36), base_gb=2.0, oom=True, run="r1"
+    )
+    res = store.resolve(KEY, ResourceHint(), None)
+    assert res.memory_per_worker_gb == 6.0
+    assert res.samples == 1
+
+
+def test_store_of_an_older_schema_is_migrated(tmp_path: Path) -> None:
+    import sqlite3
+
+    db = tmp_path / "res.db"
+    with sqlite3.connect(db) as con:
+        con.execute(
+            "CREATE TABLE observations (key TEXT NOT NULL, per_worker_gb REAL, "
+            "seconds_per_unit REAL, oom INTEGER NOT NULL, created REAL NOT NULL)"
+        )
+        con.execute(
+            "INSERT INTO observations VALUES (?, 4.6, 10.0, 0, 1.0)", (KEY.text(),)
+        )
+    store = ResourceStore(db)
+    store.record(KEY, report(2 + 4.6 * 36), base_gb=2.0, run="r1")
+    assert store.resolve(KEY, ResourceHint(), None).samples == 2

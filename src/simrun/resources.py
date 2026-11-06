@@ -1,4 +1,14 @@
-"""Resources learned from the reports of workers."""
+"""Resources learned from the reports of workers.
+
+An observation is the memory per worker process and the seconds per unit of one
+report of a worker, keyed by the task type, the model and a variant. A request is
+resolved from the last `WINDOW` observations of its key: the 95th percentile of the
+measured memory per worker times `MARGIN`, and at least `RETRY_FACTOR` times the
+memory per worker of a pod killed for memory, until a later run of the key
+succeeded (its measurement then says what the key needs). The memory measured is
+anonymous memory (see `simrun.worker.MemorySampler`), and a worker counts as out of
+memory only when the backend reports its pod killed for memory.
+"""
 
 import logging
 import math
@@ -20,6 +30,8 @@ DEFAULT_PER_WORKER_GB = 6.0
 GIB = 2**30
 PERCENTILE = 0.95
 MIN_PER_WORKER_GB = 0.1
+# the observations of a key a request is resolved from, the most recent ones
+WINDOW = 20
 
 
 @dataclass(frozen=True)
@@ -51,7 +63,7 @@ class ResolvedResources:
         scratch_gb: Local scratch in GiB.
         gpus: Number of GPUs.
         seconds_per_unit: Median seconds per unit, None without records.
-        samples: Number of memory observations of the key.
+        samples: Number of memory observations the memory was learned from.
         source: `learned from N runs`, `plugin hint`, `default` or `override`.
     """
 
@@ -102,18 +114,30 @@ class ResourceStore:
             con.execute(
                 "CREATE TABLE IF NOT EXISTS observations ("
                 "key TEXT NOT NULL, per_worker_gb REAL, seconds_per_unit REAL, "
-                "oom INTEGER NOT NULL, created REAL NOT NULL)"
+                "oom INTEGER NOT NULL, created REAL NOT NULL, "
+                "run TEXT NOT NULL DEFAULT '')"
             )
+            columns = {row[1] for row in con.execute("PRAGMA table_info(observations)")}
+            if "run" not in columns:  # a store of an earlier version
+                con.execute(
+                    "ALTER TABLE observations ADD COLUMN run TEXT NOT NULL DEFAULT ''"
+                )
             con.execute(
                 "CREATE INDEX IF NOT EXISTS observations_key ON observations (key)"
             )
+            con.commit()
 
     def _connect(self) -> closing[sqlite3.Connection]:
         con = sqlite3.connect(self.db, timeout=30)
         return closing(con)
 
     def record(
-        self, key: ResourceKey, report: WorkerReport, base_gb: float, oom: bool = False
+        self,
+        key: ResourceKey,
+        report: WorkerReport,
+        base_gb: float,
+        oom: bool = False,
+        run: str = "",
     ) -> None:
         """Records the report of a worker.
 
@@ -121,7 +145,9 @@ class ResourceStore:
             key: The key of the task.
             report: The report.
             base_gb: The base memory of the task in GiB.
-            oom: Whether the worker was killed for memory; the limit is used then.
+            oom: Whether the backend reports the worker killed for memory; the limit
+                is used then.
+            run: The id of the run of the report.
         """
         measured = report.memory_limit_bytes if oom else report.peak_memory_bytes
         per_worker = None
@@ -139,8 +165,10 @@ class ResourceStore:
             return
         with self._connect() as con:
             con.execute(
-                "INSERT INTO observations VALUES (?, ?, ?, ?, ?)",
-                (key.text(), per_worker, seconds, int(oom), time.time()),
+                "INSERT INTO observations "
+                "(key, per_worker_gb, seconds_per_unit, oom, created, run) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (key.text(), per_worker, seconds, int(oom), time.time(), run),
             )
             con.commit()
 
@@ -159,18 +187,27 @@ class ResourceStore:
         """
         with self._connect() as con:
             rows = con.execute(
-                "SELECT per_worker_gb, seconds_per_unit, oom FROM observations WHERE key = ?",
-                (key.text(),),
+                "SELECT per_worker_gb, seconds_per_unit, oom, run FROM observations "
+                "WHERE key = ? ORDER BY rowid DESC LIMIT ?",
+                (key.text(), WINDOW),
             ).fetchall()
-        memory = [r[0] for r in rows if r[0] is not None]
+        rows.reverse()  # oldest first
+        measured = [r[0] for r in rows if r[0] is not None and not r[2]]
         seconds = [r[1] for r in rows if r[1] is not None]
-        ooms = [r[0] for r in rows if r[0] is not None and r[2]]
-        if memory:
-            wanted = _percentile(memory, PERCENTILE) * MARGIN
+        # a kill counts until a later run of the key succeeded
+        ooms = [
+            r[0]
+            for i, r in enumerate(rows)
+            if r[0] is not None
+            and r[2]
+            and not any(not later[2] and later[3] != r[3] for later in rows[i + 1 :])
+        ]
+        if measured or ooms:
+            wanted = _percentile(measured, PERCENTILE) * MARGIN if measured else 0.0
             if ooms:
                 wanted = max(wanted, max(ooms) * RETRY_FACTOR)
             per_worker = max(MIN_PER_WORKER_GB, _round_up(wanted))
-            source = f"learned from {len(memory)} runs"
+            source = f"learned from {len(measured) + len(ooms)} runs"
         elif hint.memory_per_worker_gb != DEFAULT_PER_WORKER_GB:
             per_worker = hint.memory_per_worker_gb
             source = "plugin hint"
@@ -193,6 +230,6 @@ class ResourceStore:
             scratch_gb=scratch,
             gpus=gpus,
             seconds_per_unit=_median(seconds) if seconds else None,
-            samples=len(memory),
+            samples=len(measured) + len(ooms),
             source=source,
         )

@@ -39,7 +39,20 @@ def memory_limit(root: Path = CGROUP_ROOT) -> int | None:
     return int(text)
 
 
-def memory_peak(root: Path = CGROUP_ROOT) -> int | None:
-    """The peak memory of `memory.peak` in bytes, `None` without the file."""
-    text = _read(root / "memory.peak")
-    return None if text is None else int(text)
+def memory_anon(root: Path = CGROUP_ROOT) -> int | None:
+    """The anonymous memory of `memory.stat` (`anon`) in bytes.
+
+    The memory the processes allocated, without the page cache which `memory.peak`
+    counts and the kernel reclaims at the limit instead of killing.
+
+    Returns:
+        The bytes, `None` without the file or the field.
+    """
+    text = _read(root / "memory.stat")
+    if text is None:
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "anon":
+            return int(value)
+    return None

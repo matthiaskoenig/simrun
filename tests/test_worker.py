@@ -714,3 +714,30 @@ def test_merge_main_writes_marker(
         worker.merge_main()
     assert raised.value.code == 0
     assert marker.exists()
+
+
+def test_report_carries_the_peak_of_the_sampled_anonymous_memory(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the samples of `memory.stat` `anon`: the report keeps their maximum, not the
+    # `memory.peak` of the cgroup, which counts the page cache
+    samples = iter([1 * 2**30, 3 * 2**30])
+    monkeypatch.setattr(worker.cgroup, "memory_anon", lambda: next(samples, 2**30))
+    monkeypatch.setattr(worker, "SAMPLE_S", 0.01)
+    (worker_env / "settings.json").write_text(
+        SquaresSettings(n=4, sleep_s=0.05).model_dump_json()
+    )
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == 0
+    assert read_report(worker_env, "squares-w0")["peak_memory_bytes"] == 3 * 2**30
+
+
+def test_sampler_keeps_the_maximum(monkeypatch: pytest.MonkeyPatch) -> None:
+    samples = iter([5, None, 9, 2])
+    monkeypatch.setattr(worker.cgroup, "memory_anon", lambda: next(samples))
+    sampler = worker.MemorySampler()
+    assert sampler.peak is None
+    for _ in range(4):
+        sampler.sample()
+    assert sampler.peak == 9
