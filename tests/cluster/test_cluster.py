@@ -66,7 +66,7 @@ def test_take_back_same_priority(service: Service) -> None:
     b = service.submit(
         "t-mk-bot", service.workflow(n=60, sleep_s=0.2, resources=ONE_PER_NODE)
     )
-    a_units = service.task_dir(a["id"]) / "out" / "units"
+    a_units = service.task_dir(a["id"]) / "out" / "squares"
 
     def b_runs_beside_a() -> bool:
         b_running = service.cluster.running_pods(b["id"])
