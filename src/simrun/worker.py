@@ -107,6 +107,9 @@ class WorkerReport:
             (`MemorySampler`), without the page cache.
         memory_limit_bytes: The memory limit of the cgroup.
         per_worker_gb: The memory per process in GiB the worker was sized with.
+        oom_kills: The processes of its cgroup the out of memory killer killed while
+            it ran (`memory.events` `oom_kill`), the evidence that an exit 137 was a
+            kill for memory.
         unit_seconds: The seconds of the units it completed, each measured in the
             process which computed it (the setup of a process in its first unit),
             summed: `unit_seconds / len(units_done)` is the time of a unit in one
@@ -122,6 +125,7 @@ class WorkerReport:
     peak_memory_bytes: int | None = None
     memory_limit_bytes: int | None = None
     per_worker_gb: float = 0.0
+    oom_kills: int = 0
     unit_seconds: float = 0.0
 
 
@@ -347,6 +351,21 @@ class _Coordination:
 
     stale_s: float
     poll_s: float
+
+
+class _OomKills:
+    """The kills of the out of memory killer in the cgroup from now on."""
+
+    def __init__(self) -> None:
+        """Read the counter of `memory.events` now."""
+        self.start = cgroup.memory_oom_kills()
+
+    def since(self) -> int:
+        """The kills since the object was created, 0 without the counter."""
+        now = cgroup.memory_oom_kills()
+        if now is None:
+            return 0
+        return now - (self.start or 0)
 
 
 class MemorySampler:
@@ -585,6 +604,7 @@ def run_worker(
         logger.info("worker %s: %d processes, %d units", worker, n_processes, n_units)
         units = _Units(ledger, worker, paths.task_dir / PROGRESS_FILE)
         sampler = MemorySampler()
+        oom_kills = _OomKills()
         coordination = None
         if coordinator:
             stale = grace_s + STALE_MARGIN_S if stale_s is None else stale_s
@@ -611,6 +631,7 @@ def run_worker(
                 peak_memory_bytes=sampler.peak,
                 memory_limit_bytes=cgroup.memory_limit(),
                 per_worker_gb=per_worker_gb,
+                oom_kills=oom_kills.since(),
                 unit_seconds=units.seconds,
             )
             write_report(report, paths.task_dir, attempt)
@@ -1021,6 +1042,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
         os.environ[name] = "1"
     worker = env.get("SIMRUN_WORKER") or paths.task_dir.name
     start = time.monotonic()
+    oom_kills = _OomKills()
     try:
         process = subprocess.Popen(argv)
     except OSError as error:
@@ -1039,6 +1061,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
             peak_memory_bytes=sampler.peak,
             memory_limit_bytes=cgroup.memory_limit(),
             per_worker_gb=per_worker_gb,
+            oom_kills=oom_kills.since(),
         )
         write_report(report, paths.task_dir, attempt)
     if stop.is_set():

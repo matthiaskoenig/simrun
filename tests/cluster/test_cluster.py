@@ -124,7 +124,7 @@ def test_oom_retry(service: Service) -> None:
     record = service.wait(run["id"])
     assert record["state"] == "succeeded", record["message"]
     assert service.total(run["id"]) == squares(33)
-    assert record["oom_kills"] == {"squares-w0": 1}
+    assert record["oom_kills"] == {"squares-w0": [0]}
     after = service.estimate("t-mk", workflow)["squares"]["resources"]
     assert after["memory_per_worker_gb"] > before["memory_per_worker_gb"]
 

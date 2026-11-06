@@ -18,6 +18,7 @@ from simrun.service.argo_backend import (
     node_from,
     workflow_status,
 )
+from simrun.service.backend import FailedAttempt
 
 WF = "simrun-r1"
 CONFIG = ClusterConfig(registry="k3d-simrun-registry:5000")
@@ -78,7 +79,7 @@ def test_status_of_the_dag_nodes() -> None:
         "a-extra(0:1)": "Pending",
         "b": "Succeeded",
     }
-    assert status.oom == {}
+    assert status.failed == {}
 
 
 def test_a_new_workflow_is_pending() -> None:
@@ -119,7 +120,13 @@ def test_a_retry_after_a_kill_for_memory_is_queued_and_counted() -> None:
         )
     )
     assert status.tasks == {"a-w0": "Pending", "a-extra(0:2)": "Pending"}
-    assert status.oom == {"a-w0": 1, "a-w2": 2}
+    assert status.failed == {
+        "a-w0": [FailedAttempt(attempt=0, exit_code=137, oom_killed=True)],
+        "a-w2": [
+            FailedAttempt(attempt=0, exit_code=137, oom_killed=True),
+            FailedAttempt(attempt=1, exit_code=137, oom_killed=True),
+        ],
+    }
 
 
 def test_a_kill_of_the_executor_is_no_kill_of_the_worker() -> None:
@@ -131,7 +138,7 @@ def test_a_kill_of_the_executor_is_no_kill_of_the_worker() -> None:
             _node("a-w0(1)", "Pod", "Pending", worker="a-w0"),
         )
     )
-    assert status.oom == {}
+    assert status.failed == {"a-w0": [FailedAttempt(attempt=0, oom_killed=False)]}
     assert status.tasks == {"a-w0": "Preempted"}
 
 
@@ -240,8 +247,10 @@ def test_backend_of_the_settings(tmp_path, monkeypatch) -> None:
     assert created.api.configuration.host == "https://k:6443"
 
 
-def test_a_dead_pool_process_is_a_kill_for_memory() -> None:
-    # Ruling 7: the worker exits 137 itself when a process of its pool died
+def test_an_exit_137_is_no_evidence_of_a_kill_for_memory() -> None:
+    # a worker which exits 137 itself (Ruling 7, its report says whether the out of
+    # memory killer killed a process) or a pod killed after its grace period: only
+    # `OOMKilled` is the evidence of the kernel (Ruling 39)
     status = workflow_status(
         _workflow(
             _node("a-w0", "Retry", "Running", ["a-w0(0)", "a-w0(1)"], "a-w0"),
@@ -256,8 +265,8 @@ def test_a_dead_pool_process_is_a_kill_for_memory() -> None:
             _node("a-w0(1)", "Pod", "Pending", worker="a-w0"),
         )
     )
-    assert status.tasks == {"a-w0": "Pending"}
-    assert status.oom == {"a-w0": 1}
+    assert status.tasks == {"a-w0": "Preempted"}
+    assert status.failed == {"a-w0": [FailedAttempt(attempt=0, exit_code=137)]}
 
 
 def test_kills_of_unsplit_tasks_and_merges_are_counted() -> None:
@@ -270,7 +279,10 @@ def test_kills_of_unsplit_tasks_and_merges_are_counted() -> None:
             _node("a-merge(0)", "Pod", "Failed", message=OOM),
         )
     )
-    assert status.oom == {"b": 1, "a-merge": 1}
+    assert status.failed == {
+        "b": [FailedAttempt(attempt=0, exit_code=137, oom_killed=True)],
+        "a-merge": [FailedAttempt(attempt=0, exit_code=137, oom_killed=True)],
+    }
     assert status.tasks == {"b": "Running", "a-merge": "Pending"}
 
 

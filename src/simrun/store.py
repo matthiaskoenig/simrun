@@ -69,7 +69,8 @@ class RunRecord(BaseModel):
             began, None while its environment is resolved and built.
         finished: Time of the end.
         message: A message, e.g. the failure.
-        oom_kills: Pods killed for memory per worker, as the backend last reported.
+        oom_kills: The attempts of the pods killed for memory per worker (the worker
+            id, the task id of an unsplit task, `<task>-merge` of a merge).
         pending_release: A reserved node whose release failed, retried by the service.
         pending_cancel: Whether the workflow must still be cancelled, e.g. one which
             may have been created by a submission that failed.
@@ -93,7 +94,7 @@ class RunRecord(BaseModel):
     finished: datetime | None
     message: str | None
     built: datetime | None = None
-    oom_kills: dict[str, int] = Field(default_factory=dict)
+    oom_kills: dict[str, list[int]] = Field(default_factory=dict)
     pending_release: str | None = None
     pending_cancel: bool = False
 

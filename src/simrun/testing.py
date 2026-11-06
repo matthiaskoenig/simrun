@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from simrun.planner import Node
-from simrun.service.backend import FINAL_PHASES, BackendStatus
+from simrun.service.backend import FINAL_PHASES, BackendStatus, FailedAttempt
 
 # the tokens of the tests of the service: the owner, the owner's agent, another
 # person and the agent of the other person
@@ -49,8 +49,10 @@ class FakeBackend:
     """A backend whose workflows change only when the test says so.
 
     A submitted workflow is `Pending` without nodes. `start` sets every node
-    running, `finish` every node succeeded, `fail` and `set_node` one node;
-    `finish_after` finishes a workflow that many seconds after its submission.
+    running, `finish` every node succeeded, `fail` and `set_node` one node,
+    `fail_attempt` and `oom_kill` fail attempts of a pod; `finish_after` finishes a
+    workflow that many seconds after its submission. The attempts of a pod are
+    numbered from 0 in the order they fail.
     The calls which change the cluster are recorded in `calls`.
 
     Attributes:
@@ -90,7 +92,7 @@ class FakeBackend:
         name = manifest["metadata"]["name"]
         with self._lock:
             self.manifests[name] = manifest
-            self._status[name] = BackendStatus(phase="Pending", tasks={}, oom={})
+            self._status[name] = BackendStatus(phase="Pending", tasks={})
             self._submitted[name] = time.monotonic()
             self.calls.append(("submit", name))
         return name
@@ -140,11 +142,26 @@ class FakeBackend:
         with self._lock:
             del self._status[name]
 
-    def oom_kill(self, name: str, worker: str, count: int = 1) -> None:
-        """Count pods of a worker killed for memory."""
+    def fail_attempt(
+        self,
+        name: str,
+        worker: str,
+        exit_code: int | None = None,
+        oom_killed: bool = False,
+    ) -> None:
+        """Fail the next attempt of a pod of a worker, merge or unsplit task."""
         with self._lock:
-            oom = self._status[name].oom
-            oom[worker] = oom.get(worker, 0) + count
+            attempts = self._status[name].failed.setdefault(worker, [])
+            attempts.append(
+                FailedAttempt(
+                    attempt=len(attempts), exit_code=exit_code, oom_killed=oom_killed
+                )
+            )
+
+    def oom_kill(self, name: str, worker: str, count: int = 1) -> None:
+        """Let the next attempts of a pod be killed by the out of memory killer."""
+        for _ in range(count):
+            self.fail_attempt(name, worker, exit_code=137, oom_killed=True)
 
     def cancel(self, name: str) -> None:
         """Terminate a workflow."""

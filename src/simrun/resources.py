@@ -177,7 +177,8 @@ class ResourceStore:
             key: The key of the task.
             report: The report.
             base_gb: The base memory of the task in GiB.
-            oom: Whether the backend reports the worker killed for memory; the limit
+            oom: Whether the worker was killed for memory (see
+                `simrun.service.controller.is_oom`); the limit
                 is used then.
             run: The id of the run of the report.
         """

@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from simrun.cgroup import cpu_quota, memory_anon, memory_limit
+from simrun.cgroup import cpu_quota, memory_anon, memory_limit, memory_oom_kills
 
 
 def test_cpu_quota_parses(tmp_path: Path) -> None:
@@ -35,3 +35,11 @@ def test_memory_anon(tmp_path: Path) -> None:
     assert memory_anon(tmp_path) == 4096
     (tmp_path / "memory.stat").write_text("file 1\n")
     assert memory_anon(tmp_path) is None
+
+
+def test_memory_oom_kills(tmp_path: Path) -> None:
+    assert memory_oom_kills(tmp_path) is None
+    (tmp_path / "memory.events").write_text(
+        "low 0\nhigh 0\nmax 12\noom 2\noom_kill 1\noom_group_kill 0\n"
+    )
+    assert memory_oom_kills(tmp_path) == 1

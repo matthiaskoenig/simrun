@@ -82,8 +82,71 @@ def test_oom_reports(service):
 def test_is_oom_only_from_kills():
     report = _report("squares-w0", 8.0)  # at its limit
     assert not is_oom(report, 0, {})
-    assert is_oom(report, 0, {"squares-w0": 1})
-    assert not is_oom(report, 1, {"squares-w0": 1})
+    assert is_oom(report, 0, {"squares-w0": [0]})
+    assert not is_oom(report, 1, {"squares-w0": [0]})
+    assert is_oom(report, 2, {"squares-w0": [0, 2]})
+    # the report of a worker whose pool lost a process to the out of memory killer
+    killed = _report("squares-w0", 1.0)
+    killed.oom_kills = 1
+    assert is_oom(killed, 0, {})
+
+
+def _running(service) -> tuple[str, str]:
+    run_id = service.submit()["id"]
+    name = service.name(run_id)
+    service.backend.start(name)
+    return run_id, name
+
+
+def _state(service, run_id: str) -> RunState:
+    return RunStore(service.settings.store).read(run_id).state
+
+
+def test_a_kill_after_the_grace_period_is_no_kill_for_memory(service):
+    # exit 137 without OOMKilled and without a report of the out of memory killer:
+    # the kubelet killed a pod which did not stop within its grace (Ruling 39)
+    run_id, name = _running(service)
+    for _ in range(3):
+        service.backend.fail_attempt(name, "squares-w1", exit_code=137)
+        service.controller.reconcile()
+    assert _state(service, run_id) == "running"
+    assert RunStore(service.settings.store).read(run_id).oom_kills == {}
+
+
+def test_a_worker_reports_the_kill_of_a_process_of_its_pool(service):
+    run_id, name = _running(service)
+    task_dir = service.run_dir(run_id) / "tasks/squares"
+    killed = _report("squares-w1", 1.0)
+    killed.oom_kills = 1
+    write_report(killed, task_dir, 0)
+    service.backend.fail_attempt(name, "squares-w1", exit_code=137)
+    service.controller.reconcile()
+    record = RunStore(service.settings.store).read(run_id)
+    assert (record.state, record.oom_kills) == ("running", {"squares-w1": [0]})
+    # the retry, with the retry memory, killed by the kernel: the second kill
+    service.backend.oom_kill(name, "squares-w1")
+    service.controller.reconcile()
+    record = RunStore(service.settings.store).read(run_id)
+    assert record.state == "failed"
+    assert "squares-w1 was killed for memory 2 times" in (record.message or "")
+
+
+def test_a_kill_after_a_preempted_attempt_does_not_count(service):
+    # attempt 0 killed for memory, attempt 1 preempted (no exit code): Argo gives
+    # attempt 2 the first memory again, so its kill is no kill with the retry
+    # memory; attempt 3 has the retry memory after the exit 137 of attempt 2
+    run_id, name = _running(service)
+    service.backend.oom_kill(name, "squares-w1")
+    service.backend.fail_attempt(name, "squares-w1", exit_code=None)
+    service.backend.oom_kill(name, "squares-w1")
+    service.controller.reconcile()
+    record = RunStore(service.settings.store).read(run_id)
+    assert (record.state, record.oom_kills) == ("running", {"squares-w1": [0, 2]})
+    service.backend.oom_kill(name, "squares-w1")
+    service.controller.reconcile()
+    record = RunStore(service.settings.store).read(run_id)
+    assert record.state == "failed"
+    assert "squares-w1 was killed for memory 3 times" in (record.message or "")
 
 
 def test_reservation_released(service):
@@ -283,7 +346,7 @@ WORKFLOW = Workflow(
 
 
 def _states(**nodes: str) -> dict[str, TaskState]:
-    status = BackendStatus(phase="Running", tasks=nodes, oom={})
+    status = BackendStatus(phase="Running", tasks=nodes)
     return task_states(WORKFLOW, {**TYPES, COMMAND.name: COMMAND}, status)
 
 

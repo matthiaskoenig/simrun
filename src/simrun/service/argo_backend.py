@@ -5,8 +5,9 @@ Kueue admits its pods (plain pods with a queue label) and preempts lower priorit
 The status of a workflow is read from the nodes of its DAG (`workflow_status`): a node
 retried by Argo (a `Retry` node) is `Pending` while its attempt waits for admission,
 `Preempted` while the attempt after a failure which was not a kill for memory waits
-(an eviction by Kueue or a lost pod), `Running` while its attempt runs; the pods
-killed for memory are counted per worker from the messages of the attempts.
+(an eviction by Kueue, a lost pod, a pod killed after its grace period), `Running`
+while its attempt runs; the failed attempts are listed per worker with their exit
+codes and whether the kernel killed them for memory (`OOMKilled`).
 
 The nodes are the ones labelled `simrun/worker=true` (the nodes of the ResourceFlavor
 of Kueue) without a taint which keeps pods off, a reservation of simrun aside; their
@@ -46,8 +47,12 @@ from simrun.argo import CONTAINER, GPU_RESOURCE, RESERVED_KEY
 from simrun.config import ClusterConfig
 from simrun.planner import Node
 from simrun.service.app import CONFIG_ENV, load_settings
-from simrun.service.backend import FINAL_PHASES, PREEMPTED_PHASE, BackendStatus
-from simrun.worker import EXIT_POOL_BROKEN
+from simrun.service.backend import (
+    FINAL_PHASES,
+    PREEMPTED_PHASE,
+    BackendStatus,
+    FailedAttempt,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +83,8 @@ EXECUTOR_CPU = 0.1
 EXECUTOR_MEMORY_GB = 0.25
 GIB = 2**30
 # the name of an attempt of a retried node ends in `(<attempt>)`
-ATTEMPT = re.compile(r"\(\d+\)$")
+ATTEMPT = re.compile(r"\((\d+)\)$")
+EXIT_CODE = re.compile(r"\(exit code (-?\d+)\)")
 # node types which are no task of the DAG
 GROUP_TYPES = frozenset({"DAG", "TaskGroup", "Steps", "StepGroup"})
 FAILED_PHASES = frozenset({"Failed", "Error"})
@@ -100,21 +106,40 @@ MANIFEST_TYPES = (
 
 
 def _killed_for_memory(node: dict[str, Any]) -> bool:
-    """Whether the main container of an attempt was killed for memory.
+    """Whether the main container of an attempt was killed by the out of memory killer.
 
     Argo v4 names the container in the message of the node, e.g.
     `main: OOMKilled (exit code 137)`; a kill of a container of the executor
-    (`init: ...`, `wait: ...`) is no kill of the worker. A main container which
-    exits 137 itself is a worker whose pool lost a process to the out of memory
-    killer (Ruling 7), a kill for memory too.
+    (`init: ...`, `wait: ...`) is no kill of the worker. An exit 137 alone is no
+    evidence (Ruling 39): a pod which did not stop within its grace period is killed
+    with SIGKILL, and a worker which exits 137 itself (Ruling 7) reports in its
+    report whether the out of memory killer killed a process of its pool.
     """
     message = node.get("message") or ""
     if message.startswith(EXECUTOR_CONTAINERS):
         return False
-    exit_code = str((node.get("outputs") or {}).get("exitCode") or "")
-    return message.removeprefix(f"{CONTAINER}: ").startswith(
-        OOM_REASON
-    ) or exit_code == str(EXIT_POOL_BROKEN)
+    return message.removeprefix(f"{CONTAINER}: ").startswith(OOM_REASON)
+
+
+def _exit_code(node: dict[str, Any]) -> int | None:
+    """The exit code of the main container of an attempt, None without one.
+
+    The output of Argo, else the one its message names, e.g. `Error (exit code
+    137)`; an attempt whose container of the executor failed has none of the main
+    container, and a pod deleted none at all (`-1`).
+    """
+    message = node.get("message") or ""
+    if message.startswith(EXECUTOR_CONTAINERS):
+        return None
+    text = str((node.get("outputs") or {}).get("exitCode") or "")
+    if not text:
+        found = EXIT_CODE.search(message)
+        text = found.group(1) if found else ""
+    try:
+        code = int(text)
+    except ValueError:
+        return None
+    return code if code >= 0 else None
 
 
 def _parameter(node: dict[str, Any], name: str) -> str | None:
@@ -154,29 +179,40 @@ def workflow_status(workflow: dict[str, Any]) -> BackendStatus:
 
     Returns:
         The phase of the workflow, of every task node of its DAG by its name relative
-        to the workflow, and the pods killed for memory per worker id, per task id
-        of an unsplit task and per `<task>-merge` of a merge.
+        to the workflow, and the failed attempts of the pods per worker id, per task
+        id of an unsplit task and per `<task>-merge` of a merge.
     """
     name = workflow["metadata"]["name"]
     status = workflow.get("status") or {}
     nodes: dict[str, dict[str, Any]] = status.get("nodes") or {}
     prefix = f"{name}."
     tasks: dict[str, str] = {}
-    oom: dict[str, int] = {}
+    failed: dict[str, list[FailedAttempt]] = {}
     for node in nodes.values():
         full = node.get("name") or ""
         if not full.startswith(prefix):
             continue
         relative = full.removeprefix(prefix)
         kind = node.get("type")
-        if kind == "Pod" and _killed_for_memory(node):
+        attempt = ATTEMPT.search(relative)
+        if kind == "Pod" and node.get("phase") in FAILED_PHASES:
             # a worker by its id, an unsplit task or a merge by its DAG task
             key = _parameter(node, "worker") or ATTEMPT.sub("", relative)
-            oom[key] = oom.get(key, 0) + 1
-        if kind in GROUP_TYPES or ATTEMPT.search(relative):
+            failed.setdefault(key, []).append(
+                FailedAttempt(
+                    attempt=int(attempt.group(1)) if attempt else 0,
+                    exit_code=_exit_code(node),
+                    oom_killed=_killed_for_memory(node),
+                )
+            )
+        if kind in GROUP_TYPES or attempt:
             continue
         tasks[relative] = _phase(node, nodes)
-    return BackendStatus(phase=status.get("phase") or "Pending", tasks=tasks, oom=oom)
+    for attempts in failed.values():
+        attempts.sort(key=lambda a: a.attempt)
+    return BackendStatus(
+        phase=status.get("phase") or "Pending", tasks=tasks, failed=failed
+    )
 
 
 def node_from(node: dict[str, Any]) -> Node | None:

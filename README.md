@@ -143,16 +143,24 @@ manifests and the code:
   node fits it.
 - **Out of memory.** The kernel kills the whole container (cgroup v2,
   `memory.oom.group`), so the worker writes no report; Argo v4 names the container in
-  the message, `main: OOMKilled (exit code 137)`, which the backend counts per worker.
-  A worker which exits 137 itself because its pool lost a process (Ruling 7) counts
-  as a kill for memory too, and so does the kill of an unsplit task (by its task id)
-  or a merge (`<task>-merge`). The `podSpecPatch` of the retry
+  the message, `main: OOMKilled (exit code 137)`. A kill for memory needs this
+  evidence of the out of memory killer (Ruling 39): the reason `OOMKilled`, or, for
+  an attempt which exited 137 itself because its pool (the command of `simrun-exec`)
+  lost a process (Ruling 7), its report, which counts the kills of the out of memory
+  killer in its cgroup (`memory.events` `oom_kill`). An exit 137 without either is a
+  pod killed after its grace period, an eviction. The `podSpecPatch` of the retry
   (`lastRetry.exitCode == '137'`) gives the next attempt the retry memory and memory
-  per process, as designed. A second kill of the same worker, merge or unsplit task
-  is one with the retry memory: the controller fails the run and stops its workflow,
-  with a message naming the retry memory. The retry limit of a pod is 100
+  per process, as designed. A kill for memory of an attempt with the retry memory
+  after a first kill fails the run: the controller stops its workflow, with a message
+  naming the retry memory (Ruling 35). The retry limit of a pod is 100
   (`RETRY_LIMIT`): every eviction by Kueue counts against it, and a pod of a long run
   of low priority on a busy cluster may be evicted many times.
+- **The retry memory after a preemption (a gap).** Argo's expressions of a retry know
+  only the last attempt (`lastRetry`), so an attempt after one which was preempted
+  following a kill for memory gets the first memory again, not the retry memory. The
+  controller does not count a kill of such an attempt toward the limit of Ruling 35
+  (it counts a kill only when the attempt before it exited 137); the attempt after it
+  has the retry memory again.
 - **Stopping a workflow.** After `shutdown: Stop` Argo fails the nodes still pending
   (`workflow shutdown with strategy: Stop`); the backend deletes their gated pods.
 - **Logs.** The logs of an attempt whose pod Kueue deleted are gone with the pod.

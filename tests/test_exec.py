@@ -81,8 +81,13 @@ def test_failing_command_is_an_analysis_error(
 def test_killed_command_is_a_kill_for_memory(
     exec_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    counts = iter([0, 1])
+    monkeypatch.setattr(worker.cgroup, "memory_oom_kills", lambda: next(counts))
     code = "import os, signal; os.kill(os.getpid(), signal.SIGKILL)"
     assert run_exec(monkeypatch, *python(code)) == 137
+    # the evidence of the out of memory killer, which the controller reads
+    report = json.loads((exec_env / "workers" / "report-1.json").read_text())
+    assert report["oom_kills"] == 1
 
 
 @pytest.mark.parametrize("command", [[], ["--"], ["/nonexistent/simrun-test-command"]])
