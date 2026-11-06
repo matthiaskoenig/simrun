@@ -1,4 +1,5 @@
-# the allocatable resources of the three agents (k3d `--agents-memory 6g`: 6442450Ki)
+# the allocatable resources of the three agents: 3 x 6442450Ki memory (k3d
+# `--agents-memory 6g`) and 3 x 20 cores
 apiVersion: kueue.x-k8s.io/v1beta2
 kind: ClusterQueue
 metadata:
@@ -16,7 +17,7 @@ spec:
             - name: cpu
               nominalQuota: "60"
             - name: memory
-              nominalQuota: 18874350Ki
+              nominalQuota: 19327350Ki
             - name: nvidia.com/gpu
               nominalQuota: "0"
             - name: ephemeral-storage

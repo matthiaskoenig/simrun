@@ -13,7 +13,7 @@ import uuid
 from pathlib import Path
 
 import pytest
-from k3d_cluster import AGENTS, REGISTRY, Service, wait_for
+from k3d_cluster import AGENTS, REGISTRY, TERMINAL, Service, wait_for
 
 pytestmark = [
     pytest.mark.cluster,
@@ -53,8 +53,10 @@ def test_demo_run_end_to_end(service: Service) -> None:
 
 
 def test_take_back_same_priority(service: Service) -> None:
+    # A alone on three pods takes about 400 * 0.5 / 3 = 67 s, so its extra workers
+    # cannot end of themselves within the 60 s in which a pod of B has to run
     a = service.submit(
-        "t-mk-bot", service.workflow(n=400, sleep_s=0.2, resources=ONE_PER_NODE)
+        "t-mk-bot", service.workflow(n=400, sleep_s=0.5, resources=ONE_PER_NODE)
     )
     wait_for(
         lambda: len(service.cluster.running_pods(a["id"])) == 3,
@@ -64,15 +66,22 @@ def test_take_back_same_priority(service: Service) -> None:
     b = service.submit(
         "t-mk-bot", service.workflow(n=60, sleep_s=0.2, resources=ONE_PER_NODE)
     )
+    a_units = service.task_dir(a["id"]) / "out" / "units"
 
     def b_runs_beside_a() -> bool:
         b_running = service.cluster.running_pods(b["id"])
-        a_running = service.cluster.running_pods(a["id"])
         if b_running:
-            assert a_running, "run A lost all its pods to run B"
+            assert service.cluster.running_pods(a["id"]), "A lost all its pods to B"
+            # an extra worker ends of itself only once nothing is pending, when at
+            # most one unit per pod of A is still in flight
+            done = len(list(a_units.glob("*.json")))
+            assert done < 390, f"A had computed {done} of 400 units: no take-back"
         return bool(b_running)
 
     wait_for(b_runs_beside_a, 60, "no pod of run B ran")
+    # Kueue preempted a pod of A for B; an attempt Argo had not seen running yet is
+    # recreated as the same attempt, so the status of A need not say `Preempted`
+    assert service.cluster.preempted(a["id"]), "Kueue preempted no pod of run A"
     for run, n in ((a, 400), (b, 60)):
         record = service.wait(run["id"])
         assert record["state"] == "succeeded", record["message"]
@@ -141,7 +150,9 @@ def test_reservation(service: Service) -> None:
     other = service.submit(
         "t-mk", service.workflow(n=60, sleep_s=0.2, resources=ONE_PER_NODE)
     )
-    while service.record(reserved["id"])["state"] not in ("succeeded", "failed"):
+    deadline = time.monotonic() + 300
+    while service.record(reserved["id"])["state"] not in TERMINAL:
+        assert time.monotonic() < deadline, "the run on the reserved node did not end"
         for pod in service.cluster.pods(reserved["id"]):
             assert pod["spec"].get("nodeName") in (None, node)
         for pod in service.cluster.pods(other["id"]):

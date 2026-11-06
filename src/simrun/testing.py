@@ -11,6 +11,15 @@ from typing import Any
 from simrun.planner import Node
 from simrun.service.backend import FINAL_PHASES, BackendStatus
 
+# the tokens of the tests of the service: the owner, the owner's agent, another
+# person and the agent of the other person
+TOKENS: dict[str, dict[str, str]] = {
+    "t-mk": {"name": "mk", "kind": "person"},
+    "t-mk-bot": {"name": "mk-bot", "kind": "agent", "owner": "mk"},
+    "t-alice": {"name": "alice", "kind": "person"},
+    "t-alice-bot": {"name": "alice-bot", "kind": "agent", "owner": "alice"},
+}
+
 # the nodes of the tests of the planner: one large server and eleven small ones
 TEST_NODES = [Node("srv-01", 104, 1000)] + [
     Node(f"srv-{i:02d}", 40, 188) for i in range(2, 13)

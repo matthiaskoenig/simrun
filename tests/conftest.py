@@ -16,7 +16,7 @@ from simrun.demo import SQUARES
 from simrun.plugins_builtin import COMMAND
 from simrun.service.app import ServiceSettings, create_app
 from simrun.service.controller import Controller
-from simrun.testing import FakeBackend
+from simrun.testing import TOKENS, FakeBackend
 
 TYPES = {SQUARES.name: SQUARES, COMMAND.name: COMMAND}
 
@@ -24,14 +24,6 @@ TYPES = {SQUARES.name: SQUARES, COMMAND.name: COMMAND}
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:
     """One worker for the tests on the k3d cluster, which share its nodes."""
     return 1 if os.environ.get("SIMRUN_K3D") == "1" else None
-
-
-TOKENS = {
-    "t-mk": {"name": "mk", "kind": "person"},
-    "t-mk-bot": {"name": "mk-bot", "kind": "agent", "owner": "mk"},
-    "t-alice": {"name": "alice", "kind": "person"},
-    "t-alice-bot": {"name": "alice-bot", "kind": "agent", "owner": "alice"},
-}
 
 
 class Service:

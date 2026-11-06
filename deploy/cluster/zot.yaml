@@ -45,6 +45,14 @@ spec:
       labels:
         app: zot
     spec:
+      affinity:
+        # off the nodes of the runs, whose resources Kueue and the planner count
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: simrun/worker
+                    operator: DoesNotExist
       containers:
         - name: zot
           image: ghcr.io/project-zot/zot-linux-amd64:v2.1.23

@@ -17,6 +17,10 @@ of the workflows, the run store on NFS (set the export in
 `kubectl apply --server-side -k deploy/cluster`; the resources of Kueue are accepted
 once its CRDs and its webhook are up, so the first apply may have to be repeated.
 
+The infrastructure (the controllers, BuildKit and its build Jobs, Zot, the service)
+has a node affinity off the nodes labelled `simrun/worker=true`, whose resources Kueue
+and the planner count as free for the runs.
+
 `deploy/k3d` is the overlay of the integration tests.
 
 ## Integration tests on k3d
@@ -29,7 +33,7 @@ SIMRUN_K3D=1 SIMRUN_K3D_KEEP=1 uv run pytest -m cluster tests/cluster  # keep th
 They need docker, about 20 GiB of free disk and the network (the images of k3s,
 Kueue, Argo, BuildKit and `python:3.14-slim-bookworm`). The session downloads k3d
 and kubectl into `.tools/bin`, creates the k3d cluster `simrun-test` (one server,
-tainted, with the infrastructure; three agents of 6 GiB labelled `simrun/worker=true`)
+with the infrastructure; three agents of 6 GiB labelled `simrun/worker=true`)
 with the registry `k3d-simrun-registry:5000` (`localhost:5000` from the host), writes
 its kubeconfig to `.tools/kubeconfig` (the contexts of the user are not touched),
 applies `deploy/k3d`, builds the image of the runs from the working tree
@@ -56,7 +60,10 @@ manifests and the code:
   (`lastRetry.exitCode` is `"-1"`), so the retry strategy retries it; the new pod is
   gated again and waits. The backend reports such a node `Preempted` until its next
   pod runs. Workloads of equal priority never preempt each other, so the extra
-  workers of two runs of one priority wait for each other's end.
+  workers of two runs of one priority wait for each other's end. A pod preempted
+  before Argo saw it running is created again by Argo as the same attempt, without a
+  retry, so such a node is reported queued and not `Preempted`; the take-back test
+  checks the `PreemptedWorkload` events of Kueue instead.
 - **Topology aware scheduling.** A `ResourceFlavor` with a topology needs node labels
   (`at least one nodeLabel is required when topology is set`), hence the label
   `simrun/worker=true` of the nodes of the runs, which `ArgoBackend.nodes` lists too.
@@ -75,8 +82,11 @@ manifests and the code:
 - **Out of memory.** The kernel kills the whole container (cgroup v2,
   `memory.oom.group`), so the worker writes no report; Argo v4 names the container in
   the message, `main: OOMKilled (exit code 137)`, which the backend counts per worker.
-  The `podSpecPatch` of the retry (`lastRetry.exitCode == '137'`) gives the next
-  attempt the retry memory and memory per process, as designed.
+  A worker which exits 137 itself because its pool lost a process (Ruling 7) counts
+  as a kill for memory too, and so does the kill of an unsplit task (by its task id)
+  or a merge (`<task>-merge`). The `podSpecPatch` of the retry
+  (`lastRetry.exitCode == '137'`) gives the next attempt the retry memory and memory
+  per process, as designed.
 - **Stopping a workflow.** After `shutdown: Stop` Argo fails the nodes still pending
   (`workflow shutdown with strategy: Stop`); the backend deletes their gated pods.
 - **Logs.** The logs of an attempt whose pod Kueue deleted are gone with the pod.
@@ -86,4 +96,8 @@ manifests and the code:
   `ClusterConfig.registry`, the service reaches its API at
   `ClusterConfig.registry_url`. BuildKit runs rootless (seccomp and AppArmor
   unconfined, `--oci-worker-no-process-sandbox`); a build is a Job of `buildctl` whose
-  context is a ConfigMap (at most 1 MB: the Dockerfile and the simrun wheel).
+  context is a ConfigMap (at most 1 MB: the Dockerfile and the simrun wheel). The
+  service follows the Job by reading it, not its `jobs/status` subresource, for which
+  its Role has no right; a unit test checks the Role of `deploy/cluster/simrun.yaml`
+  against every call of the backend, since the cluster tests run with the admin
+  kubeconfig.

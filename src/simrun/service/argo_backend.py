@@ -47,6 +47,7 @@ from simrun.config import ClusterConfig
 from simrun.planner import Node
 from simrun.service.app import CONFIG_ENV, load_settings
 from simrun.service.backend import FINAL_PHASES, PREEMPTED_PHASE, BackendStatus
+from simrun.worker import EXIT_POOL_BROKEN
 
 logger = logging.getLogger(__name__)
 
@@ -57,6 +58,20 @@ WORKFLOW_LABEL = "workflows.argoproj.io/workflow"
 NODE_ANNOTATION = "workflows.argoproj.io/node-name"
 # the label of the nodes the pods of the runs run on, the nodes of the ResourceFlavor
 WORKER_LABEL = "simrun/worker"
+# the affinity of the pods of the infrastructure: off the nodes of the runs
+OFF_WORKERS = {
+    "nodeAffinity": {
+        "requiredDuringSchedulingIgnoredDuringExecution": {
+            "nodeSelectorTerms": [
+                {
+                    "matchExpressions": [
+                        {"key": WORKER_LABEL, "operator": "DoesNotExist"}
+                    ]
+                }
+            ]
+        }
+    }
+}
 # the resources of a container of the Argo executor, see
 # deploy/cluster/argo/controller-config.yaml
 EXECUTOR_CPU = 0.1
@@ -68,6 +83,8 @@ ATTEMPT = re.compile(r"\(\d+\)$")
 GROUP_TYPES = frozenset({"DAG", "TaskGroup", "Steps", "StepGroup"})
 FAILED_PHASES = frozenset({"Failed", "Error"})
 OOM_REASON = "OOMKilled"
+# the message of an attempt whose container of the executor failed starts so
+EXECUTOR_CONTAINERS = ("init: ", "wait: ")
 REGISTRY_AUTH_SECRET = "simrun-registry-auth"
 # a ConfigMap holds at most 1 MiB
 MAX_CONTEXT_BYTES = 1_000_000
@@ -87,10 +104,17 @@ def _killed_for_memory(node: dict[str, Any]) -> bool:
 
     Argo v4 names the container in the message of the node, e.g.
     `main: OOMKilled (exit code 137)`; a kill of a container of the executor
-    (`init: ...`, `wait: ...`) is no kill of the worker.
+    (`init: ...`, `wait: ...`) is no kill of the worker. A main container which
+    exits 137 itself is a worker whose pool lost a process to the out of memory
+    killer (Ruling 7), a kill for memory too.
     """
     message = node.get("message") or ""
-    return message.removeprefix(f"{CONTAINER}: ").startswith(OOM_REASON)
+    if message.startswith(EXECUTOR_CONTAINERS):
+        return False
+    exit_code = str((node.get("outputs") or {}).get("exitCode") or "")
+    return message.removeprefix(f"{CONTAINER}: ").startswith(
+        OOM_REASON
+    ) or exit_code == str(EXIT_POOL_BROKEN)
 
 
 def _parameter(node: dict[str, Any], name: str) -> str | None:
@@ -130,7 +154,8 @@ def workflow_status(workflow: dict[str, Any]) -> BackendStatus:
 
     Returns:
         The phase of the workflow, of every task node of its DAG by its name relative
-        to the workflow, and the pods killed for memory per worker.
+        to the workflow, and the pods killed for memory per worker id, per task id
+        of an unsplit task and per `<task>-merge` of a merge.
     """
     name = workflow["metadata"]["name"]
     status = workflow.get("status") or {}
@@ -145,9 +170,9 @@ def workflow_status(workflow: dict[str, Any]) -> BackendStatus:
         relative = full.removeprefix(prefix)
         kind = node.get("type")
         if kind == "Pod" and _killed_for_memory(node):
-            worker = _parameter(node, "worker")
-            if worker is not None:
-                oom[worker] = oom.get(worker, 0) + 1
+            # a worker by its id, an unsplit task or a merge by its DAG task
+            key = _parameter(node, "worker") or ATTEMPT.sub("", relative)
+            oom[key] = oom.get(key, 0) + 1
         if kind in GROUP_TYPES or ATTEMPT.search(relative):
             continue
         tasks[relative] = _phase(node, nodes)
@@ -441,21 +466,22 @@ class ArgoBackend:
         job = self.batch.create_namespaced_job(
             namespace, client.V1Job.model_validate(self._build_job(name, ref))
         )
-        owner = {
-            "apiVersion": "batch/v1",
-            "kind": "Job",
-            "name": name,
-            "uid": self.api.sanitize_for_serialization(job)["metadata"]["uid"],
-        }
-        context_map = {
-            "metadata": {"name": name, "ownerReferences": [owner]},
-            "binaryData": files,
-        }
-        self.core.create_namespaced_config_map(
-            namespace, client.V1ConfigMap.model_validate(context_map)
-        )
-        logger.info("building %s in the job %s", ref, name)
+        # deleted in every case: its pod would wait for a context never stored
         try:
+            owner = {
+                "apiVersion": "batch/v1",
+                "kind": "Job",
+                "name": name,
+                "uid": self.api.sanitize_for_serialization(job)["metadata"]["uid"],
+            }
+            context_map = {
+                "metadata": {"name": name, "ownerReferences": [owner]},
+                "binaryData": files,
+            }
+            self.core.create_namespaced_config_map(
+                namespace, client.V1ConfigMap.model_validate(context_map)
+            )
+            logger.info("building %s in the job %s", ref, name)
             self._wait_for_build(name, ref)
         finally:
             try:
@@ -477,6 +503,7 @@ class ArgoBackend:
                     "metadata": {"labels": {"app": "simrun-build"}},
                     "spec": {
                         "restartPolicy": "Never",
+                        "affinity": OFF_WORKERS,
                         "containers": [
                             {
                                 "name": "buildctl",
@@ -524,8 +551,9 @@ class ArgoBackend:
     def _wait_for_build(self, name: str, ref: str) -> None:
         deadline = time.monotonic() + BUILD_TIMEOUT_S
         while time.monotonic() < deadline:
+            # the Job with its status: `jobs/status` would need a right of its own
             job = self.api.sanitize_for_serialization(
-                self.batch.read_namespaced_job_status(name, self.config.namespace)
+                self.batch.read_namespaced_job(name, self.config.namespace)
             )
             status = job.get("status") or {}
             if status.get("succeeded"):
