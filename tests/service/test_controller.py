@@ -13,7 +13,7 @@ from simrun.service.controller import (
     is_oom,
     task_states,
 )
-from simrun.store import RunState, RunStore, TaskState
+from simrun.store import RunState, TaskState
 from simrun.testing import FakeBackend
 from simrun.worker import MERGED_MARKER, WorkerReport, write_report
 from simrun.workflow import Workflow
@@ -49,7 +49,7 @@ def test_controller_records_resources(service):
     assert _samples(service) == 2
     service.controller.reconcile()
     assert _samples(service) == 2
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "succeeded"
     assert record.finished is not None
     assert ("stop", service.name(run_id)) not in service.backend.calls
@@ -99,7 +99,7 @@ def _running(service) -> tuple[str, str]:
 
 
 def _state(service, run_id: str) -> RunState:
-    return RunStore(service.settings.store).read(run_id).state
+    return service.store.read(run_id).state
 
 
 def test_a_kill_after_the_grace_period_is_no_kill_for_memory(service):
@@ -110,7 +110,7 @@ def test_a_kill_after_the_grace_period_is_no_kill_for_memory(service):
         service.backend.fail_attempt(name, "squares-w1", exit_code=137)
         service.controller.reconcile()
     assert _state(service, run_id) == "running"
-    assert RunStore(service.settings.store).read(run_id).oom_kills == {}
+    assert service.store.read(run_id).oom_kills == {}
 
 
 def test_a_worker_reports_the_kill_of_a_process_of_its_pool(service):
@@ -121,12 +121,12 @@ def test_a_worker_reports_the_kill_of_a_process_of_its_pool(service):
     write_report(killed, task_dir, 0)
     service.backend.fail_attempt(name, "squares-w1", exit_code=137)
     service.controller.reconcile()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert (record.state, record.oom_kills) == ("running", {"squares-w1": [0]})
     # the retry, with the retry memory, killed by the kernel: the second kill
     service.backend.oom_kill(name, "squares-w1")
     service.controller.reconcile()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "failed"
     assert "squares-w1 was killed for memory 2 times" in (record.message or "")
 
@@ -140,11 +140,11 @@ def test_a_kill_after_a_preempted_attempt_does_not_count(service):
     service.backend.fail_attempt(name, "squares-w1", exit_code=None)
     service.backend.oom_kill(name, "squares-w1")
     service.controller.reconcile()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert (record.state, record.oom_kills) == ("running", {"squares-w1": [0, 2]})
     service.backend.oom_kill(name, "squares-w1")
     service.controller.reconcile()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "failed"
     assert "squares-w1 was killed for memory 3 times" in (record.message or "")
 
@@ -163,7 +163,7 @@ def test_reservation_released(service):
     assert ("unreserve", "srv-02", run_id) in service.backend.calls
     # the extra workers were still running: the workflow is stopped
     assert ("stop", name) in service.backend.calls
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "succeeded"
 
 
@@ -173,7 +173,7 @@ def test_failed_task_fails_run(service):
     service.backend.start(name)
     service.backend.fail(name, "squares")
     service.controller.reconcile()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "failed"
     assert record.tasks == {"squares": TaskState.FAILED}
     assert "squares" in (record.message or "")
@@ -186,7 +186,7 @@ def test_extra_worker_failure_ignored(service):
     service.backend.start(name)
     service.backend.set_node(name, "squares-extra(0:1)", "Failed")
     service.controller.reconcile()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "running"
     assert record.tasks == {"squares": TaskState.RUNNING}
 
@@ -196,7 +196,7 @@ def test_workflow_gone_fails_run(service_factory):
         run_id = service.submit()["id"]
     with service_factory() as service:  # a new backend which never saw the run
         service.controller.reconcile()
-        record = RunStore(service.settings.store).read(run_id)
+        record = service.store.read(run_id)
         assert record.state == "failed"
         assert record.tasks == {"squares": TaskState.FAILED}
         assert "gone" in (record.message or "")
@@ -220,7 +220,7 @@ def test_finished_then_gone(service):
     service.backend.start(name)
     service.backend.set_node(name, "cmd", "Succeeded")
     service.controller.reconcile()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.tasks == {"squares": TaskState.RUNNING, "cmd": TaskState.DONE}
     # the workflow finishes and its time to live deletes it before the next poll
     out = service.run_dir(run_id) / "tasks/squares/out"
@@ -228,7 +228,7 @@ def test_finished_then_gone(service):
     (out / MERGED_MARKER).touch()
     service.backend.delete(name)
     service.controller.reconcile()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "succeeded"
     assert record.tasks == {"squares": TaskState.DONE, "cmd": TaskState.DONE}
 
@@ -241,7 +241,7 @@ def test_gone_with_merge_marker(service):
     (out / MERGED_MARKER).touch()
     service.backend.delete(name)
     service.controller.reconcile()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "failed"
     assert record.tasks == {"squares": TaskState.DONE, "cmd": TaskState.FAILED}
     assert record.message == f"the workflow {name} is gone: cmd unknown"
@@ -261,7 +261,7 @@ def test_failed_release_is_retried(service_factory):
         run_id = service.submit(reserve="srv-02")["id"]
         service.backend.finish(service.name(run_id))
         service.controller.reconcile()
-        store = RunStore(service.settings.store)
+        store = service.store
         record = store.read(run_id)
         assert record.state == "succeeded"
         assert record.pending_release == "srv-02"
@@ -275,7 +275,7 @@ def test_unknown_node_counts_as_released(service):
     run_id = service.submit()["id"]
     service.backend.finish(service.name(run_id))
     service.controller.reconcile()
-    store = RunStore(service.settings.store)
+    store = service.store
     store.write(store.read(run_id).model_copy(update={"pending_release": "ghost"}))
     service.controller.reconcile()
     assert store.read(run_id).pending_release is None
@@ -287,8 +287,9 @@ def test_corrupt_record_does_not_stop_the_others(service):
     (service.run_dir(bad) / "run.json").write_text("{not json")
     service.backend.finish(service.name(good))
     service.controller.reconcile()
-    assert RunStore(service.settings.store).read(good).state == "succeeded"
-    assert [r["id"] for r in service.get("/runs").json()] == [good]
+    assert service.store.read(good).state == "succeeded"
+    # the list comes from the index, which has the record as the service wrote it
+    assert [r["id"] for r in service.get("/runs").json()] == sorted([bad, good])
     assert service.get("/usage").status_code == 200
     cleanup = service.post("/cleanup", {"older_than_days": 0, "dry_run": True})
     assert cleanup.json()["runs"] == [good]
@@ -325,7 +326,7 @@ def test_recover_cancels_orphan(service_factory):
     backend = _Orphaning()
     with service_factory(backend) as service:
         run_id = service.submit()["id"]
-        record = RunStore(service.settings.store).read(run_id)
+        record = service.store.read(run_id)
         assert record.state == "failed"
         assert record.backend_name == service.name(run_id)
         assert record.pending_cancel
@@ -333,7 +334,7 @@ def test_recover_cancels_orphan(service_factory):
     with service_factory(backend) as service:
         service.controller.recover()
         assert ("cancel", service.name(run_id)) in backend.calls
-        assert not RunStore(service.settings.store).read(run_id).pending_cancel
+        assert not service.store.read(run_id).pending_cancel
 
 
 WORKFLOW = Workflow(
@@ -384,7 +385,7 @@ def test_late_release_keeps_a_later_reservation(service_factory):
         service.backend.unreserve("srv-02", run_id)
         service.backend.reserve("srv-02", "later")
         service.controller.reconcile()
-        store = RunStore(service.settings.store)
+        store = service.store
         assert store.read(run_id).pending_release is None
         (node,) = [n for n in service.backend.nodes() if n.name == "srv-02"]
         assert node.reserved_by == "later"
@@ -437,7 +438,7 @@ def test_cancel_during_submit_cancels_the_workflow(service):
     # the cancel during the submission found no workflow; the one after it did
     assert backend.calls[-2:] == [("submit", name), ("cancel", name)]
     assert backend.status(name).phase == "Failed"
-    record = RunStore(service.settings.store).read(summary["id"])
+    record = service.store.read(summary["id"])
     assert not record.pending_cancel
 
 
@@ -447,7 +448,7 @@ def _submitting(
     """A run submitting since `age_s` seconds before `since` (default now), its
     image ready `built_age_s` seconds before, not yet without."""
     run_id = service.submit(reserve=reserve)["id"]
-    store = RunStore(service.settings.store)
+    store = service.store
     record = store.read(run_id)
     since = since or datetime.now(UTC)
     created = since - timedelta(seconds=age_s)
@@ -463,7 +464,7 @@ def _submitting(
 def test_young_submission_is_left_alone(service):
     run_id = _submitting(service, 1.0)
     service.controller.reconcile()
-    assert RunStore(service.settings.store).read(run_id).state == "submitting"
+    assert service.store.read(run_id).state == "submitting"
 
 
 @pytest.mark.parametrize("age_s", [0.001, SUBMIT_GRACE_S + 1])
@@ -471,7 +472,7 @@ def test_recover_fails_lost_submission(service, age_s):
     # created before the controller started: no submission of it is in flight
     run_id = _submitting(service, age_s, since=service.controller.started)
     service.controller.recover()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "failed"
     assert "submission" in (record.message or "")
     assert not record.pending_cancel and record.pending_release is None
@@ -481,11 +482,9 @@ def test_recover_fails_lost_submission(service, age_s):
 
 def test_recover_keeps_submission_after_start(service):
     run_id = _submitting(service, 0.0)  # created after the controller started
-    assert RunStore(service.settings.store).read(run_id).created > (
-        service.controller.started
-    )
+    assert service.store.read(run_id).created > (service.controller.started)
     service.controller.recover()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "submitting"
     assert ("cancel", service.name(run_id)) not in service.backend.calls
 
@@ -512,7 +511,7 @@ def test_cancel_and_delete_during_submit(service):
 def test_reconcile_fails_old_submission(service):
     run_id = _submitting(service, SUBMIT_GRACE_S + 1)
     service.controller.reconcile()
-    assert RunStore(service.settings.store).read(run_id).state == "failed"
+    assert service.store.read(run_id).state == "failed"
 
 
 def test_second_memory_kill_of_a_worker_fails_the_run(service):
@@ -521,10 +520,10 @@ def test_second_memory_kill_of_a_worker_fails_the_run(service):
     service.backend.start(name)
     service.backend.oom_kill(name, "squares-w1")
     service.controller.reconcile()
-    assert RunStore(service.settings.store).read(run_id).state == "running"
+    assert service.store.read(run_id).state == "running"
     service.backend.oom_kill(name, "squares-w1")  # also with the retry memory
     service.controller.reconcile()
-    record = RunStore(service.settings.store).read(run_id)
+    record = service.store.read(run_id)
     assert record.state == "failed"
     assert record.tasks == {"squares": TaskState.FAILED}
     # the plan of the demo on the test nodes: 40 processes, a retry of 31 GiB
@@ -542,7 +541,7 @@ def test_second_memory_kill_of_a_merge_or_unsplit_task_fails_the_run(service):
         service.backend.start(name)
         service.backend.oom_kill(name, key, count=2)
         service.controller.reconcile()
-        record = RunStore(service.settings.store).read(run_id)
+        record = service.store.read(run_id)
         assert record.state == "failed"
         assert f"{key} was killed for memory 2 times" in (record.message or "")
         assert f"retry memory of {retry} GiB per process)" in (record.message or "")
@@ -593,12 +592,12 @@ def test_grace_counts_from_the_build(service):
     # created long ago, its image was ready a second ago: in the grace
     run_id = _submitting(service, SUBMIT_GRACE_S * 10, built_age_s=1.0)
     service.controller.reconcile()
-    assert RunStore(service.settings.store).read(run_id).state == "submitting"
+    assert service.store.read(run_id).state == "submitting"
     old = _submitting(
         service, SUBMIT_GRACE_S * 10, built_age_s=SUBMIT_GRACE_S + 1, reserve="srv-03"
     )
     service.controller.reconcile()
-    assert RunStore(service.settings.store).read(old).state == "failed"
+    assert service.store.read(old).state == "failed"
 
 
 def test_cancel_before_the_reservation_releases_the_node(service):

@@ -99,6 +99,26 @@ class RunRecord(BaseModel):
     pending_cancel: bool = False
 
 
+class RunSummary(BaseModel):
+    """The state of a run without its workflow and plans."""
+
+    id: str
+    state: RunState
+    group: str | None
+    submitted_by: str
+    agent: str | None
+    priority: Priority
+    tasks: dict[str, TaskState]
+    created: datetime
+    finished: datetime | None
+    message: str | None
+
+    @classmethod
+    def of(cls, record: RunRecord) -> RunSummary:
+        """The summary of a record."""
+        return cls.model_validate(record.model_dump(include=set(cls.model_fields)))
+
+
 class RunStore:
     """The run store on the shared drive."""
 

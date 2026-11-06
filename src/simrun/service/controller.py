@@ -35,15 +35,16 @@ retried at the next polls, which do nothing else for a terminal run (Ruling 25).
 call of the backend is made while the record lock is held.
 
 The controller keeps no state in memory: every `reconcile` reads the records of the
-store, so a restarted service continues where the one before stopped; a record which
-cannot be read is logged and skipped.
+live runs of the index of the store (`simrun.service.index`), which the service
+rebuilds from the records at its start, so a restarted service continues where the
+one before stopped; a record which cannot be read is logged and skipped.
 """
 
 import json
 import logging
 import re
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
@@ -60,7 +61,8 @@ from simrun.service.backend import (
     BackendStatus,
     FailedAttempt,
 )
-from simrun.store import RunRecord, RunState, RunStore, TaskState
+from simrun.service.index import IndexedRunStore
+from simrun.store import RunRecord, RunState, TaskState
 from simrun.worker import EXIT_POOL_BROKEN, MERGED_MARKER, WORKERS_DIR, WorkerReport
 from simrun.workflow import TaskSpec, Workflow
 
@@ -171,25 +173,6 @@ def is_oom(report: WorkerReport, attempt: int, kills: dict[str, list[int]]) -> b
     return report.oom_kills > 0 or attempt in kills.get(report.worker, ())
 
 
-def run_ids(store: RunStore) -> list[str]:
-    """The ids of the runs of a store, sorted; hidden directories are no runs."""
-    runs = store.root / "runs"
-    if not runs.is_dir():
-        return []
-    return sorted(p.name for p in runs.iterdir() if not p.name.startswith("."))
-
-
-def read_records(store: RunStore) -> Iterator[RunRecord]:
-    """The records of a store by id; a record which cannot be read is logged."""
-    for run_id in run_ids(store):
-        try:
-            yield store.read(run_id)
-        except KeyError:
-            continue
-        except (ValueError, OSError) as error:
-            logger.warning("the record of run %s cannot be read: %s", run_id, error)
-
-
 def closed(
     record: RunRecord,
     state: RunState,
@@ -230,7 +213,7 @@ class Controller:
 
     def __init__(
         self,
-        store: RunStore,
+        store: IndexedRunStore,
         resources: ResourceStore,
         backend: Backend,
         types: dict[str, TaskType],
@@ -238,7 +221,7 @@ class Controller:
         """Create the controller.
 
         Args:
-            store: The run store.
+            store: The run store with its index.
             resources: The store of the resource observations.
             backend: The backend the workflows run on.
             types: The task types by name.
@@ -328,7 +311,7 @@ class Controller:
         was written before names were stored, and fails too. The pending releases and
         cancellations of terminal runs are retried.
         """
-        for run_id in run_ids(self.store):
+        for run_id in self.store.index.live_ids():
             try:
                 self._recover(run_id)
             except Exception:
@@ -349,8 +332,12 @@ class Controller:
         self._fail_submission(record, "the submission of the run did not complete")
 
     def reconcile(self) -> None:
-        """Bring every record up to date with the backend, one run at a time."""
-        for run_id in run_ids(self.store):
+        """Bring the records of the live runs up to date with the backend.
+
+        The live runs are the ones of the index which have not ended or have a
+        release or a cancellation pending; an ended run is not read again.
+        """
+        for run_id in self.store.index.live_ids():
             try:
                 self._reconcile(run_id)
             except Exception:

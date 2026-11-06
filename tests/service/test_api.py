@@ -448,7 +448,7 @@ def test_cleanup_dry_run_and_delete(service, monkeypatch):
     service.backend.fail(service.name(failed), "squares")
     service.backend.finish(service.name(succeeded))
     service.controller.reconcile()
-    store = RunStore(store_root)
+    store = service.store
     _age(store, failed, 5)
     _age(store, succeeded, 5)
     young = service.submit()["id"]
@@ -531,7 +531,7 @@ def test_image_built_once(service_factory, tmp_path, monkeypatch):
     _, ref, files = builds[0]
     assert ref.startswith("localhost:5000/simrun-env:")
     assert files == ["Dockerfile", wheel.name]
-    store = RunStore(service.settings.store)
+    store = service.store
     assert store.read(first).image == store.read(second).image == ref
     assert (
         'name = "pydantic"' in (service.run_dir(first) / "environment.lock").read_text()
@@ -672,7 +672,7 @@ def test_pending_work_blocks_deletion(service, monkeypatch):
     run_id = service.submit()["id"]
     service.backend.finish(service.name(run_id))
     service.controller.reconcile()
-    store = RunStore(service.settings.store)
+    store = service.store
     record = store.read(run_id)
     old = datetime.fromtimestamp(time.time() - 5 * DAY, UTC)
     pending = record.model_copy(
