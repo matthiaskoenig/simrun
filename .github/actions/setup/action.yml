@@ -1,0 +1,48 @@
+name: Set up the environment
+description: >-
+  Install uv with its cache, set the python version of the job and sync the
+  environment of the project from uv.lock
+inputs:
+  python-version:
+    description: the python version, e.g. 3.14
+    required: true
+  sync:
+    description: >-
+      the arguments of `uv sync --locked`, e.g. `--extra dev`; empty does not
+      sync
+    required: false
+    default: ""
+  save-cache:
+    description: >-
+      whether the job saves the cache of uv; jobs which share a key would race
+      for it and warn "Unable to reserve cache"
+    required: false
+    default: "false"
+  cache:
+    description: >-
+      whether the job uses the cache of uv at all; the release builds the
+      distributions without one, so nothing a cache holds ends up in them
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - name: Install uv and set the python version
+      # astral-sh/setup-uv publishes no floating major tag beyond v7
+      uses: astral-sh/setup-uv@v10.2.0
+      with:
+        python-version: ${{ inputs.python-version }}
+        enable-cache: ${{ inputs.cache }}
+        # the interpreter is cached with the packages instead of downloaded by every run
+        cache-python: ${{ inputs.cache }}
+        save-cache: ${{ inputs.save-cache }}
+    - name: Sync the environment from the lock (fails if uv.lock is out of date with pyproject.toml, run `uv lock`)
+      if: inputs.sync != ''
+      shell: bash
+      env:
+        SYNC: ${{ inputs.sync }}
+      # every job runs against the versions of uv.lock, the same ones as a
+      # local `uv sync`. `--locked` refuses to update the lock: a change of the
+      # dependencies in pyproject.toml has to come with the `uv lock` which
+      # records it. Word splitting of the arguments is intended
+      run: uv sync --locked $SYNC

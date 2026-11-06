@@ -1,0 +1,67 @@
+name: documentation
+
+on:
+  push:
+    # feature branches are built through their pull request
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  # a newer run supersedes the running one; a cancelled deployment leaves the
+  # published site as it was, the newer run deploys
+  cancel-in-progress: true
+
+jobs:
+  docs:
+    # the name the branch protection requires, see .github/rulesets/
+    name: docs
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Configure GitHub Pages
+        # only a build which can be published configures the site; a pull
+        # request builds it to check that it builds
+        if: github.event_name != 'pull_request'
+        uses: actions/configure-pages@v6
+      - name: Set up the environment
+        uses: ./.github/actions/setup
+        with:
+          python-version: "3.14"
+          sync: --extra dev
+      - name: Build the documentation
+        # the API reference is rendered from the docstrings by mkdocstrings,
+        # so the package has to be importable; a warning fails the build
+        run: uv run --no-sync zensical build --clean --strict
+      - name: Generate the agent facing files
+        # llms.txt, llms-full.txt and the markdown of every page
+        run: uv run --no-sync python scripts/llms_txt.py
+      - name: Upload the site
+        uses: actions/upload-pages-artifact@v5
+        with:
+          path: site
+
+  deploy:
+    needs: docs
+    # only the default branch publishes to https://matthiaskoenig.github.io/simrun
+    if: github.ref == 'refs/heads/develop'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write     # deploy to GitHub Pages
+      id-token: write  # verify the deployment originates from this workflow
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v5
