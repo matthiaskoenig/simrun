@@ -17,6 +17,7 @@ from fastmcp import FastMCP
 from pydantic import BaseModel
 
 from simrun.client import Client, ClientError
+from simrun.service.logs import DEFAULT_TAIL_LINES
 from simrun.store import RunState
 from simrun.workflow import SplitMode
 
@@ -124,9 +125,11 @@ def build_server(client: Client) -> FastMCP:
         return answer(lambda: {"run": client.cancel(run_id)})
 
     @server.tool
-    def run_logs(run_id: str, task_id: str) -> dict[str, Any]:
-        """The log of a task."""
-        return answer(lambda: {"logs": client.logs(run_id, task_id)})
+    def run_logs(
+        run_id: str, task_id: str, tail_lines: int = DEFAULT_TAIL_LINES
+    ) -> dict[str, Any]:
+        """The logs of the pods of a task, the last `tail_lines` of each (0: all)."""
+        return answer(lambda: {"logs": client.logs(run_id, task_id, tail_lines)})
 
     @server.tool
     def run_outputs(run_id: str, task_id: str) -> dict[str, Any]:

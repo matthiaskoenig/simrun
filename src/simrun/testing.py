@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from simrun.planner import Node
-from simrun.service.backend import FINAL_PHASES, BackendStatus, FailedAttempt
+from simrun.service.backend import FINAL_PHASES, BackendStatus, FailedAttempt, PodLog
 
 # the tokens of the tests of the service: the owner, the owner's agent, another
 # person and the agent of the other person
@@ -58,10 +58,11 @@ class FakeBackend:
     Attributes:
         manifests: The submitted manifests by name.
         calls: `("submit", name)`, `("cancel", name)`, `("stop", name)`,
-            `("reserve", node, run_id)`, `("unreserve", node, run_id)` and
-            `("build_image", ref, files of the context)`.
+            `("logs", name, task_id)`, `("reserve", node, run_id)`,
+            `("unreserve", node, run_id)` and `("build_image", ref, files of the
+            context)`.
         images: The images of the registry.
-        logs_text: The logs returned by `logs`, by workflow name and task id.
+        pod_logs: The logs of the pods by workflow name and task id, see `add_log`.
     """
 
     def __init__(
@@ -83,7 +84,7 @@ class FakeBackend:
         self.images = set(images)
         self.manifests: dict[str, dict[str, Any]] = {}
         self.calls: list[tuple[Any, ...]] = []
-        self.logs_text: dict[tuple[str, str], str] = {}
+        self.pod_logs: dict[tuple[str, str], list[PodLog]] = {}
         self._status: dict[str, BackendStatus] = {}
         self._submitted: dict[str, float] = {}
 
@@ -175,9 +176,27 @@ class FakeBackend:
             self.calls.append(("stop", name))
             self._status[name].phase = "Failed"
 
-    def logs(self, name: str, task_id: str) -> str:
-        """The logs set in `logs_text`, empty by default."""
-        return self.logs_text.get((name, task_id), "")
+    def add_log(self, name: str, task_id: str, node: str, text: str) -> None:
+        """Add the log of a pod of a task, the pod named `<workflow>-<node>`."""
+        with self._lock:
+            pod = PodLog(node=node, pod=f"{name}-{node}", text=text)
+            self.pod_logs.setdefault((name, task_id), []).append(pod)
+
+    def logs(
+        self, name: str, task_id: str, tail_lines: int | None = None
+    ) -> list[PodLog]:
+        """The logs added with `add_log`, the last `tail_lines` lines of each."""
+        with self._lock:
+            self.calls.append(("logs", name, task_id))
+            logs = list(self.pod_logs.get((name, task_id), []))
+        if tail_lines is None:
+            return logs
+        return [
+            log.model_copy(
+                update={"text": "".join(log.text.splitlines(True)[-tail_lines:])}
+            )
+            for log in logs
+        ]
 
     def nodes(self) -> list[Node]:
         """The nodes, with their reservations."""

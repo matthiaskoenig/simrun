@@ -99,6 +99,18 @@ async def test_mcp_submit_and_wait(
             assert "squares" in estimate["tasks"]
 
 
+async def test_mcp_logs_are_tailed(service, make_client) -> None:
+    run_id = service.submit()["id"]
+    service.backend.add_log(f"simrun-{run_id}", "squares", "squares-w0(0)", "a\nb\n")
+    async with McpClient(build_server(make_client(service))) as mcp:
+        logs = await call(
+            mcp, "run_logs", run_id=run_id, task_id="squares", tail_lines=1
+        )
+        assert logs["logs"].endswith("<==\nb\n")
+        everything = await call(mcp, "run_logs", run_id=run_id, task_id="squares")
+        assert everything["logs"].endswith("<==\na\nb\n")
+
+
 async def test_mcp_error_is_returned(service, make_client) -> None:
     async with McpClient(build_server(make_client(service))) as mcp:
         result = await call(mcp, "cancel_run", run_id="nope")

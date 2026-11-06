@@ -26,6 +26,9 @@ final, each marked in `tasks/<task>/recorded/` right after its
 observation; a kill for memory of an attempt without a report is an observation of
 the pod shape at its limit (Ruling 24).
 
+The logs of the pods of a task are kept in the run store once the task is final,
+before the workflow is stopped or cancelled (`simrun.service.logs`).
+
 A terminal record is written first; a release of the node or a cancellation of the
 workflow which fails stays in the record (`pending_release`, `pending_cancel`) and is
 retried at the next polls, which do nothing else for a terminal run (Ruling 25). No
@@ -49,6 +52,7 @@ from simrun.planner import PodShape
 from simrun.plugins import TaskType
 from simrun.plugins_builtin import COMMAND
 from simrun.resources import GIB, ResourceStore, resource_key
+from simrun.service import logs
 from simrun.service.backend import (
     FINAL_PHASES,
     PREEMPTED_PHASE,
@@ -380,6 +384,7 @@ class Controller:
             stop = status.phase not in FINAL_PHASES
         # recorded before the record is written: a failure is retried at the next poll
         self._record_reports(new)
+        self._keep_logs(new)
         if new == record or not self.write_if_unchanged(record, new):
             return
         if new.state in TERMINAL_RUN_STATES:
@@ -607,6 +612,7 @@ class Controller:
             return
         cancelled = not record.pending_cancel or record.backend_name is None
         if not cancelled and record.backend_name is not None:
+            self._keep_logs(record)
             try:
                 self.backend.cancel(record.backend_name)
                 cancelled = True
@@ -635,6 +641,25 @@ class Controller:
             update["pending_release"] = None
         if update:
             self.write_if_unchanged(record, record.model_copy(update=update))
+
+    def _keep_logs(self, record: RunRecord) -> None:
+        """Keep the logs of the tasks in a final state whose logs are not kept yet.
+
+        Called before the record is written, so before the workflow is stopped or
+        cancelled; a failure is logged and retried at the next poll.
+        """
+        if record.backend_name is None:
+            return
+        for task_id, state in record.tasks.items():
+            task_dir = self.store.run_dir(record.id) / "tasks" / task_id
+            if state not in FINAL_TASK_STATES or logs.kept(task_dir):
+                continue
+            try:
+                logs.keep(task_dir, self.backend.logs(record.backend_name, task_id))
+            except Exception:
+                logger.exception(
+                    "keeping the logs of task %s of run %s failed", task_id, record.id
+                )
 
     def _record_reports(self, record: RunRecord) -> None:
         """Record the reports of the tasks in a final state not recorded before."""

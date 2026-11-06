@@ -329,10 +329,71 @@ def test_outputs_relative_to_store(service):
     assert service.get(f"/runs/{run_id}/outputs/nope").status_code == 404
 
 
+def _lines(n: int, prefix: str) -> str:
+    return "".join(f"{prefix} {i}\n" for i in range(n))
+
+
 def test_logs(service):
     run_id = service.submit()["id"]
-    service.backend.logs_text[(service.name(run_id), "squares")] = "hello"
-    assert service.get(f"/runs/{run_id}/logs/squares").text == "hello"
+    name = service.name(run_id)
+    service.backend.add_log(name, "squares", "squares-w0(0)", _lines(3, "a"))
+    service.backend.add_log(name, "squares", "squares-w0(1)", _lines(500, "b"))
+    text = service.get(f"/runs/{run_id}/logs/squares").text
+    # the last 300 lines of every pod by default, each under a header
+    header, *lines = text.split("\n==> ")[1].splitlines()
+    assert text.startswith(f"==> squares-w0(0) ({name}-squares-w0(0)) <==\na 0\n")
+    assert header == f"squares-w0(1) ({name}-squares-w0(1)) <=="
+    assert (len(lines), lines[0], lines[-1]) == (300, "b 200", "b 499")
+    short = service.get(f"/runs/{run_id}/logs/squares", params={"tail_lines": 2})
+    assert "a 0" not in short.text and "a 1\na 2\n" in short.text
+    full = service.get(f"/runs/{run_id}/logs/squares", params={"tail_lines": 0})
+    assert "b 0\n" in full.text
+    assert service.get(f"/runs/{run_id}/logs/nope").status_code == 404
+
+
+def test_logs_are_kept_in_the_store(service):
+    run_id = service.submit()["id"]
+    name = service.name(run_id)
+    service.backend.add_log(name, "squares", "squares-w0(0)", _lines(2, "w0"))
+    service.backend.add_log(name, "squares", "squares-merge(0)", _lines(2, "m"))
+    service.backend.start(name)
+    service.controller.reconcile()
+    logs = service.run_dir(run_id) / "tasks/squares/logs"
+    assert not logs.exists()  # the task runs
+    service.backend.set_node(name, "squares-merge", "Succeeded")
+    service.controller.reconcile()
+    # copied when the task was final, before the workflow was stopped
+    calls = service.backend.calls
+    assert calls.index(("logs", name, "squares")) < calls.index(("stop", name))
+    assert sorted(p.name for p in logs.iterdir()) == [
+        "index.json",
+        f"{name}-squares-merge(0).log",
+        f"{name}-squares-w0(0).log",
+    ]
+    # the workflow and its pods are gone: the logs come from the store
+    service.backend.delete(name)
+    service.backend.pod_logs.clear()
+    text = service.get(f"/runs/{run_id}/logs/squares").text
+    assert "w0 1\n" in text and "m 1\n" in text
+    assert text.index("squares-w0(0)") < text.index("squares-merge(0)")
+    assert service.get(
+        f"/runs/{run_id}/logs/squares", params={"tail_lines": 1}
+    ).text == (
+        f"==> squares-w0(0) ({name}-squares-w0(0)) <==\nw0 1\n\n"
+        f"==> squares-merge(0) ({name}-squares-merge(0)) <==\nm 1\n"
+    )
+
+
+def test_logs_are_kept_before_a_cancellation(service):
+    run_id = service.submit()["id"]
+    name = service.name(run_id)
+    service.backend.add_log(name, "squares", "squares-w0(0)", "running\n")
+    service.backend.start(name)
+    service.post(f"/runs/{run_id}/cancel")
+    calls = service.backend.calls
+    assert calls.index(("logs", name, "squares")) < calls.index(("cancel", name))
+    service.backend.pod_logs.clear()
+    assert "running" in service.get(f"/runs/{run_id}/logs/squares").text
 
 
 def test_cancel(service):

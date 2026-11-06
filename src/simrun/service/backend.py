@@ -30,6 +30,20 @@ class FailedAttempt(BaseModel):
     oom_killed: bool = False
 
 
+class PodLog(BaseModel):
+    """The log of the main container of one pod (one attempt) of a task.
+
+    Attributes:
+        node: The node of the pod in the workflow, e.g. `squares-w0(1)`.
+        pod: The name of the pod.
+        text: The log.
+    """
+
+    node: str
+    pod: str
+    text: str
+
+
 class BackendStatus(BaseModel):
     """The state of a workflow in the backend.
 
@@ -75,8 +89,14 @@ class Backend(Protocol):
         """Stop a workflow whose run is decided: pods still pending are removed."""
         ...
 
-    def logs(self, name: str, task_id: str) -> str:
-        """The logs of the pods of a task of a workflow."""
+    def logs(
+        self, name: str, task_id: str, tail_lines: int | None = None
+    ) -> list[PodLog]:
+        """The logs of the pods of a task of a workflow, oldest first.
+
+        Every attempt whose pod still exists; `tail_lines` limits each log to its
+        last lines.
+        """
         ...
 
     def nodes(self) -> list[Node]:

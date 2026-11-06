@@ -52,6 +52,7 @@ from simrun.service.backend import (
     PREEMPTED_PHASE,
     BackendStatus,
     FailedAttempt,
+    PodLog,
 )
 
 logger = logging.getLogger(__name__)
@@ -386,26 +387,42 @@ class ArgoBackend:
         """Stop a workflow whose run is decided; KeyError when it does not exist."""
         self._shutdown(name, "Stop")
 
-    def logs(self, name: str, task_id: str) -> str:
-        """The logs of the pods of a task, oldest first, each under a header."""
+    def logs(
+        self, name: str, task_id: str, tail_lines: int | None = None
+    ) -> list[PodLog]:
+        """The logs of the main containers of the pods of a task, oldest first.
+
+        Args:
+            name: The workflow.
+            task_id: The task.
+            tail_lines: The last lines of every log, all without.
+
+        Returns:
+            A log per pod which still exists, every attempt; a log which cannot be
+            read says why.
+        """
         prefix = f"{name}."
-        parts: list[str] = []
+        found: list[PodLog] = []
+        options: dict[str, Any] = {"container": CONTAINER}
+        if tail_lines is not None:
+            options["tail_lines"] = tail_lines
         for pod in sorted(
             self._pods(f"{WORKFLOW_LABEL}={name}"),
             key=lambda p: p["metadata"].get("creationTimestamp") or "",
         ):
-            node = (pod["metadata"].get("annotations") or {}).get(NODE_ANNOTATION, "")
-            if not _task_node(node.removeprefix(prefix), task_id):
+            annotations = pod["metadata"].get("annotations") or {}
+            node = annotations.get(NODE_ANNOTATION, "").removeprefix(prefix)
+            if not _task_node(node, task_id):
                 continue
             pod_name = pod["metadata"]["name"]
             try:
                 text = self.core.read_namespaced_pod_log(
-                    pod_name, self.config.namespace, container=CONTAINER
+                    pod_name, self.config.namespace, **options
                 )
             except ApiException as error:
                 text = f"(no logs: {error.reason})\n"
-            parts.append(f"==> {node} ({pod_name}) <==\n{text}")
-        return "\n".join(parts)
+            found.append(PodLog(node=node, pod=pod_name, text=text))
+        return found
 
     # nodes
 

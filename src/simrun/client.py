@@ -22,6 +22,7 @@ from simrun.service.app import (
 )
 from simrun.service.compare import CompareTable
 from simrun.service.controller import TERMINAL_RUN_STATES
+from simrun.service.logs import DEFAULT_TAIL_LINES
 from simrun.snapshot import snapshot
 from simrun.store import RunRecord, RunState
 from simrun.workflow import SplitMode, Workflow, load_workflow
@@ -272,9 +273,13 @@ class Client:
             self._call("POST", f"/runs/{run_id}/cancel").json()
         )
 
-    def logs(self, run_id: str, task_id: str) -> str:
-        """The log of a task."""
-        return self._call("GET", f"/runs/{run_id}/logs/{task_id}").text
+    def logs(
+        self, run_id: str, task_id: str, tail_lines: int = DEFAULT_TAIL_LINES
+    ) -> str:
+        """The logs of the pods of a task, the last `tail_lines` of each (0: all)."""
+        return self._call(
+            "GET", f"/runs/{run_id}/logs/{task_id}", params={"tail_lines": tail_lines}
+        ).text
 
     def outputs(self, run_id: str, task_id: str) -> list[OutputFile]:
         """The output files of a task, paths relative to the store."""
