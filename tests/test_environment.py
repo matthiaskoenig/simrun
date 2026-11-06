@@ -238,3 +238,41 @@ def test_failing_build_backend(tmp_path: Path) -> None:
     _build_system(store / "snap/lib/pyproject.toml", [], "no_such_backend")
     with pytest.raises(RuntimeError, match=r"(?s)'lib'.*no_such_backend"):
         _resolve(store, model, libs)
+
+
+def _tree(root: Path) -> dict[str, tuple[int, bytes]]:
+    """Every entry below `root` with its mode and its content or link target."""
+    found: dict[str, tuple[int, bytes]] = {}
+    for path in sorted(root.rglob("*")):
+        st = path.lstat()
+        if path.is_symlink():
+            content = str(path.readlink()).encode()
+        elif path.is_file():
+            content = path.read_bytes()
+        else:
+            content = b""
+        found[path.relative_to(root).as_posix()] = (st.st_mode, content)
+    return found
+
+
+def test_resolve_never_writes_a_snapshot(tmp_path: Path) -> None:
+    # a library of setuptools with dynamic metadata: locking builds its metadata,
+    # which setuptools writes next to its sources (`*.egg-info`)
+    store, model, libs = _make(tmp_path, [])
+    lib = store / "snap/lib"
+    _write(
+        lib / "pyproject.toml",
+        '[build-system]\nrequires = ["setuptools>=61"]\n'
+        'build-backend = "setuptools.build_meta"\n'
+        '[project]\nname = "lib"\ndynamic = ["version", "readme"]\n'
+        'requires-python = ">=3.14"\ndependencies = []\n'
+        "[tool.setuptools.dynamic]\n"
+        'version = {attr = "lib.__version__"}\nreadme = {file = "README.txt"}\n',
+    )
+    _write(lib / "src/lib/__init__.py", '__version__ = "0.3"\n')
+    _write(lib / "README.txt", "lib\n")
+    (store / "snap/model/main.py").write_text("print(1)\n")
+    before = {d: _tree(store / "snap" / d) for d in ("model", "lib", "extra")}
+    env = _resolve(store, model, libs)
+    assert 'name = "lib"' in env.lock
+    assert {d: _tree(store / "snap" / d) for d in ("model", "lib", "extra")} == before
