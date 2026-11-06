@@ -136,12 +136,14 @@ def test_reservation(service: Service) -> None:
         service.workflow(n=100, sleep_s=0.2, resources=ONE_PER_NODE),
         reserve=node,
     )
-    taints = service.cluster.node(node)["spec"].get("taints") or []
-    assert {
-        "key": "simrun/reserved",
-        "value": reserved["id"],
-        "effect": "NoExecute",
-    } in [{k: t.get(k) for k in ("key", "value", "effect")} for t in taints]
+    taint = {"key": "simrun/reserved", "value": reserved["id"], "effect": "NoExecute"}
+
+    def tainted() -> bool:
+        taints = service.cluster.node(node)["spec"].get("taints") or []
+        return taint in [{k: t.get(k) for k in taint} for t in taints]
+
+    # the node is reserved by the submission in the background, after the response
+    wait_for(tainted, 60, "the node was not reserved")
     wait_for(
         lambda: service.cluster.running_pods(reserved["id"]),
         120,

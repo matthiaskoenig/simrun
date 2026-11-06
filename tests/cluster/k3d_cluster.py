@@ -27,6 +27,8 @@ K3D = BIN / "k3d"
 KUBECTL = BIN / "kubectl"
 KUBECONFIG = TOOLS / "kubeconfig"
 STORE = TOOLS / "k3d" / "store"
+# the simrun wheel of the image of the runs, which the service builds images with
+WHEELS = TOOLS / "k3d" / "wheels"
 K3D_VERSION = "v5.9.0"
 KUBECTL_VERSION = "v1.37.2"
 CLUSTER = "simrun-test"
@@ -39,6 +41,15 @@ AGENTS = [f"k3d-{CLUSTER}-agent-{i}" for i in range(3)]
 MIN_FREE_GB = 20
 SETUP_TIMEOUT_S = 600.0
 TERMINAL = ("succeeded", "failed", "cancelled")
+# the base image of the images of the environments, mirrored into the registry as
+# `<registry>/uv:python3.14-bookworm-slim` (see `simrun.environment.dockerfile`);
+# pinned by digest, the last build of the tag (uv 0.9.30)
+UV_IMAGE = (
+    "ghcr.io/astral-sh/uv@sha256:"
+    "7cf77f594be8042dab6daa9fe326f90962252268b4f120a7f5dccce4d947e6c1"
+)
+UV_MIRROR = "uv:python3.14-bookworm-slim"
+SERVER = f"k3d-{CLUSTER}-server-0"
 
 
 def enabled() -> bool:
@@ -167,12 +178,21 @@ def apply_manifests() -> None:
         )
 
 
-def build_image() -> str:
-    """Build the image of the runs from the working tree and push it."""
+def build_image() -> tuple[str, Path]:
+    """Build the image of the runs from the working tree and push it.
+
+    Returns:
+        The image as the nodes name it, and the simrun wheel it installs, kept in
+        `WHEELS` for the builds of the images of environments.
+    """
     with tempfile.TemporaryDirectory(prefix="simrun-image-") as tmp:
         context = Path(tmp)
         _run("uv", "build", "--wheel", "--out-dir", context, REPO)
         (wheel,) = context.glob("simrun-*.whl")
+        shutil.rmtree(WHEELS, ignore_errors=True)
+        WHEELS.mkdir(parents=True)
+        kept = WHEELS / wheel.name
+        shutil.copy2(wheel, kept)
         dockerfile = Path(__file__).with_name("Dockerfile")
         shutil.copy2(dockerfile, context / "Dockerfile")
         digest = hashlib.sha256(
@@ -194,19 +214,45 @@ def build_image() -> str:
             context,
         )
     _run("docker", "push", "--quiet", f"{REGISTRY_HOST}/{tag}")
-    return f"{REGISTRY}/{tag}"
+    return f"{REGISTRY}/{tag}", kept
+
+
+def mirror_uv_image() -> None:
+    """Push the base image of the environments into the registry of the cluster."""
+    _run("docker", "pull", "--quiet", UV_IMAGE)
+    _run("docker", "tag", UV_IMAGE, f"{REGISTRY_HOST}/{UV_MIRROR}")
+    _run("docker", "push", "--quiet", f"{REGISTRY_HOST}/{UV_MIRROR}")
 
 
 def delete_cluster() -> None:
-    """Delete the cluster, the registry, the store and the images of the runs."""
+    """Delete the cluster, the registry, the store and the images of the runs.
+
+    The pods of an image of an environment run as root and leave files of root in
+    the store, which the server node gives back to the user first.
+    """
+    _run(
+        "docker",
+        "exec",
+        SERVER,
+        "chown",
+        "-R",
+        f"{os.getuid()}:{os.getgid()}",
+        "/var/simrun/store",
+        check=False,
+    )
     _run(K3D, "cluster", "delete", CLUSTER, check=False)
-    images = _run(
-        "docker", "images", "--quiet", f"{REGISTRY_HOST}/simrun-test", check=False
-    ).split()
+    images = [
+        image
+        for repository in ("simrun-test", UV_MIRROR.partition(":")[0])
+        for image in _run(
+            "docker", "images", "--quiet", f"{REGISTRY_HOST}/{repository}", check=False
+        ).split()
+    ]
     if images:
         _run("docker", "image", "rm", "--force", *sorted(set(images)), check=False)
     _run(K3D, "registry", "delete", REGISTRY_NAME, check=False)
     shutil.rmtree(STORE, ignore_errors=True)
+    shutil.rmtree(WHEELS, ignore_errors=True)
     KUBECONFIG.unlink(missing_ok=True)
 
 
@@ -217,11 +263,13 @@ class Cluster:
     Attributes:
         api: A client of its API.
         image: The image of the runs, as the nodes name it.
+        wheel: The simrun wheel of the image, which the service builds images with.
         config: The cluster configuration of the service.
     """
 
     api: client.ApiClient
     image: str
+    wheel: Path
     config: ClusterConfig
 
     @property
@@ -319,10 +367,12 @@ class Service:
         assert response.status_code == 201, response.text
         return response.json()
 
-    def estimate(self, token: str, workflow: dict[str, Any]) -> dict[str, Any]:
+    def estimate(
+        self, token: str, workflow: dict[str, Any], **request: Any
+    ) -> dict[str, Any]:
         response = self.http.post(
             "/estimate",
-            json={"workflow": workflow, "sources": []},
+            json={"workflow": workflow, "sources": [], **request},
             headers={"Authorization": f"Bearer {token}"},
         )
         assert response.status_code == 200, response.text
