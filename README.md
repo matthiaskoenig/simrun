@@ -23,6 +23,19 @@ and the planner count as free for the runs.
 
 `deploy/k3d` is the overlay of the integration tests.
 
+## Submissions
+
+`POST /runs` validates and plans a run, writes its record in the state `submitting`
+and returns its id at once (an invalid workflow, a task which fits no node or a
+reserved node which is taken is refused at once). The environment is resolved, the
+image built and the workflow submitted in the background, in a pool of the
+controller; a failure lands in the record (the run fails with the message). Two
+submissions of the same new environment build its image once. The grace after which
+the controller takes a submission which does not run in the service any more as lost
+(120 s) counts from the end of the build (`built` of the record); a run submitting
+when the service stopped fails at its next start. The client, the CLI and the MCP
+show the state `submitting` until the run is queued.
+
 ## Environments
 
 The image of a run whose model has a `pyproject.toml` holds the third party

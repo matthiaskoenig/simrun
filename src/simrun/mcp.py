@@ -66,7 +66,8 @@ def build_server(client: Client) -> FastMCP:
         """Snapshot the working trees and submit a workflow.
 
         `sources` maps a source name to the path of its git working tree, the model
-        first. Returns the summary of the run.
+        first. Returns the summary of the run at once, in the state `submitting`
+        while its environment is resolved and built; follow it with `wait_for_run`.
         """
         paths = {name: Path(p).expanduser() for name, p in (sources or {}).items()}
         split = SplitMode.SINGLE_SERVER if single_server else None

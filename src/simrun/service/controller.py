@@ -37,7 +37,8 @@ import json
 import logging
 import re
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 from simrun import podspec
@@ -63,8 +64,12 @@ TERMINAL_RUN_STATES = frozenset(
 FINAL_TASK_STATES = frozenset({TaskState.DONE, TaskState.FAILED, TaskState.SKIPPED})
 FAILED_PHASES = frozenset({"Failed", "Error"})
 SKIPPED_PHASES = frozenset({"Skipped", "Omitted"})
-# seconds a run may stay submitting before the controller takes the submission as lost
+# seconds a run may stay submitting after its image was ready (or after its creation
+# when it has none yet) and while no submission of it runs in this process, before
+# the controller takes the submission as lost
 SUBMIT_GRACE_S = 120.0
+# submissions which resolve, build and submit at the same time
+SUBMIT_WORKERS = 8
 # a marker per report of a task recorded as an observation
 RECORDED_DIR = "recorded"
 
@@ -177,14 +182,25 @@ def read_records(store: RunStore) -> Iterator[RunRecord]:
             logger.warning("the record of run %s cannot be read: %s", run_id, error)
 
 
-def _closed(
+def closed(
     record: RunRecord,
     state: RunState,
     tasks: dict[str, TaskState],
     message: str | None,
     **update: object,
 ) -> RunRecord:
-    """The terminal record: tasks not final are skipped, the node is to release."""
+    """The terminal record: tasks not final are skipped, the node is to release.
+
+    Args:
+        record: The record.
+        state: The terminal state.
+        tasks: The states of the tasks.
+        message: The message, e.g. why the run failed.
+        **update: Further fields of the record.
+
+    Returns:
+        The record, ended now.
+    """
     final = {
         task: s if s in FINAL_TASK_STATES else TaskState.SKIPPED
         for task, s in tasks.items()
@@ -229,6 +245,69 @@ class Controller:
         self._reports_lock = threading.Lock()
         # a submission created before the controller started is not in flight
         self.started = datetime.now(UTC)
+        self._submissions = ThreadPoolExecutor(
+            max_workers=SUBMIT_WORKERS, thread_name_prefix="simrun-submit"
+        )
+        self._in_flight: set[str] = set()
+
+    def start_submission(self, run_id: str, job: Callable[[str], None]) -> None:
+        """Run the submission of a run in the background, see `in_flight`.
+
+        A job which raises fails a run which is still submitting; its workflow may
+        exist, so it is cancelled.
+
+        Args:
+            run_id: The run, written `submitting`.
+            job: Resolves, builds and submits the run; called with its id.
+        """
+        with self.lock:
+            self._in_flight.add(run_id)
+
+        def run() -> None:
+            try:
+                job(run_id)
+            except Exception as error:
+                logger.exception("the submission of run %s failed", run_id)
+                self._submission_failed(run_id, f"the submission failed: {error}")
+            finally:
+                with self.lock:
+                    self._in_flight.discard(run_id)
+
+        self._submissions.submit(run)
+
+    def in_flight(self, run_id: str) -> bool:
+        """Whether the submission of a run runs in this process."""
+        with self.lock:
+            return run_id in self._in_flight
+
+    def close(self) -> None:
+        """Wait for the running submissions; the ones not started are dropped.
+
+        A dropped run stays submitting and fails at the next start of the service
+        (`recover`).
+        """
+        self._submissions.shutdown(wait=True, cancel_futures=True)
+
+    def _submission_failed(self, run_id: str, message: str) -> None:
+        """Fail a run which is still submitting."""
+        try:
+            record = self.store.read(run_id)
+        except KeyError:
+            return
+        if record.state == RunState.SUBMITTING:
+            self._fail_submission(record, message)
+
+    def _fail_submission(self, record: RunRecord, message: str) -> None:
+        """Fail a submitting run unless it changed, cancel its workflow, settle it."""
+        failed = closed(
+            record,
+            RunState.FAILED,
+            record.tasks,
+            message,
+            pending_cancel=record.backend_name is not None,
+        )
+        if self.write_if_unchanged(record, failed):
+            self.settle(record.id)
 
     def recover(self) -> None:
         """Settle what a stopped service left: called at the start of the service.
@@ -236,8 +315,8 @@ class Controller:
         The service is one process, so a run submitting since before the controller
         started has lost its submission: it fails, its workflow (named before the
         submission) is cancelled and its node released. A submission created later
-        may be in flight (the API accepts runs while this runs) and is left to the
-        grace of `reconcile`. A record which is not terminal and has no workflow name
+        may be in flight (the API accepts runs while this runs) and is left to
+        `reconcile`, which never fails a submission running in this process. A record which is not terminal and has no workflow name
         was written before names were stored, and fails too. The pending releases and
         cancellations of terminal runs are retried.
         """
@@ -259,16 +338,7 @@ class Controller:
     def _submission_lost(self, record: RunRecord) -> None:
         """Fail a run whose submission did not complete, and settle it."""
         logger.warning("the submission of run %s did not complete, it fails", record.id)
-        message = "the submission of the run did not complete"
-        failed = _closed(
-            record,
-            RunState.FAILED,
-            record.tasks,
-            message,
-            pending_cancel=record.backend_name is not None,
-        )
-        if self._write_if_unchanged(record, failed):
-            self.settle(record.id)
+        self._fail_submission(record, "the submission of the run did not complete")
 
     def reconcile(self) -> None:
         """Bring every record up to date with the backend, one run at a time."""
@@ -284,10 +354,12 @@ class Controller:
             self.settle(run_id)
             return
         if record.state == RunState.SUBMITTING:
-            age = (datetime.now(UTC) - record.created).total_seconds()
-            if age >= SUBMIT_GRACE_S:
+            if self.in_flight(run_id):
+                return  # resolved, built or submitted: its workflow may not exist yet
+            since = record.built or record.created
+            if (datetime.now(UTC) - since).total_seconds() >= SUBMIT_GRACE_S:
                 self._submission_lost(record)
-            return  # a submission in flight: its workflow may not exist yet
+            return
         name = record.backend_name
         if name is None:
             return
@@ -304,7 +376,7 @@ class Controller:
             stop = status.phase not in FINAL_PHASES
         # recorded before the record is written: a failure is retried at the next poll
         self._record_reports(new)
-        if new == record or not self._write_if_unchanged(record, new):
+        if new == record or not self.write_if_unchanged(record, new):
             return
         if new.state in TERMINAL_RUN_STATES:
             logger.info("run %s %s", run_id, new.state.value)
@@ -315,8 +387,12 @@ class Controller:
                     logger.exception("stopping the workflow %s failed", name)
             self.settle(run_id)
 
-    def _write_if_unchanged(self, before: RunRecord, after: RunRecord) -> bool:
-        """Write `after` when the record on disk is still `before`."""
+    def write_if_unchanged(self, before: RunRecord, after: RunRecord) -> bool:
+        """Write `after` when the record on disk is still `before`.
+
+        Returns:
+            Whether `after` was written; not when the run changed or is gone.
+        """
         with self.lock:
             try:
                 current = self.store.read(before.id)
@@ -368,18 +444,18 @@ class Controller:
         killed = self._killed_twice(record, status.oom)
         if killed is not None:
             task_id, message = killed
-            return _closed(
+            return closed(
                 record, RunState.FAILED, {**tasks, task_id: TaskState.FAILED}, message
             )
         failed = [t for t, s in tasks.items() if s == TaskState.FAILED]
         if failed:
             message = f"task {', '.join(failed)} failed"
-            return _closed(record, RunState.FAILED, tasks, message)
+            return closed(record, RunState.FAILED, tasks, message)
         if all(s == TaskState.DONE for s in tasks.values()):
-            return _closed(record, RunState.SUCCEEDED, tasks, None)
+            return closed(record, RunState.SUCCEEDED, tasks, None)
         if status.phase in FINAL_PHASES:
             message = f"the workflow ended with phase {status.phase}"
-            return _closed(record, RunState.FAILED, tasks, message)
+            return closed(record, RunState.FAILED, tasks, message)
         started = {TaskState.RUNNING, TaskState.PREEMPTED, TaskState.DONE}
         state = (
             RunState.RUNNING
@@ -408,10 +484,10 @@ class Controller:
         elif failed:
             message = f"task {', '.join(failed)} failed"
         elif all(s == TaskState.DONE for s in tasks.values()):
-            return _closed(record, RunState.SUCCEEDED, tasks, None)
+            return closed(record, RunState.SUCCEEDED, tasks, None)
         else:
             message = f"the workflow {name} is gone"
-        return _closed(record, RunState.FAILED, tasks, message)
+        return closed(record, RunState.FAILED, tasks, message)
 
     def cancel(self, run_id: str) -> RunRecord:
         """Cancel a run: write it cancelled, then cancel its workflow, release its node.
@@ -424,7 +500,7 @@ class Controller:
             record = self.store.read(run_id)
             if record.state in TERMINAL_RUN_STATES:
                 raise ValueError(f"run {run_id} has ended: {record.state}")
-            cancelled = _closed(
+            cancelled = closed(
                 record,
                 RunState.CANCELLED,
                 record.tasks,
@@ -477,7 +553,7 @@ class Controller:
         if released and record.pending_release is not None:
             update["pending_release"] = None
         if update:
-            self._write_if_unchanged(record, record.model_copy(update=update))
+            self.write_if_unchanged(record, record.model_copy(update=update))
 
     def _record_reports(self, record: RunRecord) -> None:
         """Record the reports of the tasks in a final state not recorded before."""

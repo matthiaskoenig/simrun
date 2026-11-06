@@ -2,10 +2,11 @@
 
 Every route needs a bearer token of the tokens file (`simrun.service.auth`); the
 identity of the token decides the priority of its runs. A submission is validated,
-its resources resolved and its tasks planned on the nodes of the backend, the image
-of its environment built when the registry does not have it, and the record and the
-settings of every task written before the workflow is submitted. The controller
-(`simrun.service.controller`) follows the workflows in a background task.
+its resources resolved and its tasks planned on the nodes of the backend, and the
+record (`submitting`) and the settings of every task written; `POST /runs` returns
+then, and the environment, the image and the workflow follow in the background
+(`simrun.service.submission`). The controller (`simrun.service.controller`) runs the
+submissions and follows the workflows in a background task.
 
 Run it with `uvicorn --factory simrun.service.app:serve`, which reads the
 `ServiceSettings` from the YAML file named by `SIMRUN_CONFIG`.
@@ -17,13 +18,11 @@ import json
 import logging
 import os
 import shutil
-import tempfile
-import threading
 from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any, NoReturn
+from typing import Annotated, Any
 
 import yaml
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
@@ -31,10 +30,8 @@ from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, Field, ValidationError
 
-import simrun
-from simrun.argo import to_argo
+from simrun.argo import workflow_name
 from simrun.config import ClusterConfig
-from simrun.environment import Environment, dockerfile, image_ref, resolve_environment
 from simrun.ledger import Ledger, LedgerCounts
 from simrun.planner import Node, PlanError, TaskPlan, plan_task
 from simrun.plugins import TaskType, load_task_types, resolve
@@ -44,6 +41,7 @@ from simrun.service.auth import Identity, authenticate, load_tokens, priority_of
 from simrun.service.backend import Backend
 from simrun.service.compare import CompareTable, compare_runs
 from simrun.service.controller import TERMINAL_RUN_STATES, Controller, read_records
+from simrun.service.submission import Submitter, has_model_project
 from simrun.snapshot import SourceProvenance
 from simrun.store import RunRecord, RunState, RunStore, TaskState
 from simrun.worker import MERGED_MARKER, PROGRESS_FILE, SETTINGS_FILE, UNITS_DIR
@@ -52,7 +50,6 @@ from simrun.workflow import Priority, SplitMode, Workflow
 logger = logging.getLogger(__name__)
 
 CONFIG_ENV = "SIMRUN_CONFIG"
-ENVIRONMENT_LOCK = "environment.lock"
 WAIT_POLL_S = 0.2
 WAIT_MAX_S = 300.0
 # a snapshot younger than this is kept by a cleanup: a client may be submitting it
@@ -312,8 +309,16 @@ class _Service:
         self.store = RunStore(settings.store)
         self.resources = ResourceStore(settings.db)
         self.controller = Controller(self.store, self.resources, backend, types)
+        self.submitter = Submitter(
+            self.store,
+            backend,
+            types,
+            self.controller,
+            settings.cluster,
+            settings.python,
+            settings.simrun_wheel,
+        )
         self.tokens = load_tokens(settings.tokens)
-        self._reserve_lock = threading.Lock()
 
     # submission
 
@@ -387,31 +392,18 @@ class _Service:
             for t in workflow.tasks
         )
 
-    def environment(self, request: SubmitRequest) -> tuple[str | None, str | None]:
-        """The image of a run and the lock of its environment, built when missing.
+    def _image(self, request: SubmitRequest) -> str | None:
+        """The image of a run without its own environment, the default image.
+
+        A run whose model has a `pyproject.toml` gets the image of its environment
+        in the background (None until then).
 
         Raises:
-            HTTPException: 422 when the environment cannot be resolved or no image
-                is configured for a model without `pyproject.toml`; 500 without a
-                simrun wheel to build with; 502 when the build fails.
+            HTTPException: 422 when the run needs an image and the service has no
+                default image.
         """
-        if request.sources:
-            model, *libraries = request.sources
-            if (self.settings.store / model.snapshot / "pyproject.toml").is_file():
-                try:
-                    env = resolve_environment(
-                        self.settings.store,
-                        model,
-                        libraries,
-                        python=self.settings.python,
-                        simrun_version=simrun.__version__,
-                    )
-                except (ValueError, RuntimeError) as error:
-                    raise HTTPException(422, str(error)) from error
-                ref = image_ref(env, self.settings.cluster.registry)
-                if not self.backend.has_image(ref):
-                    self._build(env, ref)
-                return ref, env.lock
+        if has_model_project(self.settings.store, request.sources):
+            return None
         if self.settings.default_image is None and self._needs_run_image(
             request.workflow
         ):
@@ -420,37 +412,22 @@ class _Service:
                 "the run needs an image: its model has no pyproject.toml and the "
                 "service has no default_image",
             )
-        return self.settings.default_image, None
-
-    def _build(self, env: Environment, ref: str) -> None:
-        wheel = self.settings.simrun_wheel
-        if wheel is None:
-            raise HTTPException(500, "the service has no simrun_wheel to build with")
-        with tempfile.TemporaryDirectory(prefix="simrun-build-") as tmp:
-            context = Path(tmp)
-            (context / "Dockerfile").write_text(
-                dockerfile(env, self.settings.cluster.registry, wheel.name)
-            )
-            shutil.copy2(wheel, context / wheel.name)
-            logger.info("building the image %s", ref)
-            try:
-                self.backend.build_image(context, ref)
-            except Exception as error:
-                raise HTTPException(
-                    502, f"building the image {ref} failed: {error}"
-                ) from error
+        return self.settings.default_image
 
     def submit(self, request: SubmitRequest, identity: Identity) -> RunRecord:
-        """Plan, build, write and submit a run."""
+        """Plan a run and write it `submitting`; the rest follows in the background.
+
+        The environment, the image and the workflow are resolved, built and
+        submitted by the `Submitter` in the pool of the controller.
+        """
         self._check_sources(request.sources)
         priority = priority_of(identity, self.settings.owner)
         planned = self.plan(request, priority)
-        plans = {task_id: plan for task_id, (_, plan) in planned.items()}
-        image, lock = self.environment(request)
+        image = self._image(request)
         workflow = request.workflow
-        reserve = request.reserve or workflow.reserve
+        run_id = self.store.new_run_id()
         record = RunRecord(
-            id=self.store.new_run_id(),
+            id=run_id,
             submitted_by=identity.name,
             owner=identity.owner,
             agent=identity.name if identity.kind == "agent" else None,
@@ -459,112 +436,32 @@ class _Service:
             workflow=workflow,
             sources=request.sources,
             image=image,
-            reserve=reserve,
+            reserve=request.reserve or workflow.reserve,
             state=RunState.SUBMITTING,
             tasks=dict.fromkeys((t.id for t in workflow.tasks), TaskState.WAITING),
-            plans={k: dataclasses.asdict(p) for k, p in plans.items()},
-            backend_name=None,
+            plans={k: dataclasses.asdict(plan) for k, (_, plan) in planned.items()},
+            # named before the submission, so a workflow a failed or an interrupted
+            # submission created is found and cancelled
+            backend_name=workflow_name(run_id),
             created=datetime.now(UTC),
             finished=None,
             message=None,
         )
-        try:
-            manifest = to_argo(record, plans, self.types, self.settings.cluster)
-        except ValueError as error:
-            raise HTTPException(422, str(error)) from error
-        # the name is known before the submission, so a workflow a failed or an
-        # interrupted submission created is found and cancelled
-        record = record.model_copy(
-            update={"backend_name": manifest["metadata"]["name"]}
-        )
-        if reserve is not None:
-            with self._reserve_lock:
-                self._free_node(self.backend.nodes(), reserve)
-                self.backend.reserve(reserve, record.id)
-        try:
-            self._write(record, lock)
-            self.backend.submit(manifest)
-        except Exception as error:
-            self._abort(record, error)
-            raise HTTPException(502, f"submitting the run failed: {error}") from error
-        ended = False
-        with self.controller.lock:
-            try:
-                current = self.store.read(record.id)
-            except KeyError:
-                current = None
-            if current is not None:
-                ended = current.state in TERMINAL_RUN_STATES
-                if ended:  # cancelled or failed while it was submitted: cancel it
-                    current = current.model_copy(update={"pending_cancel": True})
-                else:
-                    current = current.model_copy(update={"state": RunState.QUEUED})
-                self.store.write(current)
-        if current is None:
-            self._deleted_while_submitted(record)
-        if ended:
-            self.controller.settle(record.id)
-            current = self.store.read(record.id)
-        logger.info("run %s submitted by %s", record.id, identity.name)
-        return current
+        self._write(record)
+        self.controller.start_submission(record.id, self.submitter.run)
+        logger.info("run %s accepted from %s", record.id, identity.name)
+        return record
 
-    def _deleted_while_submitted(self, record: RunRecord) -> NoReturn:
-        """Cancel the workflow of a run cancelled and deleted during its submission.
-
-        Raises:
-            HTTPException: 409, the run is gone.
-        """
-        name = record.backend_name
-        if name is not None:
-            try:
-                self.backend.cancel(name)
-            except KeyError:
-                pass
-            except Exception:
-                logger.exception("cancelling the orphan workflow %s failed", name)
-        raise HTTPException(
-            409, f"run {record.id} was cancelled and deleted while it was submitted"
-        )
-
-    def _write(self, record: RunRecord, lock: str | None) -> None:
+    def _write(self, record: RunRecord) -> None:
+        """Write the record and the settings of every task."""
         with self.controller.lock:
             self.store.write(record)
         run_dir = self.store.run_dir(record.id)
-        if lock is not None:
-            (run_dir / ENVIRONMENT_LOCK).write_text(lock)
         for task in record.workflow.tasks:
             settings = self.types[task.type].settings.model_validate(task.settings)
             task_dir = run_dir / "tasks" / task.id
             task_dir.mkdir(parents=True, exist_ok=True)
             (task_dir / SETTINGS_FILE).write_text(settings.model_dump_json(indent=2))
-
-    def _abort(self, record: RunRecord, error: Exception) -> None:
-        """Fail the record of a run whose submission failed, then settle it.
-
-        The workflow may have been created although the submission raised, so it is
-        cancelled like the node is released, retried by the controller on failure.
-        """
-        logger.error("submitting run %s failed: %s", record.id, error)
-        failed = record.model_copy(
-            update={
-                "state": RunState.FAILED,
-                "tasks": dict.fromkeys(record.tasks, TaskState.SKIPPED),
-                "finished": datetime.now(UTC),
-                "message": f"submitting failed: {error}",
-                "pending_release": record.reserve,
-                "pending_cancel": True,
-            }
-        )
-        try:
-            with self.controller.lock:
-                self.store.write(failed)
-        except OSError:
-            logger.exception("writing the failed record of run %s failed", record.id)
-            if record.reserve is not None:
-                with suppress(Exception):
-                    self.backend.unreserve(record.reserve, record.id)
-            return
-        self.controller.settle(record.id)
 
     # queries
 
@@ -817,6 +714,7 @@ def create_app(
             task.cancel()
             with suppress(asyncio.CancelledError):
                 await task
+            await asyncio.to_thread(service.controller.close)
 
     # no documentation routes: they would answer without a token
     app = FastAPI(

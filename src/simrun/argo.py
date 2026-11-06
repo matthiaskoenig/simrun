@@ -108,6 +108,11 @@ STORE_VOLUME = "store"
 SCRATCH_VOLUME = "scratch"
 
 
+def workflow_name(run_id: str) -> str:
+    """The name of the workflow of a run."""
+    return f"simrun-{run_id}"
+
+
 def _gi(value: float) -> str:
     """A quantity of GiB, e.g. `3Gi` or `2.5Gi`."""
     return f"{int(value)}Gi" if value == int(value) else f"{value}Gi"
@@ -428,7 +433,7 @@ def to_argo(
         ),
     ]
     return Workflow(
-        name=f"simrun-{record.id}",
+        name=workflow_name(record.id),
         namespace=config.namespace,
         labels=labels,
         annotations=annotations,

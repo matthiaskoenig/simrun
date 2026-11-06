@@ -65,6 +65,8 @@ class RunRecord(BaseModel):
         plans: The task plans as dicts.
         backend_name: Name of the backend workflow.
         created: Time of creation.
+        built: Time the image of the run was ready and the submission of its workflow
+            began, None while its environment is resolved and built.
         finished: Time of the end.
         message: A message, e.g. the failure.
         oom_kills: Pods killed for memory per worker, as the backend last reported.
@@ -90,6 +92,7 @@ class RunRecord(BaseModel):
     created: datetime
     finished: datetime | None
     message: str | None
+    built: datetime | None = None
     oom_kills: dict[str, int] = Field(default_factory=dict)
     pending_release: str | None = None
     pending_cancel: bool = False

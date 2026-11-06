@@ -159,6 +159,10 @@ class Client:
             split: Split mode of every task.
             reserve: A node to reserve.
 
+        Returns:
+            The summary of the run, `submitting` while the service resolves its
+            environment, builds its image and submits its workflow.
+
         Raises:
             ClientError: When the service refuses the submission.
         """
