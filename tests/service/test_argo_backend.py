@@ -676,9 +676,24 @@ def test_placements_of_run_pods() -> None:
         "workflows.argoproj.io/node-name": f"{WF}.squares-extra(0:1)"
     }
     run["status"] = {"phase": "Running"}
+    run["spec"]["containers"][0]["name"] = "main"
+    run["spec"]["containers"][0]["env"] = [
+        {"name": "SIMRUN_WORKER", "value": "squares-w1"}
+    ]
+    merge = _k8s_pod(
+        "n2",
+        namespace="simrun",
+        containers=[{"cpu": "1"}],
+        labels={"workflows.argoproj.io/workflow": WF},
+    )
+    merge["metadata"]["name"] = "p-merge"
+    merge["metadata"]["annotations"] = {
+        "workflows.argoproj.io/node-name": f"{WF}.squares-merge"
+    }
+    merge["status"] = {"phase": "Pending"}
     other = _k8s_pod("n2", namespace="simrun", containers=[{"cpu": "1"}])
     created, calls = _fake_backend(
-        list_namespaced_pod=SimpleNamespace(items=[run, other])
+        list_namespaced_pod=SimpleNamespace(items=[run, merge, other])
     )
     assert created.placements() == [
         Placement(
@@ -689,7 +704,18 @@ def test_placements_of_run_pods() -> None:
             phase="Running",
             cores=4.0,
             memory_gb=6.0,
-        )
+            worker="squares-w1",
+        ),
+        Placement(
+            workflow=WF,
+            dag_task="squares-merge",
+            pod="p-merge",
+            node="n2",
+            phase="Pending",
+            cores=1.0,
+            memory_gb=0.0,
+            worker=None,
+        ),
     ]
     (listing,) = [c for c in calls if c[0] == "list_namespaced_pod"]
     assert listing[1] == (CONFIG.namespace,)

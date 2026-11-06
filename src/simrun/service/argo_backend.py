@@ -243,6 +243,17 @@ def _requests(container: dict[str, Any]) -> tuple[float, float]:
     return cpu, memory
 
 
+def _worker_of(pod: dict[str, Any]) -> str | None:
+    """The `SIMRUN_WORKER` of the main container of a pod, None without it."""
+    for container in (pod.get("spec") or {}).get("containers") or []:
+        if container.get("name") != "main":
+            continue
+        for var in container.get("env") or []:
+            if var.get("name") == "SIMRUN_WORKER":
+                return var.get("value")
+    return None
+
+
 def pod_requests(pod: dict[str, Any]) -> tuple[float, float]:
     """The cores and GiB a pod requests, as the scheduler counts them.
 
@@ -572,6 +583,7 @@ class ArgoBackend:
                     phase=(pod.get("status") or {}).get("phase", "Unknown"),
                     cores=cores,
                     memory_gb=memory,
+                    worker=_worker_of(pod),
                 )
             )
         return found
