@@ -73,13 +73,47 @@ def test_client_plans_tasks_of_local_types(
     workflow = Workflow(**WORKFLOW)
     body = client._request(workflow, {}, None, None, None)
     (task,) = body["workflow"]["tasks"]
-    assert task["settings"] == SquaresSettings(n=4, sleep_s=1.0).model_dump(mode="json")
+    # what was given and what the plan set; the defaults stay with the snapshot
+    assert task["settings"] == {"n": 4, "sleep_s": 1.0}
     # the workflow of the caller is not changed
     assert workflow.tasks[0].settings == {"n": 4}
     # the service writes the planned settings
     summary = client.submit(workflow, {"model": repo})
     task_dir = service.run_dir(summary.id) / "tasks/squares"
-    assert json.loads((task_dir / "settings.json").read_text())["sleep_s"] == 1.0
+    settings = json.loads((task_dir / "settings.json").read_text())
+    assert settings == {"n": 4, "sleep_s": 1.0}
+
+
+class StampedSettings(SquaresSettings):
+    stamp: str | None = None
+
+
+def _stamp(settings: StampedSettings) -> StampedSettings:
+    return settings.model_copy(update={"stamp": "planned"})
+
+
+def test_validate_plans_as_submit(
+    service, make_client, repo: Path, planning, monkeypatch
+) -> None:
+    client = make_client(service)
+    workflow = Workflow(**WORKFLOW)
+    # the local plugin knows `stamp`, the one of the service does not
+    module = sys.modules["simrun_test_plan"]
+    monkeypatch.setattr(module, "plan", _stamp)
+    stamped = dataclasses.replace(
+        SQUARES, settings=StampedSettings, plan="simrun_test_plan:plan"
+    )
+    monkeypatch.setattr(
+        simrun.client, "load_task_types", lambda: {SQUARES.name: stamped}
+    )
+    result = client.validate(workflow)
+    assert result.ok is False
+    assert result.errors == ["task 'squares': unknown setting 'stamp'"]
+    with pytest.raises(ClientError, match="unknown setting 'stamp'"):
+        client.submit(workflow, {"model": repo})
+    # an unset default of the local plugin is not sent
+    monkeypatch.setattr(module, "plan", _plan)
+    assert client.validate(workflow).ok is True
 
 
 def test_client_plans_before_the_snapshots(
