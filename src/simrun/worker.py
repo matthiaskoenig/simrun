@@ -45,6 +45,9 @@ UNITS_DIR = "units"
 WORKERS_DIR = "workers"
 PROGRESS_FILE = "progress.jsonl"
 SETTINGS_FILE = "settings.json"
+# written to the output of a task by `simrun-merge` after a successful merge, so the
+# service knows a task is done also when the workflow is gone
+MERGED_MARKER = ".simrun-merged"
 DEFAULT_SCRATCH = "/scratch"
 THREAD_VARIABLES = ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS")
 POLL_S = 0.2
@@ -828,6 +831,7 @@ def merge_main() -> None:
     """Run `simrun-merge` after the workers of a split task; exits with its code.
 
     SIGTERM is handled from the start: a merge stopped before it began exits 143.
+    A successful merge writes `out/.simrun-merged` (`MERGED_MARKER`).
 
     Exit codes: 0 merged, 3 the ledger is incomplete or the merge failed, 4 a
     configuration error, 143 stopped on SIGTERM before the merge.
@@ -852,6 +856,8 @@ def _merge(stop: threading.Event) -> int:
         return EXIT_TERMINATED
     try:
         run_merge(task_type, settings, paths)
+        paths.out.mkdir(parents=True, exist_ok=True)
+        (paths.out / MERGED_MARKER).touch()
     except Exception:
         logger.exception("the merge of %s failed", paths.task_dir)
         return EXIT_ANALYSIS

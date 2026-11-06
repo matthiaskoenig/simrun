@@ -12,7 +12,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from simrun.plugins import TaskPaths
 from simrun.snapshot import SourceProvenance
@@ -66,6 +66,10 @@ class RunRecord(BaseModel):
         created: Time of creation.
         finished: Time of the end.
         message: A message, e.g. the failure.
+        oom_kills: Pods killed for memory per worker, as the backend last reported.
+        pending_release: A reserved node whose release failed, retried by the service.
+        pending_cancel: Whether the workflow must still be cancelled, e.g. one which
+            may have been created by a submission that failed.
     """
 
     id: str
@@ -85,6 +89,9 @@ class RunRecord(BaseModel):
     created: datetime
     finished: datetime | None
     message: str | None
+    oom_kills: dict[str, int] = Field(default_factory=dict)
+    pending_release: str | None = None
+    pending_cancel: bool = False
 
 
 class RunStore:

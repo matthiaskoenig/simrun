@@ -697,3 +697,20 @@ def test_idle_coordinator_stops_on_sigterm(tmp_path: Path) -> None:
     finally:
         kill_tree(process)
     assert sorted(os.listdir(task_dir / "units" / "claimed")) == ["0@other", "1@other"]
+
+
+def test_merge_main_writes_marker(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (worker_env / "settings.json").write_text(SquaresSettings(n=2).model_dump_json())
+    monkeypatch.setattr(worker, "install_editable", lambda snapshots: None)
+    marker = worker_env / "out" / worker.MERGED_MARKER
+    with pytest.raises(SystemExit) as raised:
+        worker.merge_main()  # the ledger is incomplete
+    assert raised.value.code == 3
+    assert not marker.exists()
+    monkeypatch.setattr(worker, "run_merge", lambda *args: None)
+    with pytest.raises(SystemExit) as raised:
+        worker.merge_main()
+    assert raised.value.code == 0
+    assert marker.exists()

@@ -31,6 +31,12 @@ def provenance(name: str, snapshot: str) -> dict:
     ).model_dump()
 
 
+def test_no_documentation_routes(service):
+    for path in ("/docs", "/redoc", "/openapi.json"):
+        assert service.client.get(path).status_code == 404
+        assert service.get(path).status_code == 404
+
+
 def test_requires_token(service):
     assert service.client.get("/runs").status_code == 401
     response = service.client.get("/runs", headers=service.auth("wrong"))

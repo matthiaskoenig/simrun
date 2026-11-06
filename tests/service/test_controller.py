@@ -1,9 +1,10 @@
 from simrun.demo import SQUARES
 from simrun.resources import GIB, ResourceKey, ResourceStore
 from simrun.service.backend import BackendStatus
-from simrun.service.controller import task_states
+from simrun.service.controller import Controller, task_states
 from simrun.store import RunStore, TaskState
-from simrun.worker import WorkerReport, write_report
+from simrun.testing import FakeBackend
+from simrun.worker import MERGED_MARKER, WorkerReport, write_report
 from simrun.workflow import Workflow
 
 TYPES = {SQUARES.name: SQUARES}
@@ -48,15 +49,21 @@ def test_oom_reports(service):
     task_dir = service.run_dir(run_id) / "tasks/squares"
     name = service.name(run_id)
     service.backend.start(name)
-    service.backend.oom_kill(name, "squares-w1")
+    service.backend.oom_kill(name, "squares-w1")  # attempt 0 killed without a report
     write_report(_report("squares-w0", 7.9), task_dir, 0)  # 99 % of the limit
-    write_report(_report("squares-w1", 1.0), task_dir, 0)  # killed by the backend
     write_report(_report("squares-w1", 1.0), task_dir, 1)
+    service.controller.reconcile()
+    assert _samples(service) == 0  # the task runs: nothing recorded yet
+    service.backend.set_node(name, "squares-merge", "Succeeded")
+    service.controller.reconcile()
     service.controller.reconcile()
     resolved = ResourceStore(service.settings.db).resolve(KEY, SQUARES.hint, None)
     assert resolved.samples == 3
-    # two oom reports at the limit of 8 GiB: (8 - 0.5) / 2 = 3.75 GiB, times 1.5
-    assert resolved.memory_per_worker_gb >= 5.6
+    # oom: w0 at its limit, (8 - 0.5) / 2 = 3.75 GiB, and w1 at the pod shape of 21
+    # GiB with 40 processes, 0.5125 GiB; the larger times 1.5, rounded up
+    assert resolved.memory_per_worker_gb == 5.7
+    marks = sorted(p.name for p in (task_dir / "recorded").iterdir())
+    assert marks == ["squares-w0-0.json", "squares-w1-0.oom", "squares-w1-1.json"]
 
 
 def test_reservation_released(service):
@@ -108,7 +115,146 @@ def test_workflow_gone_fails_run(service_factory):
         service.controller.reconcile()
         record = RunStore(service.settings.store).read(run_id)
         assert record.state == "failed"
+        assert record.tasks == {"squares": TaskState.FAILED}
         assert "gone" in (record.message or "")
+
+
+def _two_tasks(service) -> dict:
+    command = {
+        "image": "localhost:5000/tools:1",
+        "args": ["true"],
+        "cores": 1,
+        "memory_gb": 1.0,
+    }
+    workflow = service.workflow()
+    workflow["tasks"].append({"id": "cmd", "type": "command", "settings": command})
+    return workflow
+
+
+def test_finished_then_gone(service):
+    run_id = service.submit(workflow=_two_tasks(service))["id"]
+    name = service.name(run_id)
+    service.backend.start(name)
+    service.backend.set_node(name, "cmd", "Succeeded")
+    service.controller.reconcile()
+    record = RunStore(service.settings.store).read(run_id)
+    assert record.tasks == {"squares": TaskState.RUNNING, "cmd": TaskState.DONE}
+    # the workflow finishes and its time to live deletes it before the next poll
+    out = service.run_dir(run_id) / "tasks/squares/out"
+    out.mkdir(parents=True)
+    (out / MERGED_MARKER).touch()
+    service.backend.delete(name)
+    service.controller.reconcile()
+    record = RunStore(service.settings.store).read(run_id)
+    assert record.state == "succeeded"
+    assert record.tasks == {"squares": TaskState.DONE, "cmd": TaskState.DONE}
+
+
+def test_gone_with_merge_marker(service):
+    run_id = service.submit(workflow=_two_tasks(service))["id"]
+    name = service.name(run_id)
+    out = service.run_dir(run_id) / "tasks/squares/out"
+    out.mkdir(parents=True)
+    (out / MERGED_MARKER).touch()
+    service.backend.delete(name)
+    service.controller.reconcile()
+    record = RunStore(service.settings.store).read(run_id)
+    assert record.state == "failed"
+    assert record.tasks == {"squares": TaskState.DONE, "cmd": TaskState.FAILED}
+    assert record.message == f"the workflow {name} is gone: cmd unknown"
+
+
+class _BrokenRelease(FakeBackend):
+    broken = True
+
+    def unreserve(self, node):
+        if self.broken:
+            raise RuntimeError("api down")
+        super().unreserve(node)
+
+
+def test_failed_release_is_retried(service_factory):
+    with service_factory(_BrokenRelease()) as service:
+        run_id = service.submit(reserve="srv-02")["id"]
+        service.backend.finish(service.name(run_id))
+        service.controller.reconcile()
+        store = RunStore(service.settings.store)
+        record = store.read(run_id)
+        assert record.state == "succeeded"
+        assert record.pending_release == "srv-02"
+        service.backend.broken = False
+        service.controller.reconcile()
+        assert store.read(run_id).pending_release is None
+        assert ("unreserve", "srv-02") in service.backend.calls
+
+
+def test_unknown_node_counts_as_released(service):
+    run_id = service.submit()["id"]
+    service.backend.finish(service.name(run_id))
+    service.controller.reconcile()
+    store = RunStore(service.settings.store)
+    store.write(store.read(run_id).model_copy(update={"pending_release": "ghost"}))
+    service.controller.reconcile()
+    assert store.read(run_id).pending_release is None
+
+
+def test_corrupt_record_does_not_stop_the_others(service):
+    bad = service.submit(group="g")["id"]
+    good = service.submit()["id"]
+    (service.run_dir(bad) / "run.json").write_text("{not json")
+    service.backend.finish(service.name(good))
+    service.controller.reconcile()
+    assert RunStore(service.settings.store).read(good).state == "succeeded"
+    assert [r["id"] for r in service.get("/runs").json()] == [good]
+    assert service.get("/usage").status_code == 200
+    cleanup = service.post("/cleanup", {"older_than_days": 0, "dry_run": True})
+    assert cleanup.json()["runs"] == [good]
+    service.controller.recover()
+
+
+def test_failing_recover_keeps_the_loop(service_factory, monkeypatch):
+    def broken(self):
+        raise RuntimeError("recover failed")
+
+    monkeypatch.setattr(Controller, "recover", broken)
+    with service_factory(FakeBackend(finish_after=0.1), poll_s=0.05) as service:
+        run_id = service.submit()["id"]
+        response = service.get(f"/runs/{run_id}/wait", params={"timeout": 5})
+        assert response.json()["state"] == "succeeded"
+
+
+class _Orphaning(FakeBackend):
+    """Creates the workflow, then fails; cancels fail while broken."""
+
+    broken = True
+
+    def submit(self, manifest):
+        super().submit(manifest)
+        raise RuntimeError("timeout")
+
+    def cancel(self, name):
+        if self.broken:
+            raise RuntimeError("api down")
+        super().cancel(name)
+
+
+def test_recover_cancels_orphan(service_factory):
+    backend = _Orphaning()
+    with service_factory(backend) as service:
+        response = service.post(
+            "/runs", {"workflow": service.workflow(), "sources": []}
+        )
+        assert response.status_code == 502
+        (summary,) = service.get("/runs").json()
+        run_id = summary["id"]
+        record = RunStore(service.settings.store).read(run_id)
+        assert record.backend_name == service.name(run_id)
+        assert record.pending_cancel
+    backend.broken = False
+    with service_factory(backend) as service:
+        service.controller.recover()
+        assert ("cancel", service.name(run_id)) in backend.calls
+        assert not RunStore(service.settings.store).read(run_id).pending_cancel
 
 
 WORKFLOW = Workflow(
