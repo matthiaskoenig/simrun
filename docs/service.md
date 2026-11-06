@@ -3,7 +3,7 @@
 The service is the API (FastAPI) which the command line, the MCP server and scripts call, and the controller behind it, which runs the submissions in the background and follows the workflows of the runs. It runs in the cluster as the Deployment `simrun` of `deploy/cluster/simrun.yaml`:
 
 ```bash
-SIMRUN_CONFIG=/etc/simrun/settings.yaml uvicorn --factory simrun.service.app:serve --host 0.0.0.0 --port 8000
+SIMRUN_CONFIG=/etc/simrun/settings.yaml uvicorn --factory simrun.service.app:serve --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 5
 ```
 
 ## Authentication

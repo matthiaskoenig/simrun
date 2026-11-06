@@ -33,4 +33,4 @@ RUN if ls /tmp/plugins/*.whl > /dev/null 2>&1; then \
     fi \
     && rm -rf /tmp/plugins /tmp/constraints.txt
 EXPOSE 8000
-CMD ["uvicorn", "--factory", "simrun.service.app:serve", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "--factory", "simrun.service.app:serve", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5"]

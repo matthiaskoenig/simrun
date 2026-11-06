@@ -66,7 +66,7 @@ The cluster is up. Start the service on the host:
 
   export KUBECONFIG={KUBECONFIG}
   export SIMRUN_CONFIG={SETTINGS}
-  uv run uvicorn --factory simrun.service.app:serve --port 8000
+  uv run uvicorn --factory simrun.service.app:serve --port 8000 --timeout-graceful-shutdown 5
 
 and use it from another shell:
 
