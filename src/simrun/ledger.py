@@ -268,6 +268,14 @@ class Ledger:
         done = len(self._names("done"))
         return LedgerCounts(pending, claimed, done, self.n_units)
 
+    def claims(self) -> dict[str, list[int]]:
+        """The claimed units by worker id, the indices sorted."""
+        claimed: dict[str, list[int]] = {}
+        for name in self._names("claimed"):
+            index, _, worker = name.partition("@")
+            claimed.setdefault(worker, []).append(int(index))
+        return {worker: sorted(units) for worker, units in claimed.items()}
+
     def complete_ledger(self) -> bool:
         """Whether every unit is done."""
         return len(self._names("done")) == self.n_units

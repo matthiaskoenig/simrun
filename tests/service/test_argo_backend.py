@@ -20,7 +20,7 @@ from simrun.service.argo_backend import (
     pod_requests,
     workflow_status,
 )
-from simrun.service.backend import FailedAttempt, PodLog
+from simrun.service.backend import FailedAttempt, Placement, PodLog
 
 WF = "simrun-r1"
 CONFIG = ClusterConfig(registry="k3d-simrun-registry:5000")
@@ -662,3 +662,37 @@ def test_a_workflow_which_exists_is_taken_as_submitted() -> None:
     created, _ = _fake_backend(create_namespaced_custom_object=forbidden)
     with pytest.raises(ApiException):
         created.submit({"metadata": {"name": WF}})
+
+
+def test_placements_of_run_pods() -> None:
+    run = _k8s_pod(
+        "n2",
+        namespace="simrun",
+        containers=[{"cpu": "4", "memory": "6Gi"}],
+        labels={"workflows.argoproj.io/workflow": WF},
+    )
+    run["metadata"]["name"] = "p-extra"
+    run["metadata"]["annotations"] = {
+        "workflows.argoproj.io/node-name": f"{WF}.squares-extra(0:1)"
+    }
+    run["status"] = {"phase": "Running"}
+    other = _k8s_pod("n2", namespace="simrun", containers=[{"cpu": "1"}])
+    created, calls = _fake_backend(
+        list_namespaced_pod=SimpleNamespace(items=[run, other])
+    )
+    assert created.placements() == [
+        Placement(
+            workflow=WF,
+            dag_task="squares-extra",
+            pod="p-extra",
+            node="n2",
+            phase="Running",
+            cores=4.0,
+            memory_gb=6.0,
+        )
+    ]
+    (listing,) = [c for c in calls if c[0] == "list_namespaced_pod"]
+    assert listing[1] == (CONFIG.namespace,)
+    assert listing[2]["field_selector"] == (
+        "status.phase!=Succeeded,status.phase!=Failed"
+    )

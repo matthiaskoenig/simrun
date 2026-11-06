@@ -49,6 +49,29 @@ class PodLog(BaseModel):
     done: bool = True
 
 
+class Placement(BaseModel):
+    """A pod of a run which has not terminated, with its node and requests.
+
+    Attributes:
+        workflow: The backend name of the run.
+        dag_task: The DAG task of the pod: `<task>-w0`, `<task>-extra`,
+            `<task>-merge` or `<task>`.
+        pod: Name of the pod.
+        node: The node the pod is bound to, `None` while it is not.
+        phase: The phase of the pod.
+        cores: The cores the pod requests.
+        memory_gb: The GiB of memory the pod requests.
+    """
+
+    workflow: str
+    dag_task: str
+    pod: str
+    node: str | None
+    phase: str
+    cores: float
+    memory_gb: float
+
+
 class BackendStatus(BaseModel):
     """The state of a workflow in the backend.
 
@@ -107,6 +130,10 @@ class Backend(Protocol):
 
     def nodes(self) -> list[Node]:
         """The nodes of the cluster."""
+        ...
+
+    def placements(self) -> list[Placement]:
+        """The pods of the runs which have not terminated, with nodes and requests."""
         ...
 
     def reserve(self, node: str, run_id: str) -> None:

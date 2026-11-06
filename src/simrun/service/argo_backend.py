@@ -56,6 +56,7 @@ from simrun.service.backend import (
     RETRYING_PHASE,
     BackendStatus,
     FailedAttempt,
+    Placement,
     PodLog,
 )
 from simrun.worker import EXIT_TERMINATED
@@ -548,6 +549,32 @@ class ArgoBackend:
             node_from(n, used.get(n["metadata"]["name"], (0.0, 0.0))) for n in listed
         )
         return [n for n in nodes if n is not None]
+
+    def placements(self) -> list[Placement]:
+        """The pods of the runs which have not terminated, with nodes and requests."""
+        found: list[Placement] = []
+        for pod in self._pods(
+            WORKFLOW_LABEL, "status.phase!=Succeeded,status.phase!=Failed"
+        ):
+            metadata = pod.get("metadata") or {}
+            workflow = (metadata.get("labels") or {}).get(WORKFLOW_LABEL)
+            if workflow is None:
+                continue
+            annotated = (metadata.get("annotations") or {}).get(NODE_ANNOTATION, "")
+            task = annotated.partition(".")[2]
+            cores, memory = pod_requests(pod)
+            found.append(
+                Placement(
+                    workflow=workflow,
+                    dag_task=re.sub(r"\(.*\)$", "", task),
+                    pod=metadata.get("name", ""),
+                    node=(pod.get("spec") or {}).get("nodeName"),
+                    phase=(pod.get("status") or {}).get("phase", "Unknown"),
+                    cores=cores,
+                    memory_gb=memory,
+                )
+            )
+        return found
 
     def _node(self, node: str) -> dict[str, Any]:
         try:
