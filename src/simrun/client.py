@@ -47,8 +47,10 @@ def plan_tasks(workflow: Workflow, types: dict[str, TaskType]) -> Workflow:
     """The workflow with the settings of its tasks planned by their types.
 
     A task whose type is in `types` and has a `plan` gets the settings the plan
-    returns for its validated settings, dumped as JSON; every other task is kept as
-    written, e.g. a task of a type which is not installed locally.
+    returns for its validated settings, the fields which were given or which the
+    plan set, dumped as JSON: the defaults stay with the plugin of the snapshot,
+    which validates the settings in the pods. Every other task is kept as written,
+    e.g. a task of a type which is not installed locally.
 
     Args:
         workflow: The workflow, which is not changed.
@@ -75,7 +77,9 @@ def plan_tasks(workflow: Workflow, types: dict[str, TaskType]) -> Workflow:
         planned = resolve(task_type.plan)(settings)
         logger.debug("task %s planned by %s", task.id, task_type.plan)
         tasks.append(
-            task.model_copy(update={"settings": planned.model_dump(mode="json")})
+            task.model_copy(
+                update={"settings": planned.model_dump(mode="json", exclude_unset=True)}
+            )
         )
     return workflow.model_copy(update={"tasks": tasks})
 
@@ -227,10 +231,14 @@ class Client:
         return {k: TaskEstimate.model_validate(v) for k, v in data.items()}
 
     def validate(self, workflow: Path | Workflow) -> ValidationResult:
-        """Validate a workflow."""
+        """Validate a workflow with its tasks planned, as `submit` submits it.
+
+        Raises:
+            ValueError: The settings of a task are invalid for its local type.
+        """
         if isinstance(workflow, Path):
             workflow = load_workflow(workflow)
-        body = workflow.model_dump(mode="json")
+        body = plan_tasks(workflow, load_task_types()).model_dump(mode="json")
         return ValidationResult.model_validate(
             self._call("POST", "/validate", json=body).json()
         )

@@ -173,8 +173,11 @@ def to_cwl(
             for dep in task.dependencies()
         ]
         if not split[task.id]:
-            image, argv = podspec.unsplit_command(record, task, task_type, STORE)
-            env = _env(record, task, task_type, shape, f"{run_scratch}/{task.id}")
+            scratch = f"{run_scratch}/{task.id}"
+            image, argv = podspec.unsplit_command(
+                record, task, task_type, STORE, scratch
+            )
+            env = _env(record, task, task_type, shape, scratch)
             tool = _tool(task.id, env, shape, image, argv, bool(after))
             steps[task.id] = _step(tool, after)
             outputs[f"{task.id}_log"] = {

@@ -76,7 +76,8 @@ class TaskType:
         checkpoints: Whether the task resumes from checkpoints.
         command: Argv template of unsplit tasks with `{settings}`, `{out}` and
             `{input}`: a part with `{input}` is repeated once per input port of the
-            task, sorted by port, with `<port>=<path>`, and dropped without inputs.
+            task, sorted by port, with `<port>=<path>` (`<scratch>/<port>` for a
+            staged port), and dropped without inputs.
             It runs through `simrun-exec` (see `simrun.worker.exec_main`).
         uses_cores: Whether the command of an unsplit task uses the cores of its pod
             (a pool of processes); else the pod is sized for one process.

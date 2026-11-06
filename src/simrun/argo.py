@@ -312,7 +312,7 @@ def to_argo(
         ] or None
         if not split[task.id]:
             image, argv = podspec.unsplit_command(
-                record, task, task_type, config.store_mount
+                record, task, task_type, config.store_mount, config.scratch_path
             )
             env = _env(record, task, task_type, shape, config)
             name = f"{task.id}-run"

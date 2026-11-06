@@ -113,7 +113,7 @@ def merge_shape(shape: PodShape, base_gb: float) -> PodShape:
 
 
 def unsplit_command(
-    record: RunRecord, task: TaskSpec, task_type: TaskType, store: str
+    record: RunRecord, task: TaskSpec, task_type: TaskType, store: str, scratch: str
 ) -> tuple[str, list[str]]:
     """The image and argv of an unsplit task.
 
@@ -123,7 +123,21 @@ def unsplit_command(
     is the path of the settings file and `{out}` the output directory of the task,
     and a part with `{input}` is repeated once per input port of the task, sorted by
     port, with `{input}` replaced by `<port>=<path>`, the output the port reads as
-    the pod sees it; without inputs the part is dropped.
+    the pod sees it, or `<scratch>/<port>` for a staged port, the copy
+    `simrun-exec` stages; without inputs the part is dropped.
+
+    Args:
+        record: The run.
+        task: The task.
+        task_type: Its type.
+        store: The root of the store as the pod sees it.
+        scratch: The scratch directory of the pod, as in `env_values`.
+
+    Returns:
+        The image and the argv.
+
+    Raises:
+        ValueError: The type is neither splittable nor has a command.
     """
     if task_type.name == COMMAND.name:
         settings = CommandSettings.model_validate(task.settings)
@@ -135,7 +149,9 @@ def unsplit_command(
         )
     directory = task_dir(record, task.id, store)
     inputs = [
-        f"{port}={store}/{output(record, task.inputs[port])}"
+        f"{port}={scratch}/{port}"
+        if port in task.stage
+        else f"{port}={store}/{output(record, task.inputs[port])}"
         for port in sorted(task.inputs)
     ]
     argv = [EXEC_COMMAND]

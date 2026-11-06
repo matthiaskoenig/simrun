@@ -273,6 +273,7 @@ def test_unsplit_command_repeats_input_parts() -> None:
                 "settings": {"n": 1},
                 # sorted by port, not in the order of the workflow
                 "inputs": {"b": "squares.squares", "a": "other.out"},
+                "stage": ["b"],
             },
             {"id": "other", "type": "plot", "settings": {"n": 1}},
         ],
@@ -282,7 +283,8 @@ def test_unsplit_command_repeats_input_parts() -> None:
     manifest = to_argo(record, plans, {**TYPES, "plot": plot}, CONFIG)
     run = f"/store/runs/{RUN}/tasks"
     a = f"a={run}/other/out/out"
-    b = f"b={run}/squares/out/squares"
+    # a staged port is the copy `simrun-exec` stages into the scratch
+    b = "b=/scratch/b"
     assert _template(manifest, "plot")["container"]["command"] == [
         "simrun-exec",
         "plot",
