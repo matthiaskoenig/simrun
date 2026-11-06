@@ -139,7 +139,8 @@ def test_index_is_rebuilt_at_the_start(service_factory, tmp_path):
     db.unlink()
     for suffix in ("-wal", "-shm"):
         db.with_name(db.name + suffix).unlink(missing_ok=True)
-    with service_factory() as restarted:
+    # the same backend: the workflow of the run still exists for the controller
+    with service_factory(service.backend) as restarted:
         listed = restarted.get("/runs", params={"group": "g1"}).json()
         assert [r["id"] for r in listed] == [run_id]
         assert restarted.store.index.live_ids() == [run_id]
