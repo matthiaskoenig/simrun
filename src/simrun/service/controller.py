@@ -253,6 +253,9 @@ class Controller:
             max_workers=SUBMIT_WORKERS, thread_name_prefix="simrun-submit"
         )
         self._in_flight: set[str] = set()
+        # resolves, builds and submits a run from its record (`Submitter.run`); a
+        # submission a stopped service left is resumed with it
+        self.resume: Callable[[str], None] | None = None
 
     def start_submission(self, run_id: str, job: Callable[[str], None]) -> None:
         """Run the submission of a run in the background, see `in_flight`.
@@ -285,12 +288,13 @@ class Controller:
             return run_id in self._in_flight
 
     def close(self) -> None:
-        """Wait for the running submissions; the ones not started are dropped.
+        """Stop taking submissions, without waiting for the running ones.
 
-        A dropped run stays submitting and fails at the next start of the service
-        (`recover`).
+        A build may take an hour; the pod of the service is killed long before.
+        A run left submitting is resumed at the next start of the service
+        (`recover`), from its record.
         """
-        self._submissions.shutdown(wait=True, cancel_futures=True)
+        self._submissions.shutdown(wait=False, cancel_futures=True)
 
     def _submission_failed(self, run_id: str, message: str) -> None:
         """Fail a run which is still submitting."""
@@ -317,11 +321,13 @@ class Controller:
         """Settle what a stopped service left: called at the start of the service.
 
         The service is one process, so a run submitting since before the controller
-        started has lost its submission: it fails, its workflow (named before the
-        submission) is cancelled and its node released. A submission created later
-        may be in flight (the API accepts runs while this runs) and is left to
-        `reconcile`, which never fails a submission running in this process. A record which is not terminal and has no workflow name
-        was written before names were stored, and fails too. The pending releases and
+        started has lost its submission: it is resumed from its record
+        (`resume`, idempotent: an image which was built is found, a node reserved
+        for the run is kept, a workflow which was created is taken as submitted).
+        A submission created later may be in flight (the API accepts runs while this
+        runs) and is left to `reconcile`, which never fails a submission running in
+        this process. A record which is not terminal and has no workflow name was
+        written before names were stored, and fails. The pending logs, releases and
         cancellations of terminal runs are retried.
         """
         for run_id in self.store.index.live_ids():
@@ -332,11 +338,19 @@ class Controller:
 
     def _recover(self, run_id: str) -> None:
         record = self.store.read(run_id)
-        lost = record.state == RunState.SUBMITTING and record.created < self.started
-        if lost or (
-            record.state not in TERMINAL_RUN_STATES and record.backend_name is None
-        ):
+        if record.state not in TERMINAL_RUN_STATES and record.backend_name is None:
             self._submission_lost(record)
+        elif (
+            record.state == RunState.SUBMITTING
+            and record.created < self.started
+            and not self.in_flight(run_id)
+        ):
+            if self.resume is None:
+                self._submission_lost(record)
+            else:
+                logger.info("resuming the submission of run %s", run_id)
+                self.start_submission(run_id, self.resume)
+                return
         self.settle(run_id)
 
     def _submission_lost(self, record: RunRecord) -> None:

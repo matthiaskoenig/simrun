@@ -89,9 +89,12 @@ class FakeBackend:
         self._submitted: dict[str, float] = {}
 
     def submit(self, manifest: dict[str, Any]) -> str:
-        """Accept a workflow, pending without nodes."""
+        """Accept a workflow, pending without nodes; one which exists is kept."""
         name = manifest["metadata"]["name"]
         with self._lock:
+            if name in self.manifests:
+                self.calls.append(("submit", name))
+                return name
             self.manifests[name] = manifest
             self._status[name] = BackendStatus(phase="Pending", tasks={})
             self._submitted[name] = time.monotonic()

@@ -477,15 +477,28 @@ def test_young_submission_is_left_alone(service):
 
 
 @pytest.mark.parametrize("age_s", [0.001, SUBMIT_GRACE_S + 1])
-def test_recover_fails_lost_submission(service, age_s):
-    # created before the controller started: no submission of it is in flight
+def test_recover_resumes_a_lost_submission(service, age_s):
+    # created before the controller started: no submission of it is in flight in
+    # this process, so the controller resumes it from its record
     run_id = _submitting(service, age_s, since=service.controller.started)
+    service.controller.recover()
+    record = service.submitted(run_id)
+    assert record["state"] == "queued", record["message"]
+    name = service.name(run_id)
+    assert ("cancel", name) not in service.backend.calls
+    assert service.backend.manifests[name]["metadata"]["name"] == name
+    (node,) = [n for n in service.backend.nodes() if n.name == "srv-02"]
+    assert node.reserved_by == run_id
+
+
+def test_recover_fails_a_run_without_a_workflow_name(service):
+    run_id = _submitting(service, 1.0, since=service.controller.started)
+    record = service.store.read(run_id)
+    service.store.write(record.model_copy(update={"backend_name": None}))
     service.controller.recover()
     record = service.store.read(run_id)
     assert record.state == "failed"
     assert "submission" in (record.message or "")
-    assert not record.pending_cancel and record.pending_release is None
-    assert ("cancel", service.name(run_id)) in service.backend.calls
     assert ("unreserve", "srv-02", run_id) in service.backend.calls
 
 

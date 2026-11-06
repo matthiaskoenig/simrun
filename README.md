@@ -232,8 +232,10 @@ image built and the workflow submitted in the background, in a pool of the
 controller; a failure lands in the record (the run fails with the message). Two
 submissions of the same new environment build its image once. The grace after which
 the controller takes a submission which does not run in the service any more as lost
-(120 s) counts from the end of the build (`built` of the record); a run submitting
-when the service stopped fails at its next start. The client, the CLI and the MCP
+(120 s) counts from the end of the build (`built` of the record). The service does
+not wait for the builds when it stops: a run submitting when the service stopped is
+resumed at its next start from its record (an image which was pushed is found, a
+reserved node kept, a workflow which was created taken as submitted). The client, the CLI and the MCP
 show the state `submitting` until the run is queued.
 
 ## Environments
