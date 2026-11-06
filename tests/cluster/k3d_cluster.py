@@ -216,8 +216,9 @@ def build_image() -> tuple[str, Path]:
 def build_service_image(wheel: Path, plugins: list[Path]) -> str:
     """Build the image of the service from `deploy/service/Dockerfile` with docker.
 
-    The context as the README describes it: the requirements of the lock of simrun,
-    its wheel and the wheels of the plugins; the base is the mirror of the base image
+    The context as the README describes it: the requirements of the lock of simrun
+    (with hashes, and without as the constraints of the plugins), its wheel and the
+    wheels of the plugins; the base is the mirror of the base image
     of the environments.
 
     Returns:
@@ -225,7 +226,7 @@ def build_service_image(wheel: Path, plugins: list[Path]) -> str:
     """
     with tempfile.TemporaryDirectory(prefix="simrun-service-") as tmp:
         context = Path(tmp)
-        requirements = _run(
+        export = [
             "uv",
             "export",
             "--frozen",
@@ -235,8 +236,9 @@ def build_service_image(wheel: Path, plugins: list[Path]) -> str:
             "--no-annotate",
             "--project",
             REPO,
-        )
-        (context / "requirements.txt").write_text(requirements)
+        ]
+        (context / "requirements.txt").write_text(_run(*export))
+        (context / "constraints.txt").write_text(_run(*export, "--no-hashes"))
         shutil.copy2(wheel, context / wheel.name)
         (context / "plugins").mkdir()
         for plugin in plugins:
