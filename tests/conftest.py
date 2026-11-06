@@ -1,12 +1,15 @@
+import subprocess
 from collections.abc import Callable, Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 import yaml
 from fastapi.testclient import TestClient
 
+from simrun.client import Client
 from simrun.config import ClusterConfig
 from simrun.demo import SQUARES
 from simrun.plugins_builtin import COMMAND
@@ -111,3 +114,67 @@ def service(
 ) -> Iterator[Service]:
     with service_factory() as svc:
         yield svc
+
+
+class InProcessTransport(httpx.BaseTransport):
+    """Sends the requests of an `httpx.Client` to the app of a `TestClient`."""
+
+    def __init__(self, client: TestClient) -> None:
+        self.client = client
+        self.requests: list[httpx.Request] = []
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        response = self.client.request(
+            request.method,
+            request.url.raw_path.decode(),
+            content=request.content,
+            headers={k: v for k, v in request.headers.items() if k.lower() != "host"},
+        )
+        return httpx.Response(
+            response.status_code,
+            headers={
+                k: v
+                for k, v in response.headers.items()
+                if k.lower() not in ("content-length", "content-encoding")
+            },
+            content=response.content,
+        )
+
+
+@pytest.fixture
+def make_client(
+    tmp_path: Path,
+) -> Callable[..., Client]:
+    """A `Client` of a running `Service`: `make_client(service, token=, transport=)`."""
+
+    def factory(
+        service: Service,
+        token: str = "t-mk",
+        transport: httpx.BaseTransport | None = None,
+    ) -> Client:
+        return Client(
+            "http://testserver",
+            token,
+            service.settings.store,
+            transport or InProcessTransport(service.client),
+        )
+
+    return factory
+
+
+@pytest.fixture
+def repo(tmp_path: Path) -> Path:
+    """A git repository with a model file."""
+    path = tmp_path / "model"
+    path.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "a@b.c"],
+        ["config", "user.name", "T"],
+    ):
+        subprocess.run(["git", "-C", str(path), *args], check=True)
+    (path / "model.txt").write_text("model\n")
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "init"], check=True)
+    return path
