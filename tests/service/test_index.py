@@ -1,3 +1,5 @@
+import logging
+import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -143,4 +145,51 @@ def test_index_is_rebuilt_at_the_start(service_factory, tmp_path):
     with service_factory(service.backend) as restarted:
         listed = restarted.get("/runs", params={"group": "g1"}).json()
         assert [r["id"] for r in listed] == [run_id]
+        assert restarted.store.index.live_ids() == [run_id]
+
+
+def test_a_failed_index_write_is_retried(service, monkeypatch):
+    index = service.store.index
+    original = RunIndex.put
+
+    def locked(self, record):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(RunIndex, "put", locked)
+    # the record is written, the submission and the controller go on
+    run_id = service.submit()["id"]
+    assert service.store.read(run_id).state == "queued"
+    name = service.name(run_id)
+    service.backend.start(name)
+    service.backend.set_node(name, "squares-merge", "Succeeded")
+    service.controller.reconcile()
+    assert service.store.read(run_id).state == "succeeded"
+    # the run ended: the workflow is stopped although its index row was not written
+    assert ("stop", name) in service.backend.calls
+    assert index.runs() == []
+    monkeypatch.setattr(RunIndex, "put", original)
+    # the next poll indexes the run from its record
+    service.controller.reconcile()
+    (run,) = index.runs()
+    assert (run.summary.id, run.summary.state) == (run_id, "succeeded")
+
+
+def test_a_record_which_cannot_be_read_at_the_start_is_followed(
+    service_factory, caplog
+):
+    with service_factory() as service:
+        run_id = service.submit()["id"]
+    record = service.run_dir(run_id) / "run.json"
+    good = record.read_text()
+    record.write_text("{")
+    with service_factory(service.backend) as restarted:
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            restarted.controller.reconcile()
+            restarted.controller.reconcile()
+        warned = [r for r in caplog.records if run_id in r.getMessage()]
+        assert len(warned) >= 2  # at every poll
+        assert restarted.store.index.runs() == []
+        record.write_text(good)
+        restarted.controller.reconcile()
         assert restarted.store.index.live_ids() == [run_id]
