@@ -23,7 +23,7 @@ from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 
 import yaml
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
@@ -487,19 +487,44 @@ class _Service:
         except Exception as error:
             self._abort(record, error)
             raise HTTPException(502, f"submitting the run failed: {error}") from error
+        ended = False
         with self.controller.lock:
-            current = self.store.read(record.id)
-            ended = current.state in TERMINAL_RUN_STATES
-            if ended:  # cancelled or failed while it was submitted: cancel it
-                current = current.model_copy(update={"pending_cancel": True})
-            else:
-                current = current.model_copy(update={"state": RunState.QUEUED})
-            self.store.write(current)
+            try:
+                current = self.store.read(record.id)
+            except KeyError:
+                current = None
+            if current is not None:
+                ended = current.state in TERMINAL_RUN_STATES
+                if ended:  # cancelled or failed while it was submitted: cancel it
+                    current = current.model_copy(update={"pending_cancel": True})
+                else:
+                    current = current.model_copy(update={"state": RunState.QUEUED})
+                self.store.write(current)
+        if current is None:
+            self._deleted_while_submitted(record)
         if ended:
             self.controller.settle(record.id)
             current = self.store.read(record.id)
         logger.info("run %s submitted by %s", record.id, identity.name)
         return current
+
+    def _deleted_while_submitted(self, record: RunRecord) -> NoReturn:
+        """Cancel the workflow of a run cancelled and deleted during its submission.
+
+        Raises:
+            HTTPException: 409, the run is gone.
+        """
+        name = record.backend_name
+        if name is not None:
+            try:
+                self.backend.cancel(name)
+            except KeyError:
+                pass
+            except Exception:
+                logger.exception("cancelling the orphan workflow %s failed", name)
+        raise HTTPException(
+            409, f"run {record.id} was cancelled and deleted while it was submitted"
+        )
 
     def _write(self, record: RunRecord, lock: str | None) -> None:
         with self.controller.lock:
