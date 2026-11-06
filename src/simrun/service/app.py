@@ -273,6 +273,11 @@ def disk_usage(path: Path) -> int:
     return sum(sizes.values())
 
 
+def _pending(record: RunRecord) -> bool:
+    """Whether a run still has to release its node or cancel its workflow."""
+    return record.pending_release is not None or record.pending_cancel
+
+
 def _last_line(path: Path) -> dict[str, Any] | None:
     """The last line of a JSON lines file, None without one."""
     try:
@@ -455,7 +460,7 @@ class _Service:
             sources=request.sources,
             image=image,
             reserve=reserve,
-            state=RunState.QUEUED,
+            state=RunState.SUBMITTING,
             tasks=dict.fromkeys((t.id for t in workflow.tasks), TaskState.WAITING),
             plans={k: dataclasses.asdict(p) for k, p in plans.items()},
             backend_name=None,
@@ -484,11 +489,13 @@ class _Service:
             raise HTTPException(502, f"submitting the run failed: {error}") from error
         with self.controller.lock:
             current = self.store.read(record.id)
-            cancelled = current.state == RunState.CANCELLED
-            if cancelled:  # cancelled while it was submitted: cancel it again
+            ended = current.state in TERMINAL_RUN_STATES
+            if ended:  # cancelled or failed while it was submitted: cancel it
                 current = current.model_copy(update={"pending_cancel": True})
-                self.store.write(current)
-        if cancelled:
+            else:
+                current = current.model_copy(update={"state": RunState.QUEUED})
+            self.store.write(current)
+        if ended:
             self.controller.settle(record.id)
             current = self.store.read(record.id)
         logger.info("run %s submitted by %s", record.id, identity.name)
@@ -530,7 +537,7 @@ class _Service:
             logger.exception("writing the failed record of run %s failed", record.id)
             if record.reserve is not None:
                 with suppress(Exception):
-                    self.backend.unreserve(record.reserve)
+                    self.backend.unreserve(record.reserve, record.id)
             return
         self.controller.settle(record.id)
 
@@ -614,6 +621,14 @@ class _Service:
                         409, f"run {run_id} is {record.state}, not ended"
                     )
                 return None
+            if _pending(record):
+                if check:
+                    raise HTTPException(
+                        409,
+                        f"run {run_id} still has to release its node or cancel its "
+                        "workflow",
+                    )
+                return None
             trash = self.store.root / "runs" / f"{TRASH_PREFIX}{run_id}-{os.getpid()}"
             os.rename(self.store.run_dir(run_id), trash)
         return trash
@@ -664,6 +679,7 @@ class _Service:
             and (r.finished or r.created) <= cutoff
             and (request.group is None or r.group == request.group)
             and (not request.failed_only or r.state == RunState.FAILED)
+            and not _pending(r)
         ]
         kept = [r for r in records if r.id not in chosen]
         snapshots = self._unreferenced_snapshots(kept, cutoff)

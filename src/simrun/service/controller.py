@@ -50,6 +50,8 @@ TERMINAL_RUN_STATES = frozenset(
 FINAL_TASK_STATES = frozenset({TaskState.DONE, TaskState.FAILED, TaskState.SKIPPED})
 FAILED_PHASES = frozenset({"Failed", "Error"})
 SKIPPED_PHASES = frozenset({"Skipped", "Omitted"})
+# seconds a run may stay submitting before the controller takes the submission as lost
+SUBMIT_GRACE_S = 120.0
 # a marker per report of a task recorded as an observation
 RECORDED_DIR = "recorded"
 # a report whose peak memory reached this fraction of its limit was out of memory
@@ -214,9 +216,11 @@ class Controller:
     def recover(self) -> None:
         """Settle what a stopped service left: called at the start of the service.
 
-        A record which is not terminal and has no workflow name was written before
-        names were stored, and fails; the pending releases and cancellations of
-        terminal runs, e.g. of an orphan workflow of a failed submission, are retried.
+        No submission is in flight when the service starts (it is one process), so
+        every submitting run failed: its workflow (named before the submission) is
+        cancelled and its node released. A record which is not terminal and has no
+        workflow name was written before names were stored, and fails too. The
+        pending releases and cancellations of terminal runs are retried.
         """
         for run_id in run_ids(self.store):
             try:
@@ -226,13 +230,25 @@ class Controller:
 
     def _recover(self, run_id: str) -> None:
         record = self.store.read(run_id)
-        if record.state not in TERMINAL_RUN_STATES and record.backend_name is None:
-            logger.warning("run %s was not submitted, it fails", run_id)
-            message = "the service stopped while the run was submitted"
-            self._write_if_unchanged(
-                record, _closed(record, RunState.FAILED, record.tasks, message)
-            )
+        if record.state == RunState.SUBMITTING or (
+            record.state not in TERMINAL_RUN_STATES and record.backend_name is None
+        ):
+            self._submission_lost(record)
         self.settle(run_id)
+
+    def _submission_lost(self, record: RunRecord) -> None:
+        """Fail a run whose submission did not complete, and settle it."""
+        logger.warning("the submission of run %s did not complete, it fails", record.id)
+        message = "the submission of the run did not complete"
+        failed = _closed(
+            record,
+            RunState.FAILED,
+            record.tasks,
+            message,
+            pending_cancel=record.backend_name is not None,
+        )
+        if self._write_if_unchanged(record, failed):
+            self.settle(record.id)
 
     def reconcile(self) -> None:
         """Bring every record up to date with the backend, one run at a time."""
@@ -247,6 +263,11 @@ class Controller:
         if record.state in TERMINAL_RUN_STATES:
             self.settle(run_id)
             return
+        if record.state == RunState.SUBMITTING:
+            age = (datetime.now(UTC) - record.created).total_seconds()
+            if age >= SUBMIT_GRACE_S:
+                self._submission_lost(record)
+            return  # a submission in flight: its workflow may not exist yet
         name = record.backend_name
         if name is None:
             return
@@ -357,9 +378,14 @@ class Controller:
     def settle(self, run_id: str) -> None:
         """Retry the pending release and cancellation of a terminal run.
 
-        An unknown node counts as released and an unknown workflow as cancelled.
+        An unknown node counts as released and an unknown workflow as cancelled; a
+        node is released only from the reservation of this run. A run which was
+        deleted meanwhile is ignored.
         """
-        record = self.store.read(run_id)
+        try:
+            record = self.store.read(run_id)
+        except KeyError:
+            return
         if record.state not in TERMINAL_RUN_STATES:
             return
         cancelled = not record.pending_cancel or record.backend_name is None
@@ -376,7 +402,7 @@ class Controller:
         released = record.pending_release is None
         if record.pending_release is not None:
             try:
-                self.backend.unreserve(record.pending_release)
+                self.backend.unreserve(record.pending_release, record.id)
                 released = True
             except KeyError:
                 logger.info(

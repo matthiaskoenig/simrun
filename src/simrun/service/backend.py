@@ -62,11 +62,22 @@ class Backend(Protocol):
         ...
 
     def reserve(self, node: str, run_id: str) -> None:
-        """Reserve a node for a run: taint `simrun/reserved=<run id>` and label."""
+        """Reserve a node for a run.
+
+        The node gets the taint `simrun/reserved=<run id>:NoExecute` and the label
+        `simrun/reserved=<run id>`.
+        """
         ...
 
-    def unreserve(self, node: str) -> None:
-        """Remove the taint and the label of a reservation."""
+    def unreserve(self, node: str, run_id: str) -> None:
+        """Remove the taint and the label of the reservation of a run.
+
+        A node reserved by another run (or by none) is left as it is, so a late
+        release never removes the reservation of a later run.
+
+        Raises:
+            KeyError: The node does not exist.
+        """
         ...
 
     def build_image(self, context: Path, ref: str) -> None:

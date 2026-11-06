@@ -26,6 +26,7 @@ RECORD_FILE = "run.json"
 class RunState(StrEnum):
     """State of a run."""
 
+    SUBMITTING = "submitting"
     QUEUED = "queued"
     RUNNING = "running"
     SUCCEEDED = "succeeded"
