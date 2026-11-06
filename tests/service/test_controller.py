@@ -295,6 +295,13 @@ def test_task_states():
     assert _states(b="Failed")["b"] == TaskState.FAILED
 
 
+def test_preempted_task_states():
+    assert _states(**{"a-w0": "Preempted"})["a"] == TaskState.PREEMPTED
+    running = _states(**{"a-w0": "Running", "a-extra(0:1)": "Preempted"})
+    assert running["a"] == TaskState.RUNNING
+    assert _states(b="Preempted")["b"] == TaskState.PREEMPTED
+
+
 def test_late_release_keeps_a_later_reservation(service_factory):
     with service_factory(_BrokenRelease()) as service:
         run_id = service.submit(reserve="srv-02")["id"]

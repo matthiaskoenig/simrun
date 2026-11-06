@@ -1,0 +1,60 @@
+# The cluster of the integration tests on k3d (`tests/cluster`): the store is a
+# hostPath which k3d mounts from the host into every node, the registry is the one of
+# k3d (`k3d-simrun-registry:5000`, no Zot), the service runs in the process of the
+# tests (the Deployment has no replica), and the infrastructure runs on the server
+# node, which is tainted for the pods of the runs; the quotas are the allocatable
+# resources of the three agents.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../cluster
+  - store.yaml
+patches:
+  - path: store-claim.yaml
+  - path: buildkit.yaml
+  - path: quotas.yaml
+  - target:
+      kind: Deployment
+    path: on-server.yaml
+  - patch: |-
+      $patch: delete
+      apiVersion: storage.k8s.io/v1
+      kind: StorageClass
+      metadata:
+        name: simrun-nfs
+  - patch: |-
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: zot
+        namespace: simrun
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: zot
+        namespace: simrun
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: zot-data
+        namespace: simrun
+  - patch: |-
+      $patch: delete
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: zot-config
+        namespace: simrun
+  - patch: |-
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: simrun
+        namespace: simrun
+      spec:
+        replicas: 0

@@ -1,0 +1,38 @@
+# The cluster of simrun: Kueue, Argo Workflows, the run store, the registry, BuildKit
+# and the service. Apply with `kubectl apply --server-side -k deploy/cluster` after
+# setting the NFS export of the store in `store-settings.yaml`; the custom resources
+# of Kueue are accepted once its CRDs and its webhook are up, so a first apply may
+# have to be repeated.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - priority-classes.yaml
+  - kueue
+  - argo
+  - store-settings.yaml
+  - store.yaml
+  - zot.yaml
+  - buildkit.yaml
+  - simrun.yaml
+replacements:
+  - source:
+      kind: ConfigMap
+      name: simrun-store-settings
+      fieldPath: data.server
+    targets:
+      - select:
+          kind: StorageClass
+          name: simrun-nfs
+        fieldPaths:
+          - parameters.server
+  - source:
+      kind: ConfigMap
+      name: simrun-store-settings
+      fieldPath: data.share
+    targets:
+      - select:
+          kind: StorageClass
+          name: simrun-nfs
+        fieldPaths:
+          - parameters.share

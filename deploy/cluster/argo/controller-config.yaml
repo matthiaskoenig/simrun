@@ -1,0 +1,19 @@
+# The executor (init and wait containers) requests what it limits: Kueue admits a pod
+# by the requests of all its containers and the limits equal the requests for every
+# pod of simrun. The init container copies the argoexec binary (about 150 MB) into
+# the pod, whose page cache counts against its limit: with 128Mi it was killed for
+# memory now and then. `simrun.service.argo_backend.EXECUTOR_CPU` and `EXECUTOR_MEMORY_GB`
+# are these values.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: workflow-controller-configmap
+data:
+  executor: |
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 100m
+        memory: 256Mi

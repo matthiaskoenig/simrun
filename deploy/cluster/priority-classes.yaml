@@ -1,0 +1,88 @@
+# The priorities of the pods of simrun, `simrun.planner.PRIORITY_VALUES`: a Kueue
+# WorkloadPriorityClass (admission and preemption by Kueue) and a Kubernetes
+# PriorityClass of the same name and value (the order of the pods on a node).
+# The scheduler never preempts (`preemptionPolicy: Never`), Kueue does.
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: simrun-owner-base
+value: 1000
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: simrun-owner-base
+value: 1000
+preemptionPolicy: Never
+globalDefault: false
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: simrun-owner-extra
+value: 900
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: simrun-owner-extra
+value: 900
+preemptionPolicy: Never
+globalDefault: false
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: simrun-standard-base
+value: 500
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: simrun-standard-base
+value: 500
+preemptionPolicy: Never
+globalDefault: false
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: simrun-standard-extra
+value: 400
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: simrun-standard-extra
+value: 400
+preemptionPolicy: Never
+globalDefault: false
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: simrun-agent-base
+value: 200
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: simrun-agent-base
+value: 200
+preemptionPolicy: Never
+globalDefault: false
+---
+apiVersion: kueue.x-k8s.io/v1beta2
+kind: WorkloadPriorityClass
+metadata:
+  name: simrun-agent-extra
+value: 100
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: simrun-agent-extra
+value: 100
+preemptionPolicy: Never
+globalDefault: false

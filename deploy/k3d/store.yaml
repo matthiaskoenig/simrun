@@ -1,0 +1,16 @@
+# The store of the tests: `.tools/k3d/store` of the repository, mounted by k3d at
+# /var/simrun/store in every node.
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: simrun-store-k3d
+spec:
+  capacity:
+    storage: 10Gi
+  accessModes:
+    - ReadWriteMany
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: ""
+  hostPath:
+    path: /var/simrun/store
+    type: Directory

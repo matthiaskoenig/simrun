@@ -1,0 +1,187 @@
+# The service of simrun: the API (`uvicorn --factory simrun.service.app:serve`) and
+# the controller, on the run store and a local volume for its SQLite file, with the
+# rights of `simrun.service.argo_backend.ArgoBackend`. The image of the service is
+# simrun with its dependencies, pushed to the registry; the tokens are a Secret
+# (`simrun.service.auth.load_tokens`).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: simrun
+  namespace: simrun
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: simrun
+  namespace: simrun
+rules:
+  - apiGroups: ["argoproj.io"]
+    resources: ["workflows"]
+    verbs: ["create", "get", "list", "watch", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create", "delete", "patch"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: simrun
+  namespace: simrun
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: simrun
+subjects:
+  - kind: ServiceAccount
+    name: simrun
+    namespace: simrun
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: simrun-nodes
+rules:
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: simrun-nodes
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: simrun-nodes
+subjects:
+  - kind: ServiceAccount
+    name: simrun
+    namespace: simrun
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: simrun-config
+  namespace: simrun
+data:
+  settings.yaml: |
+    store: /store
+    db: /var/lib/simrun/resources.sqlite
+    tokens: /etc/simrun/tokens/tokens.yaml
+    owner: mk
+    simrun_wheel: /opt/simrun/simrun-0.1.0-py3-none-any.whl
+    backend: simrun.service.argo_backend:backend
+    cluster:
+      registry: registry.cluster.internal:5000
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: simrun-tokens
+  namespace: simrun
+stringData:
+  tokens.yaml: |
+    # <token>: {name: <person or agent>, kind: person|agent, owner: <person>}
+    {}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: simrun-db
+  namespace: simrun
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: simrun
+  namespace: simrun
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: simrun
+  template:
+    metadata:
+      labels:
+        app: simrun
+    spec:
+      serviceAccountName: simrun
+      containers:
+        - name: simrun
+          image: registry.cluster.internal:5000/simrun-service:0.1.0
+          command:
+            - uvicorn
+            - --factory
+            - simrun.service.app:serve
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8000"
+          env:
+            - name: SIMRUN_CONFIG
+              value: /etc/simrun/settings.yaml
+          ports:
+            - containerPort: 8000
+              name: http
+          resources:
+            requests:
+              cpu: "1"
+              memory: 1Gi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/simrun/settings.yaml
+              subPath: settings.yaml
+            - name: tokens
+              mountPath: /etc/simrun/tokens
+              readOnly: true
+            - name: store
+              mountPath: /store
+            - name: db
+              mountPath: /var/lib/simrun
+      volumes:
+        - name: config
+          configMap:
+            name: simrun-config
+        - name: tokens
+          secret:
+            secretName: simrun-tokens
+        - name: store
+          persistentVolumeClaim:
+            claimName: simrun-store
+        - name: db
+          persistentVolumeClaim:
+            claimName: simrun-db
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: simrun
+  namespace: simrun
+spec:
+  selector:
+    app: simrun
+  ports:
+    - name: http
+      port: 80
+      targetPort: 8000
