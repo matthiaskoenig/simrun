@@ -554,3 +554,24 @@ def test_cancel_before_the_reservation_releases_the_node(service):
     (node,) = [n for n in backend.nodes() if n.name == "srv-02"]
     assert node.reserved_by is None
     assert ("cancel", service.name(record["id"])) in backend.calls
+
+
+def test_observations_are_kept_apart_by_the_cost_setting(service):
+    workflow = {
+        "name": "s",
+        "tasks": [
+            {"id": "fit", "type": "demo.subset", "settings": {"n": 4, "subset": "a"}}
+        ],
+    }
+    run_id = service.submit(workflow=workflow)["id"]
+    write_report(_report("fit-w0", 2.0), service.run_dir(run_id) / "tasks/fit", 0)
+    service.backend.finish(service.name(run_id))
+    service.controller.reconcile()
+    hint = service.controller.types["demo.subset"].hint
+    resources = ResourceStore(service.settings.db)
+    assert resources.resolve(ResourceKey("demo.subset", "", "a"), hint, None).samples
+    # the service resolves a submission of the same subset from it, not another one
+    for subset, source in (("a", "learned from 1 runs"), ("b", "plugin hint")):
+        workflow["tasks"][0]["settings"]["subset"] = subset
+        estimate = service.post("/estimate", {"workflow": workflow, "sources": []})
+        assert estimate.json()["fit"]["resources"]["source"] == source

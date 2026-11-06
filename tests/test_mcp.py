@@ -78,6 +78,9 @@ async def test_mcp_submit_and_wait(
             assert (Path(status["store"]) / snapshot / "model.txt").is_file()
             listed = await call(mcp, "list_runs", state="succeeded")
             assert [r["id"] for r in listed["runs"]] == [run_id]
+            mine = await call(mcp, "list_runs", owner="mk")
+            assert [r["id"] for r in mine["runs"]] == [run_id]
+            assert (await call(mcp, "list_runs", owner="alice"))["runs"] == []
             assert (
                 "squares"
                 in (await call(mcp, "run_progress", run_id=run_id))["progress"]

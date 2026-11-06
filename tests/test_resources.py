@@ -1,13 +1,15 @@
 from pathlib import Path
 
 import pytest
+from pydantic import BaseModel
 
-from simrun.plugins import ResourceHint
+from simrun.plugins import ResourceHint, TaskType
 from simrun.resources import (
     DEFAULT_PER_WORKER_GB,
     WINDOW,
     ResourceKey,
     ResourceStore,
+    resource_key,
 )
 from simrun.worker import WorkerReport
 from simrun.workflow import ResourceOverride
@@ -178,3 +180,22 @@ def test_store_of_an_older_schema_is_migrated(tmp_path: Path) -> None:
     store = ResourceStore(db)
     store.record(KEY, report(2 + 4.6 * 36), base_gb=2.0, run="r1")
     assert store.resolve(KEY, ResourceHint(), None).samples == 2
+
+
+class _FitSettings(BaseModel):
+    subset: str = "all"
+    data: list[int] = [1, 2]
+    n: int = 1
+
+
+def test_resource_key_from_the_cost_setting() -> None:
+    plain = TaskType(name="fit", settings=_FitSettings)
+    assert resource_key(plain, {"subset": "a"}, "hctz") == ResourceKey("fit", "hctz")
+    by_subset = TaskType(name="fit", settings=_FitSettings, cost_setting="subset")
+    assert resource_key(by_subset, {"subset": "a", "n": 3}, "hctz") == ResourceKey(
+        "fit", "hctz", "a"
+    )
+    # the default of the setting when it is not given
+    assert resource_key(by_subset, {}, "hctz").variant == "all"
+    by_data = TaskType(name="fit", settings=_FitSettings, cost_setting="data")
+    assert resource_key(by_data, {"data": [3]}, "").variant == "[3]"

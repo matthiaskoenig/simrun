@@ -40,6 +40,8 @@ def test_submit_snapshots_then_posts(service, make_client, repo: Path) -> None:
     assert (service.settings.store / source.snapshot / "model.txt").is_file()
     assert record.group == "study"
     assert [s.id for s in client.list_runs(group="study")] == [summary.id]
+    assert [s.id for s in client.list_runs(owner="mk")] == [summary.id]
+    assert client.list_runs(owner="alice") == []
 
 
 def test_submit_refused_has_detail(service, make_client) -> None:

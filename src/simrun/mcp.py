@@ -96,13 +96,19 @@ def build_server(client: Client) -> FastMCP:
 
     @server.tool
     def list_runs(
-        group: str | None = None, agent: str | None = None, state: str | None = None
+        group: str | None = None,
+        agent: str | None = None,
+        state: str | None = None,
+        owner: str | None = None,
     ) -> dict[str, Any]:
-        """The runs, filtered by group, agent and state."""
+        """The runs, filtered by group, agent, state and owner.
+
+        The runs of an owner include the ones of their agents.
+        """
         return answer(
             lambda: {
                 "runs": client.list_runs(
-                    group, agent, RunState(state) if state else None
+                    group, agent, RunState(state) if state else None, owner
                 )
             }
         )

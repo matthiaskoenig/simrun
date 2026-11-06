@@ -82,6 +82,9 @@ class TaskType:
         compute_unit: Reference to the function computing one unit.
         merge: Reference to the function merging the units.
         image: Image of the task, None for the environment image of the run.
+        cost_setting: Name of the setting which changes the cost of a task, e.g. the
+            subset of the data of a fit; the resources are learned per value of it
+            (`simrun.resources.resource_key`).
     """
 
     name: str
@@ -97,6 +100,7 @@ class TaskType:
     compute_unit: str | None = None
     merge: str | None = None
     image: str | None = None
+    cost_setting: str | None = None
 
     @property
     def splittable(self) -> bool:

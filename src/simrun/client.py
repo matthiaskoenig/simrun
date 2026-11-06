@@ -253,13 +253,11 @@ class Client:
         group: str | None = None,
         agent: str | None = None,
         state: RunState | None = None,
+        owner: str | None = None,
     ) -> list[RunSummary]:
-        """The runs, filtered."""
-        params = {
-            k: v
-            for k, v in {"group": group, "agent": agent, "state": state}.items()
-            if v is not None
-        }
+        """The runs, filtered by group, agent, state and owner."""
+        filters = {"group": group, "agent": agent, "state": state, "owner": owner}
+        params = {k: v for k, v in filters.items() if v is not None}
         data = self._call("GET", "/runs", params=params).json()
         return [RunSummary.model_validate(r) for r in data]
 

@@ -51,6 +51,9 @@ def test_cli_submit_list_status_compare(cli, repo: Path, tmp_path: Path) -> None
     listed = json.loads(cli("list", "--group", "g", "--json").output)
     assert [r["id"] for r in listed] == [run_id]
     assert run_id in cli("list").output
+    mine = json.loads(cli("list", "--owner", "mk", "--json").output)
+    assert [r["id"] for r in mine] == [run_id]
+    assert json.loads(cli("list", "--owner", "alice", "--json").output) == []
     status = cli("status", run_id)
     assert status.exit_code == 0 and "squares" in status.output
     assert (

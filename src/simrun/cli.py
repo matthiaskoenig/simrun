@@ -188,10 +188,13 @@ def list_(
     group: GROUP = None,
     agent: Annotated[str | None, typer.Option(help="Only runs of this agent.")] = None,
     state: Annotated[RunState | None, typer.Option(help="Only this state.")] = None,
+    owner: Annotated[
+        str | None, typer.Option(help="Only runs of this owner and their agents.")
+    ] = None,
     as_json: AS_JSON = False,
 ) -> None:
     """List runs."""
-    runs = make_client().list_runs(group, agent, state)
+    runs = make_client().list_runs(group, agent, state, owner)
     if as_json:
         _json(runs)
     else:

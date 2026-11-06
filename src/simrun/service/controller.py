@@ -45,7 +45,7 @@ from simrun import podspec
 from simrun.planner import PodShape
 from simrun.plugins import TaskType
 from simrun.plugins_builtin import COMMAND
-from simrun.resources import GIB, ResourceKey, ResourceStore
+from simrun.resources import GIB, ResourceStore, resource_key
 from simrun.service.backend import (
     FINAL_PHASES,
     PREEMPTED_PHASE,
@@ -54,7 +54,7 @@ from simrun.service.backend import (
 )
 from simrun.store import RunRecord, RunState, RunStore, TaskState
 from simrun.worker import MERGED_MARKER, WORKERS_DIR, WorkerReport
-from simrun.workflow import Workflow
+from simrun.workflow import TaskSpec, Workflow
 
 logger = logging.getLogger(__name__)
 
@@ -564,9 +564,10 @@ class Controller:
                     record.tasks.get(task.id) in FINAL_TASK_STATES
                     and task.type != COMMAND.name
                 ):
-                    self._record_task(record, task.id, task.type)
+                    self._record_task(record, task)
 
-    def _record_task(self, record: RunRecord, task_id: str, task_type: str) -> None:
+    def _record_task(self, record: RunRecord, task: TaskSpec) -> None:
+        task_id = task.id
         task_dir = self.store.run_dir(record.id) / "tasks" / task_id
         reports_dir = task_dir / WORKERS_DIR
         marks = task_dir / RECORDED_DIR
@@ -589,10 +590,10 @@ class Controller:
         }
         if not reports and not kills:
             return
-        key = ResourceKey(
-            task_type, record.sources[0].name if record.sources else "", ""
-        )
-        base = self.types[task_type].hint.memory_base_gb
+        task_type = self.types[task.type]
+        model = record.sources[0].name if record.sources else ""
+        key = resource_key(task_type, task.settings, model)
+        base = task_type.hint.memory_base_gb
         marks.mkdir(exist_ok=True)
         for name in reports:
             if (marks / name).exists():
