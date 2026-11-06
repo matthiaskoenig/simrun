@@ -160,7 +160,7 @@ class Submitter:
         with tempfile.TemporaryDirectory(prefix="simrun-build-") as tmp:
             context = Path(tmp)
             (context / "Dockerfile").write_text(
-                dockerfile(env, self.cluster.registry, wheel.name)
+                dockerfile(env, self.cluster.base_image_ref(), wheel.name)
             )
             shutil.copy2(wheel, context / wheel.name)
             logger.info("building the image %s", ref)
