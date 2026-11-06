@@ -18,17 +18,24 @@ import json
 import logging
 import os
 import shutil
-from collections.abc import AsyncGenerator, Iterable
+import time
+from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
 from typing import Annotated, Any, Literal
 
 import yaml
-from fastapi import Body, Depends, FastAPI, HTTPException, Query
-from fastapi.responses import PlainTextResponse
+from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import AliasChoices, BaseModel, Field, ValidationError
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    Field,
+    TypeAdapter,
+    ValidationError,
+)
 
 from simrun.argo import workflow_name
 from simrun.config import ClusterConfig
@@ -85,7 +92,10 @@ class ServiceSettings(BaseModel):
         tokens: YAML file of the tokens, see `simrun.service.auth.load_tokens`.
         owner: The person who owns the cluster; their runs have the top priority.
         cluster: The cluster.
-        poll_s: Seconds between two reconciliations of the controller.
+        poll_s: Seconds between two reconciliations of the controller, and
+            between two checks of an event stream.
+        events_max_s: Seconds after which an event stream ends and the client
+            reconnects.
         default_image: Image of a run whose model has no `pyproject.toml`.
         simrun_wheel: The simrun wheel the images of the environments install.
         python: Python version of the images.
@@ -101,6 +111,7 @@ class ServiceSettings(BaseModel):
     owner: str
     cluster: ClusterConfig
     poll_s: float = 5.0
+    events_max_s: float = 300.0
     default_image: str | None = None
     simrun_wheel: Path | None = None
     python: str = "3.14"
@@ -893,6 +904,65 @@ class _Service:
         return Usage(runs=runs, groups=groups)
 
 
+EVENTS_MAX_RUNS = 200
+KEEP_ALIVE_S = 15.0
+FINAL_TASK_STATES = frozenset({TaskState.DONE, TaskState.FAILED, TaskState.SKIPPED})
+_RUN_ITEMS = TypeAdapter(list[RunItem])
+_SERVERS = TypeAdapter(list[ServerUsage])
+_PROGRESS = TypeAdapter(dict[str, TaskProgress])
+_WORKERS = TypeAdapter(dict[str, list[WorkerView]])
+
+
+def _sse(event: str, data: str) -> str:
+    """One server-sent event; `data` is a single line of JSON."""
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+async def _stream(
+    request: Request,
+    settings: ServiceSettings,
+    compute: Callable[[], tuple[dict[str, str], bool]],
+) -> AsyncGenerator[str]:
+    """Send the events `compute` returns at the start and whenever they change.
+
+    Args:
+        request: The request, whose disconnect ends the stream.
+        settings: The settings, `poll_s` and `events_max_s`.
+        compute: Returns the JSON text of every event by name and whether the
+            stream is complete after them; it runs in a thread.
+
+    Yields:
+        The events changed since the last check, and a keep-alive comment after
+        `KEEP_ALIVE_S` seconds without one. The stream ends when it is complete,
+        after `events_max_s` seconds or on a disconnect.
+    """
+    started = last_sent = time.monotonic()
+    sent: dict[str, str] = {}
+    while True:
+        payloads, complete = await asyncio.to_thread(compute)
+        for event, data in payloads.items():
+            if sent.get(event) != data:
+                sent[event] = data
+                last_sent = time.monotonic()
+                yield _sse(event, data)
+        if complete or time.monotonic() - started >= settings.events_max_s:
+            return
+        if time.monotonic() - last_sent >= KEEP_ALIVE_S:
+            last_sent = time.monotonic()
+            yield ": keep-alive\n\n"
+        await asyncio.sleep(settings.poll_s)
+        if await request.is_disconnected():
+            return
+
+
+def _event_response(stream: AsyncGenerator[str]) -> StreamingResponse:
+    return StreamingResponse(
+        stream,
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 async def _control(controller: Controller, poll_s: float) -> None:
     """Recover, then reconcile every `poll_s` seconds in a thread, off the event loop.
 
@@ -1007,6 +1077,42 @@ def create_app(
     @app.get("/servers")
     def servers() -> list[ServerUsage]:
         return service.servers()
+
+    @app.get("/events")
+    def events(
+        request: Request,
+        group: str | None = None,
+        owner: str | None = None,
+        agent: str | None = None,
+        state: RunState | None = None,
+    ) -> StreamingResponse:
+        def compute() -> tuple[dict[str, str], bool]:
+            runs = service.run_items(group, owner, agent, state, EVENTS_MAX_RUNS)
+            return {
+                "runs": _RUN_ITEMS.dump_json(runs).decode(),
+                "servers": _SERVERS.dump_json(service.servers()).decode(),
+            }, False
+
+        return _event_response(_stream(request, settings, compute))
+
+    @app.get("/runs/{run_id}/events")
+    def run_events(run_id: str, request: Request) -> StreamingResponse:
+        service.read(run_id)  # 404 before the stream starts
+
+        def compute() -> tuple[dict[str, str], bool]:
+            record = service.read(run_id)
+            progress = service.progress(record)
+            workers = {t: service.workers(record, t) for t in record.tasks}
+            final = record.state in TERMINAL_RUN_STATES and all(
+                state in FINAL_TASK_STATES for state in record.tasks.values()
+            )
+            return {
+                "run": record.model_dump_json(),
+                "progress": _PROGRESS.dump_json(progress).decode(),
+                "workers": _WORKERS.dump_json(workers).decode(),
+            }, final
+
+        return _event_response(_stream(request, settings, compute))
 
     @app.get("/runs/{run_id}/tasks/{task_id}/workers")
     def workers(run_id: str, task_id: str) -> list[WorkerView]:
