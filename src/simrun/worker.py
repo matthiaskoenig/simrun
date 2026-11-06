@@ -374,7 +374,12 @@ def _heartbeats(
 
     def beat() -> None:
         next_beat = time.monotonic() + heartbeat_s
-        while not done.wait(max(0.0, min(SAMPLE_S, next_beat - time.monotonic()))):
+        while True:
+            timeout = SAMPLE_S
+            if ledger is not None:
+                timeout = max(0.0, min(timeout, next_beat - time.monotonic()))
+            if done.wait(timeout):
+                return
             sampler.sample()
             if ledger is None or time.monotonic() < next_beat:
                 continue

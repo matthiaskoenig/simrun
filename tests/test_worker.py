@@ -820,3 +820,18 @@ def test_sampler_keeps_the_maximum(monkeypatch: pytest.MonkeyPatch) -> None:
     for _ in range(4):
         sampler.sample()
     assert sampler.peak == 9
+
+
+def test_sampling_without_a_ledger_waits_between_samples(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # `simrun-exec` samples without a ledger to heartbeat
+    calls: list[float] = []
+    monkeypatch.setattr(
+        worker.cgroup, "memory_anon", lambda: calls.append(time.monotonic()) or 1
+    )
+    monkeypatch.setattr(worker, "SAMPLE_S", 0.05)
+    sampler = worker.MemorySampler()
+    with worker._heartbeats(None, "report", 0.01, sampler):
+        time.sleep(0.5)
+    assert 5 <= len(calls) <= 15
