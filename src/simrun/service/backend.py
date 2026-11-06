@@ -61,6 +61,8 @@ class Placement(BaseModel):
         phase: The phase of the pod.
         cores: The cores the pod requests.
         memory_gb: The GiB of memory the pod requests.
+        worker: The worker id of the pod (`SIMRUN_WORKER`, the id of its ledger claims
+            and report names), `None` for a pod without one, e.g. a merge.
     """
 
     workflow: str
@@ -70,6 +72,7 @@ class Placement(BaseModel):
     phase: str
     cores: float
     memory_gb: float
+    worker: str | None = None
 
 
 class BackendStatus(BaseModel):
