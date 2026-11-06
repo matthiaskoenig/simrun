@@ -52,14 +52,14 @@ export SIMRUN_CONFIG=$PWD/.tools/k3d/local/settings.yaml
 uv run uvicorn --factory simrun.service.app:serve --port 8000
 ```
 
-and submit from another, e.g. the `squares.yaml` of [A first run](index.md#a-first-run):
+and submit from another, e.g. the workflow `examples/squares.yaml` of [A first run](index.md#a-first-run):
 
 ```bash
 export SIMRUN_URL=http://localhost:8000
 export SIMRUN_TOKEN=t-mk                       # the owner; t-mk-bot, t-alice and t-alice-bot test the priorities
 export SIMRUN_STORE=$PWD/.tools/k3d/store      # the run store, mounted into every node
 
-uv run simrun submit squares.yaml
+uv run simrun submit examples/squares.yaml
 uv run simrun wait <run>
 uv run simrun status <run>
 ```

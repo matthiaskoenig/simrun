@@ -7,7 +7,7 @@ It is made for a research group which runs many analyses of models at once on it
 
 ## A first run
 
-The package ships a demo task type, `demo.squares`, which squares the numbers `0..n-1`, one unit per number, and sums them. A workflow of one task of it:
+The package ships a demo task type, `demo.squares`, which squares the numbers `0..n-1`, one unit per number, and sums them. A workflow of one task of it, `examples/squares.yaml` of the repository:
 
 ```yaml title="squares.yaml"
 name: squares
