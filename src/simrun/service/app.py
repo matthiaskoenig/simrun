@@ -939,7 +939,16 @@ async def _stream(
     started = last_sent = time.monotonic()
     sent: dict[str, str] = {}
     while True:
-        payloads, complete = await asyncio.to_thread(compute)
+        try:
+            payloads, complete = await asyncio.to_thread(compute)
+        except HTTPException as error:
+            logger.debug("an event stream ends: %s", error.detail)
+            return
+        except Exception:
+            logger.warning(
+                "an event stream ends, its state cannot be read", exc_info=True
+            )
+            return
         for event, data in payloads.items():
             if sent.get(event) != data:
                 sent[event] = data

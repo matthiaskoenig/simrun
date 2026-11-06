@@ -49,7 +49,7 @@ uv run python tests/cluster/local.py up      # about two minutes, reuses a clust
 ```bash
 export KUBECONFIG=$PWD/.tools/kubeconfig
 export SIMRUN_CONFIG=$PWD/.tools/k3d/local/settings.yaml
-uv run uvicorn --factory simrun.service.app:serve --port 8000
+uv run uvicorn --factory simrun.service.app:serve --port 8000 --timeout-graceful-shutdown 5
 ```
 
 and submit from another, e.g. the workflow `examples/squares.yaml` of [A first run](index.md#a-first-run):

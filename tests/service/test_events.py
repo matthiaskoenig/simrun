@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import shutil
 import socket
 import threading
 import time
@@ -168,3 +169,14 @@ def test_events_need_a_token(live):
     assert httpx.get(web.base + "/events").status_code == 401
     assert httpx.get(web.base + f"/runs/{run_id}/events").status_code == 401
     assert httpx.get(web.base + "/runs/nope/events", headers=AUTH).status_code == 404
+
+
+def test_run_events_end_when_the_run_is_gone(live):
+    web = live(events_max_s=30, poll_s=0.2)
+    run_id = web.submit()
+    names = []
+    for name, _ in web.stream(f"/runs/{run_id}/events"):
+        names.append(name)
+        if name == "workers":
+            shutil.rmtree(web.settings.store / "runs" / run_id)
+    assert names == ["run", "progress", "workers"]

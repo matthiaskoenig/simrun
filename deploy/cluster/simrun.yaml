@@ -164,6 +164,8 @@ spec:
             - 0.0.0.0
             - --port
             - "8000"
+            - --timeout-graceful-shutdown
+            - "5"
           env:
             - name: SIMRUN_CONFIG
               value: /etc/simrun/settings.yaml
