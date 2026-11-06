@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 import time
 from collections.abc import AsyncGenerator, Callable, Iterable
 from contextlib import asynccontextmanager, suppress
@@ -29,6 +30,7 @@ import yaml
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.staticfiles import StaticFiles
 from pydantic import (
     AliasChoices,
     BaseModel,
@@ -103,6 +105,8 @@ class ServiceSettings(BaseModel):
             environments, the file of simrun (`simrun.environment.BUILD_CONSTRAINTS`)
             by default.
         backend: `module:callable` returning the backend, for `serve`.
+        web: Directory of the built web app, served at `/ui/` without a token; the
+            app itself talks to the API with the token of the user.
     """
 
     store: Path
@@ -117,6 +121,7 @@ class ServiceSettings(BaseModel):
     python: str = "3.14"
     build_constraints: Path | None = None
     backend: str | None = None
+    web: Path | None = None
 
 
 class SubmitRequest(BaseModel):
@@ -1212,7 +1217,39 @@ def create_app(
         except KeyError as error:
             raise HTTPException(404, f"unknown run {error.args[0]!r}") from None
 
+    if settings.web is not None:
+        # the dependencies of the app apply to its routes only, not to a mount
+        app.mount("/ui", StaticFiles(directory=settings.web, html=True), name="ui")
+
     return app
+
+
+def openapi_document() -> dict[str, Any]:
+    """The OpenAPI document of the service, the input of the types of the frontend.
+
+    The app is created on a fake backend in a temporary directory; the routes do not
+    depend on either, so the document is the same on every machine.
+    """
+    from simrun.testing import FakeBackend
+
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        (root / "tokens.yaml").write_text("{}\n")
+        settings = ServiceSettings(
+            store=root / "store",
+            db=root / "db" / "resources.sqlite",
+            tokens=root / "tokens.yaml",
+            owner="owner",
+            cluster=ClusterConfig(registry="localhost:5000"),
+        )
+        app = create_app(settings, FakeBackend(), {"command": COMMAND})
+        document = app.openapi()
+    # the models only the event streams send have no response schema in the routes
+    schemas = document.setdefault("components", {}).setdefault("schemas", {})
+    for model in (RunItem,):
+        schema = model.model_json_schema(ref_template="#/components/schemas/{model}")
+        schemas.update(schema.pop("$defs", {}) | {model.__name__: schema})
+    return json.loads(json.dumps(document))
 
 
 def load_settings(path: Path) -> ServiceSettings:
