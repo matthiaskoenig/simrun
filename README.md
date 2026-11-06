@@ -84,7 +84,7 @@ SIMRUN_K3D=1 SIMRUN_K3D_KEEP=1 uv run pytest -m cluster tests/cluster  # keep th
 ```
 
 They need docker, about 20 GiB of free disk and the network (the images of k3s,
-Kueue, Argo, BuildKit and `python:3.14-slim-bookworm`). The session downloads k3d
+Kueue, Argo, BuildKit, `python:3.14-slim-trixie` and the uv base image). The session downloads k3d
 and kubectl into `.tools/bin`, creates the k3d cluster `simrun-test` (one server,
 with the infrastructure; three agents of 6 GiB labelled `simrun/worker=true`)
 with the registry `k3d-simrun-registry:5000` (`localhost:5000` from the host), writes

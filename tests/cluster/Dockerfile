@@ -1,6 +1,6 @@
 # The image of the runs of the cluster tests: simrun (the worker and the demo plugin)
 # from the wheel of the working tree, with the dependencies of the worker only.
-FROM python:3.14-slim-bookworm
+FROM python:3.14-slim-trixie
 RUN pip install --no-cache-dir --root-user-action=ignore "pydantic>=2.14" "pyyaml>=6.0.3"
 ARG WHEEL
 COPY ${WHEEL} /tmp/

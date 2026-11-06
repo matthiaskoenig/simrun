@@ -17,7 +17,7 @@ import pytest
 from fastapi.testclient import TestClient
 from kubernetes import client
 
-from simrun.config import ClusterConfig
+from simrun.config import DEFAULT_BASE_IMAGE, ClusterConfig
 from simrun.service.app import ServiceSettings
 
 REPO = Path(__file__).resolve().parents[2]
@@ -41,14 +41,10 @@ AGENTS = [f"k3d-{CLUSTER}-agent-{i}" for i in range(3)]
 MIN_FREE_GB = 20
 SETUP_TIMEOUT_S = 600.0
 TERMINAL = ("succeeded", "failed", "cancelled")
-# the base image of the images of the environments, mirrored into the registry as
-# `<registry>/uv:python3.14-bookworm-slim` (see `simrun.environment.dockerfile`);
-# pinned by digest, the last build of the tag (uv 0.9.30)
-UV_IMAGE = (
-    "ghcr.io/astral-sh/uv@sha256:"
-    "7cf77f594be8042dab6daa9fe326f90962252268b4f120a7f5dccce4d947e6c1"
-)
-UV_MIRROR = "uv:python3.14-bookworm-slim"
+# the base image of the images of the environments (`ClusterConfig.base_image`, a
+# repository of the registry), mirrored from its source with its digest
+UV_SOURCE = f"ghcr.io/{DEFAULT_BASE_IMAGE}"
+UV_MIRROR = DEFAULT_BASE_IMAGE.partition("@")[0]
 SERVER = f"k3d-{CLUSTER}-server-0"
 
 
@@ -218,10 +214,25 @@ def build_image() -> tuple[str, Path]:
 
 
 def mirror_uv_image() -> None:
-    """Push the base image of the environments into the registry of the cluster."""
-    _run("docker", "pull", "--quiet", UV_IMAGE)
-    _run("docker", "tag", UV_IMAGE, f"{REGISTRY_HOST}/{UV_MIRROR}")
-    _run("docker", "push", "--quiet", f"{REGISTRY_HOST}/{UV_MIRROR}")
+    """Copy the base image of the environments into the registry of the cluster.
+
+    The index is copied as it is, so the generated Dockerfiles find it by its
+    digest.
+    """
+    target = f"{REGISTRY_HOST}/{UV_MIRROR}"
+    _run("docker", "buildx", "imagetools", "create", "--tag", target, UV_SOURCE)
+    digest = DEFAULT_BASE_IMAGE.partition("@")[2]
+    found = _run(
+        "docker",
+        "buildx",
+        "imagetools",
+        "inspect",
+        target,
+        "--format",
+        "{{.Manifest.Digest}}",
+    ).strip()
+    if found != digest:
+        raise RuntimeError(f"the mirror of {UV_SOURCE} has the digest {found}")
 
 
 def delete_cluster() -> None:
@@ -241,13 +252,9 @@ def delete_cluster() -> None:
         check=False,
     )
     _run(K3D, "cluster", "delete", CLUSTER, check=False)
-    images = [
-        image
-        for repository in ("simrun-test", UV_MIRROR.partition(":")[0])
-        for image in _run(
-            "docker", "images", "--quiet", f"{REGISTRY_HOST}/{repository}", check=False
-        ).split()
-    ]
+    images = _run(
+        "docker", "images", "--quiet", f"{REGISTRY_HOST}/simrun-test", check=False
+    ).split()
     if images:
         _run("docker", "image", "rm", "--force", *sorted(set(images)), check=False)
     _run(K3D, "registry", "delete", REGISTRY_NAME, check=False)

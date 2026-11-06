@@ -2,6 +2,14 @@
 
 from pydantic import BaseModel
 
+# the base image of the images of the environments: uv with the python of the
+# service, pinned by the digest of its index, which the registry mirrors (the tag
+# `0.13.7-python3.14-trixie-slim` of `ghcr.io/astral-sh/uv`)
+DEFAULT_BASE_IMAGE = (
+    "astral-sh/uv:0.13.7-python3.14-trixie-slim"
+    "@sha256:e80c05a310400cfc90af00b5b7271ef9ad24816e3265e1162af8a678e1aad099"
+)
+
 
 class ClusterConfig(BaseModel):
     """Where and how the pods of a run are placed in the cluster.
@@ -21,6 +29,10 @@ class ClusterConfig(BaseModel):
             write the results of the Argo executor.
         buildkit: Address of the BuildKit daemon the builds of images run on.
         buildctl_image: Image of the job which sends a build to BuildKit.
+        base_image: The base image of the images of the environments, an image with
+            uv and the python of the service (`ServiceSettings.python`); a
+            repository of `registry` (the mirror of an image of another registry)
+            unless it names a registry host itself.
         grace_s: Seconds a worker has to stop after SIGTERM.
         ttl_after_finished_s: Seconds a finished workflow is kept.
     """
@@ -35,5 +47,17 @@ class ClusterConfig(BaseModel):
     service_account: str = "simrun-workflow"
     buildkit: str = "tcp://buildkitd.simrun:1234"
     buildctl_image: str = "moby/buildkit:v0.34.2-rootless"
+    base_image: str = DEFAULT_BASE_IMAGE
     grace_s: int = 60
     ttl_after_finished_s: int = 86400
+
+    def base_image_ref(self) -> str:
+        """The base image of the environments as the builds name it.
+
+        `base_image` below `registry`, unless its first component is a registry
+        host (it has a `.` or a `:`, or is `localhost`).
+        """
+        first, slash, _ = self.base_image.partition("/")
+        if slash and ("." in first or ":" in first or first == "localhost"):
+            return self.base_image
+        return f"{self.registry}/{self.base_image}"

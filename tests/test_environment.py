@@ -155,8 +155,9 @@ def test_image_ref(tmp_path: Path) -> None:
 
 def test_dockerfile_has_no_source(tmp_path: Path) -> None:
     store, model, libs = _make(tmp_path, ["extra"])
-    text = dockerfile(_resolve(store, model, libs), "reg:5000", "simrun-0.1.0.whl")
-    assert text.startswith("FROM reg:5000/uv:python3.14-bookworm-slim")
+    base = "reg:5000/astral-sh/uv:0.13.7-python3.14-trixie-slim@sha256:00"
+    text = dockerfile(_resolve(store, model, libs), base, "simrun-0.1.0.whl")
+    assert text.startswith(f"FROM {base}\n")
     assert text.count("COPY") == 1
     assert "COPY simrun-0.1.0.whl " in text
     assert "--no-deps /tmp/simrun-0.1.0.whl" in text
@@ -220,7 +221,7 @@ def test_build_requirements_in_the_image(tmp_path: Path) -> None:
     assert "setuptools>=61" in env.build_requirements
     assert any(r.startswith("editables") for r in env.build_requirements)
     assert {"hatchling", "editables", "setuptools"} <= _lines(env.requirements)
-    text = dockerfile(env, "reg:5000", "simrun-0.1.0.whl")
+    text = dockerfile(env, "reg:5000/uv:1", "simrun-0.1.0.whl")
     assert "hatchling==" in text and "editables==" in text
 
 

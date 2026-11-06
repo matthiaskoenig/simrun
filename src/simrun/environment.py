@@ -281,7 +281,7 @@ def image_ref(env: Environment, registry: str) -> str:
     return f"{registry}/simrun-env:{env.lock_sha256[:16]}"
 
 
-def dockerfile(env: Environment, registry: str, wheel: str) -> str:
+def dockerfile(env: Environment, base_image: str, wheel: str) -> str:
     """Dockerfile of the image: the dependencies, build backends and `simrun`, no source.
 
     The pinned requirements are written with a heredoc, so no source is copied from the
@@ -289,12 +289,13 @@ def dockerfile(env: Environment, registry: str, wheel: str) -> str:
 
     Args:
         env: The environment.
-        registry: Registry which mirrors the base image of uv.
+        base_image: The base image, with uv and the python of the environment, in
+            the registry of the cluster (`ClusterConfig.base_image_ref`).
         wheel: File name of the simrun wheel in the build context, the only file
             copied; simrun is unpublished, so it is never installed by name.
     """
     return (
-        f"FROM {registry}/uv:python{env.python}-bookworm-slim\n"
+        f"FROM {base_image}\n"
         "ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy VIRTUAL_ENV=/opt/venv "
         'PATH="/opt/venv/bin:$PATH"\n'
         f"RUN uv venv /opt/venv --python {env.python}\n"
