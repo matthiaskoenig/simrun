@@ -7,17 +7,18 @@ agent opens a result with `store / path`. A refusal is returned as
 """
 
 import logging
+import subprocess
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import httpx
 from fastmcp import FastMCP
-from pydantic import BaseModel, ValidationError
+from pydantic import BaseModel
 
 from simrun.client import Client, ClientError
 from simrun.store import RunState
-from simrun.workflow import SplitMode, WorkflowError
+from simrun.workflow import SplitMode
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ def build_server(client: Client) -> FastMCP:
                 "error": f"the service is not reachable: {error}",
                 "status": UNREACHABLE,
             }
-        except (WorkflowError, ValidationError, RuntimeError, OSError) as error:
+        except (ValueError, RuntimeError, OSError, subprocess.SubprocessError) as error:
             return {"error": str(error), "status": CLIENT_SIDE}
 
     @server.tool

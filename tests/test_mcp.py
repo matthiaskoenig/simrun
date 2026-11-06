@@ -103,3 +103,10 @@ async def test_mcp_error_is_returned(service, make_client) -> None:
         assert "nope" in result["error"]
         missing = await call(mcp, "submit_workflow", workflow_path="/no/such.yaml")
         assert "error" in missing
+
+
+async def test_mcp_invalid_state_is_returned(service, make_client) -> None:
+    async with McpClient(build_server(make_client(service))) as mcp:
+        result = await call(mcp, "list_runs", state="bogus")
+        assert result["status"] == 400
+        assert "bogus" in result["error"]

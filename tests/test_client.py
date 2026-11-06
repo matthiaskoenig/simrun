@@ -71,6 +71,38 @@ def test_wait_times_out_with_state(service, make_client) -> None:
     assert time.monotonic() - start < 5
 
 
+class Down(httpx.BaseTransport):
+    """Answers like `inner` for `after` requests, then drops every request."""
+
+    def __init__(self, inner: httpx.BaseTransport, after: int = 0) -> None:
+        self.inner = inner
+        self.after = after
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        if self.after <= 0:
+            raise httpx.ConnectError("down", request=request)
+        self.after -= 1
+        return self.inner.handle_request(request)
+
+
+def test_wait_timeout_in_outage_returns_last_summary(
+    service, make_client, monkeypatch
+) -> None:
+    run_id = service.submit()["id"]
+    down = Down(make_client(service)._http._transport, after=1)
+    monkeypatch.setattr(simrun.client, "POLL_S", 0.2)
+    summary = make_client(service, transport=down).wait(run_id, timeout_s=0.6)
+    assert summary.id == run_id
+    assert summary.state != "succeeded"
+
+
+def test_wait_outage_without_summary_raises(service, make_client) -> None:
+    run_id = service.submit()["id"]
+    down = Down(make_client(service)._http._transport)
+    with pytest.raises(httpx.TransportError):
+        make_client(service, transport=down).wait(run_id, timeout_s=0.1)
+
+
 def test_wait_unknown_run(service, make_client) -> None:
     with pytest.raises(ClientError) as error:
         make_client(service).wait("nope", timeout_s=1)
