@@ -126,6 +126,11 @@ class FakeBackend:
             target = node if node in nodes else f"{node}-w0"
             self._status[name].tasks[target] = "Failed"
 
+    def delete(self, name: str) -> None:
+        """Remove a workflow, as its time to live does."""
+        with self._lock:
+            del self._status[name]
+
     def oom_kill(self, name: str, worker: str, count: int = 1) -> None:
         """Count pods of a worker killed for memory."""
         with self._lock:

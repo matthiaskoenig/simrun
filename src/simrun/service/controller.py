@@ -5,28 +5,41 @@ done when its `<task>-merge` node succeeded and failed when its `<task>-w0` or i
 merge failed (after the retries of Argo), an extra worker never fails a task; an
 unsplit task is its node `<task>`. When every task is done the run succeeded, when a
 task failed the run failed; in both cases the controller stops the workflow, so extra
-workers still waiting for admission go away, releases the reserved node and records
-the reports of the workers as resource observations.
+workers still waiting for admission go away, and releases the reserved node.
+
+The states of the tasks and the out of memory kills are stored in the record at every
+poll. When the workflow is gone (deleted by its time to live before the controller saw
+its end) the tasks are resolved from these states and from the store: a split task
+whose merge wrote `out/.simrun-merged` is done (Ruling 23); only the tasks still
+undetermined fail.
+
+The reports of the workers of a task are recorded as resource observations once the
+state of the task is final, each marked in `tasks/<task>/recorded/` right after its
+observation; a kill for memory the backend reports for an attempt without a report is
+an observation of the pod shape at its limit (Ruling 24).
+
+A terminal record is written first; a release of the node or a cancellation of the
+workflow which fails stays in the record (`pending_release`, `pending_cancel`) and is
+retried at the next polls, which do nothing else for a terminal run (Ruling 25). No
+call of the backend is made while the record lock is held.
 
 The controller keeps no state in memory: every `reconcile` reads the records of the
-store, so a restarted service continues where the one before stopped.
+store, so a restarted service continues where the one before stopped; a record which
+cannot be read is logged and skipped.
 """
 
 import json
 import logging
-import os
 import re
-import secrets
 import threading
+from collections.abc import Iterator
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any
 
 from simrun.plugins import TaskType
-from simrun.resources import ResourceKey, ResourceStore
+from simrun.resources import GIB, ResourceKey, ResourceStore
 from simrun.service.backend import FINAL_PHASES, Backend, BackendStatus
 from simrun.store import RunRecord, RunState, RunStore, TaskState
-from simrun.worker import WORKERS_DIR, WorkerReport
+from simrun.worker import MERGED_MARKER, WORKERS_DIR, WorkerReport
 from simrun.workflow import Workflow
 
 logger = logging.getLogger(__name__)
@@ -37,8 +50,8 @@ TERMINAL_RUN_STATES = frozenset(
 FINAL_TASK_STATES = frozenset({TaskState.DONE, TaskState.FAILED, TaskState.SKIPPED})
 FAILED_PHASES = frozenset({"Failed", "Error"})
 SKIPPED_PHASES = frozenset({"Skipped", "Omitted"})
-# the names of the reports of a task recorded as observations
-RECORDED_FILE = "recorded.json"
+# a marker per report of a task recorded as an observation
+RECORDED_DIR = "recorded"
 # a report whose peak memory reached this fraction of its limit was out of memory
 OOM_FRACTION = 0.95
 
@@ -128,10 +141,47 @@ def is_oom(report: WorkerReport, attempt: int, kills: dict[str, int]) -> bool:
     return attempt < kills.get(report.worker, 0)
 
 
-def _write_json(path: Path, data: Any) -> None:
-    tmp = path.with_name(f".{path.name}.{secrets.token_hex(4)}.tmp")
-    tmp.write_text(json.dumps(data))
-    os.replace(tmp, path)
+def run_ids(store: RunStore) -> list[str]:
+    """The ids of the runs of a store, sorted; hidden directories are no runs."""
+    runs = store.root / "runs"
+    if not runs.is_dir():
+        return []
+    return sorted(p.name for p in runs.iterdir() if not p.name.startswith("."))
+
+
+def read_records(store: RunStore) -> Iterator[RunRecord]:
+    """The records of a store by id; a record which cannot be read is logged."""
+    for run_id in run_ids(store):
+        try:
+            yield store.read(run_id)
+        except KeyError:
+            continue
+        except (ValueError, OSError) as error:
+            logger.warning("the record of run %s cannot be read: %s", run_id, error)
+
+
+def _closed(
+    record: RunRecord,
+    state: RunState,
+    tasks: dict[str, TaskState],
+    message: str | None,
+    **update: object,
+) -> RunRecord:
+    """The terminal record: tasks not final are skipped, the node is to release."""
+    final = {
+        task: s if s in FINAL_TASK_STATES else TaskState.SKIPPED
+        for task, s in tasks.items()
+    }
+    return record.model_copy(
+        update={
+            "state": state,
+            "tasks": final,
+            "message": message,
+            "finished": datetime.now(UTC),
+            "pending_release": record.reserve,
+            **update,
+        }
+    )
 
 
 class Controller:
@@ -156,90 +206,134 @@ class Controller:
         self.resources = resources
         self.backend = backend
         self.types = types
-        # held by every read-modify-write of a record, by the controller and the API
+        # held by every read-modify-write of a record, by the controller and the API;
+        # never held during a call of the backend or a walk of the store
         self.lock = threading.RLock()
+        self._reports_lock = threading.Lock()
 
     def recover(self) -> None:
-        """Fail the runs whose submission a stopped service left unfinished.
+        """Settle what a stopped service left: called at the start of the service.
 
-        Called once at the start of the service, which runs as one process: a record
-        which is not terminal and has no backend workflow was never submitted.
+        A record which is not terminal and has no workflow name was written before
+        names were stored, and fails; the pending releases and cancellations of
+        terminal runs, e.g. of an orphan workflow of a failed submission, are retried.
         """
-        with self.lock:
-            for record in self.store.iter_records():
-                if record.state in TERMINAL_RUN_STATES or record.backend_name:
-                    continue
-                logger.warning("run %s was not submitted, it fails", record.id)
-                self._close(
-                    record,
-                    RunState.FAILED,
-                    record.tasks,
-                    "the service stopped while the run was submitted",
-                    stop=False,
-                )
+        for run_id in run_ids(self.store):
+            try:
+                self._recover(run_id)
+            except Exception:
+                logger.exception("recovering run %s failed", run_id)
+
+    def _recover(self, run_id: str) -> None:
+        record = self.store.read(run_id)
+        if record.state not in TERMINAL_RUN_STATES and record.backend_name is None:
+            logger.warning("run %s was not submitted, it fails", run_id)
+            message = "the service stopped while the run was submitted"
+            self._write_if_unchanged(
+                record, _closed(record, RunState.FAILED, record.tasks, message)
+            )
+        self.settle(run_id)
 
     def reconcile(self) -> None:
-        """Bring every record which is not terminal up to date with the backend."""
-        for record in self.store.iter_records():
-            if record.state in TERMINAL_RUN_STATES or record.backend_name is None:
-                continue
+        """Bring every record up to date with the backend, one run at a time."""
+        for run_id in run_ids(self.store):
             try:
-                self._reconcile(record.id, record.backend_name)
+                self._reconcile(run_id)
             except Exception:
-                logger.exception("reconciling run %s failed", record.id)
+                logger.exception("reconciling run %s failed", run_id)
 
-    def _reconcile(self, run_id: str, name: str) -> None:
+    def _reconcile(self, run_id: str) -> None:
+        record = self.store.read(run_id)
+        if record.state in TERMINAL_RUN_STATES:
+            self.settle(run_id)
+            return
+        name = record.backend_name
+        if name is None:
+            return
         status: BackendStatus | None
         try:
             status = self.backend.status(name)
         except KeyError:
             status = None
+        if status is None:
+            new = self._gone(record, name)
+            stop = False
+        else:
+            new = self._next(record, status)
+            stop = status.phase not in FINAL_PHASES
+        # recorded before the record is written: a failure is retried at the next poll
+        self._record_reports(new)
+        if new == record or not self._write_if_unchanged(record, new):
+            return
+        if new.state in TERMINAL_RUN_STATES:
+            logger.info("run %s %s", run_id, new.state.value)
+            if stop:
+                try:
+                    self.backend.stop(name)
+                except Exception:
+                    logger.exception("stopping the workflow %s failed", name)
+            self.settle(run_id)
+
+    def _write_if_unchanged(self, before: RunRecord, after: RunRecord) -> bool:
+        """Write `after` when the record on disk is still `before`."""
         with self.lock:
             try:
-                record = self.store.read(run_id)
+                current = self.store.read(before.id)
             except KeyError:
-                return  # deleted meanwhile
-            if record.state in TERMINAL_RUN_STATES:
-                return
-            if status is None:
-                self._record_reports(record, {})
-                self._close(
-                    record,
-                    RunState.FAILED,
-                    record.tasks,
-                    f"the workflow {name} is gone",
-                    stop=False,
-                )
-                return
-            self._apply(record, status)
+                return False
+            if current != before:
+                return False
+            self.store.write(after)
+            return True
 
-    def _apply(self, record: RunRecord, status: BackendStatus) -> None:
+    def _next(self, record: RunRecord, status: BackendStatus) -> RunRecord:
+        """The record after a status of its workflow."""
         tasks = task_states(record.workflow, self.types, status)
-        self._record_reports(record, status.oom)
-        stop = status.phase not in FINAL_PHASES
+        record = record.model_copy(update={"oom_kills": dict(status.oom)})
         failed = [t for t, s in tasks.items() if s == TaskState.FAILED]
         if failed:
             message = f"task {', '.join(failed)} failed"
-            self._close(record, RunState.FAILED, tasks, message, stop=stop)
-        elif all(s == TaskState.DONE for s in tasks.values()):
-            self._close(record, RunState.SUCCEEDED, tasks, None, stop=stop)
-        elif not stop:
+            return _closed(record, RunState.FAILED, tasks, message)
+        if all(s == TaskState.DONE for s in tasks.values()):
+            return _closed(record, RunState.SUCCEEDED, tasks, None)
+        if status.phase in FINAL_PHASES:
             message = f"the workflow ended with phase {status.phase}"
-            self._close(record, RunState.FAILED, tasks, message, stop=False)
+            return _closed(record, RunState.FAILED, tasks, message)
+        started = {TaskState.RUNNING, TaskState.PREEMPTED, TaskState.DONE}
+        state = (
+            RunState.RUNNING
+            if any(s in started for s in tasks.values())
+            else RunState.QUEUED
+        )
+        return record.model_copy(update={"state": state, "tasks": tasks})
+
+    def _gone(self, record: RunRecord, name: str) -> RunRecord:
+        """The record of a run whose workflow is gone, resolved from the store."""
+        tasks: dict[str, TaskState] = {}
+        undetermined: list[str] = []
+        for task in record.workflow.tasks:
+            last = record.tasks.get(task.id, TaskState.WAITING)
+            out = self.store.run_dir(record.id) / "tasks" / task.id / "out"
+            if last in FINAL_TASK_STATES:
+                tasks[task.id] = last
+            elif self.types[task.type].splittable and (out / MERGED_MARKER).is_file():
+                tasks[task.id] = TaskState.DONE
+            else:
+                tasks[task.id] = TaskState.FAILED
+                undetermined.append(task.id)
+        failed = [t for t, s in tasks.items() if s == TaskState.FAILED]
+        if undetermined:
+            message = f"the workflow {name} is gone: {', '.join(undetermined)} unknown"
+        elif failed:
+            message = f"task {', '.join(failed)} failed"
+        elif all(s == TaskState.DONE for s in tasks.values()):
+            return _closed(record, RunState.SUCCEEDED, tasks, None)
         else:
-            started = {TaskState.RUNNING, TaskState.PREEMPTED, TaskState.DONE}
-            state = (
-                RunState.RUNNING
-                if any(s in started for s in tasks.values())
-                else RunState.QUEUED
-            )
-            if state != record.state or tasks != record.tasks:
-                self.store.write(
-                    record.model_copy(update={"state": state, "tasks": tasks})
-                )
+            message = f"the workflow {name} is gone"
+        return _closed(record, RunState.FAILED, tasks, message)
 
     def cancel(self, run_id: str) -> RunRecord:
-        """Cancel a run: terminate its workflow and release its node.
+        """Cancel a run: write it cancelled, then cancel its workflow, release its node.
 
         Raises:
             KeyError: The run does not exist.
@@ -249,77 +343,112 @@ class Controller:
             record = self.store.read(run_id)
             if record.state in TERMINAL_RUN_STATES:
                 raise ValueError(f"run {run_id} has ended: {record.state}")
-            if record.backend_name is not None:
-                self.backend.cancel(record.backend_name)
-            return self._close(
-                record, RunState.CANCELLED, record.tasks, "cancelled", stop=False
+            cancelled = _closed(
+                record,
+                RunState.CANCELLED,
+                record.tasks,
+                "cancelled",
+                pending_cancel=record.backend_name is not None,
             )
+            self.store.write(cancelled)
+        self.settle(run_id)
+        return self.store.read(run_id)
 
-    def _close(
-        self,
-        record: RunRecord,
-        state: RunState,
-        tasks: dict[str, TaskState],
-        message: str | None,
-        stop: bool,
-    ) -> RunRecord:
-        """End a run: stop its workflow, release its node and write the record.
+    def settle(self, run_id: str) -> None:
+        """Retry the pending release and cancellation of a terminal run.
 
-        A failed release raises before the record is written, so the next
-        reconciliation tries again.
+        An unknown node counts as released and an unknown workflow as cancelled.
         """
-        if stop and record.backend_name is not None:
+        record = self.store.read(run_id)
+        if record.state not in TERMINAL_RUN_STATES:
+            return
+        cancelled = not record.pending_cancel or record.backend_name is None
+        if not cancelled and record.backend_name is not None:
             try:
-                self.backend.stop(record.backend_name)
+                self.backend.cancel(record.backend_name)
+                cancelled = True
+            except KeyError:
+                cancelled = True
             except Exception:
-                logger.exception("stopping the workflow %s failed", record.backend_name)
-        if record.reserve is not None:
-            self.backend.unreserve(record.reserve)
-        final = {
-            task: s if s in FINAL_TASK_STATES else TaskState.SKIPPED
-            for task, s in tasks.items()
-        }
-        closed = record.model_copy(
-            update={
-                "state": state,
-                "tasks": final,
-                "message": message,
-                "finished": datetime.now(UTC),
-            }
-        )
-        self.store.write(closed)
-        logger.info("run %s %s", record.id, state.value)
-        return closed
+                logger.exception(
+                    "cancelling the workflow %s failed", record.backend_name
+                )
+        released = record.pending_release is None
+        if record.pending_release is not None:
+            try:
+                self.backend.unreserve(record.pending_release)
+                released = True
+            except KeyError:
+                logger.info(
+                    "node %s is unknown, taken as released", record.pending_release
+                )
+                released = True
+            except Exception:
+                logger.exception("releasing node %s failed", record.pending_release)
+        update: dict[str, object] = {}
+        if cancelled and record.pending_cancel:
+            update["pending_cancel"] = False
+        if released and record.pending_release is not None:
+            update["pending_release"] = None
+        if update:
+            self._write_if_unchanged(record, record.model_copy(update=update))
 
-    def _record_reports(self, record: RunRecord, kills: dict[str, int]) -> None:
-        """Record every report of a worker not recorded before as an observation."""
-        model = record.sources[0].name if record.sources else ""
-        for task in record.workflow.tasks:
-            task_dir = self.store.run_dir(record.id) / "tasks" / task.id
-            reports = task_dir / WORKERS_DIR
-            if not reports.is_dir():
-                continue
-            done_file = task_dir / RECORDED_FILE
-            recorded = (
-                set(json.loads(done_file.read_text())) if done_file.exists() else set()
-            )
-            new = sorted(
+    def _record_reports(self, record: RunRecord) -> None:
+        """Record the reports of the tasks in a final state not recorded before."""
+        with self._reports_lock:
+            for task in record.workflow.tasks:
+                if record.tasks.get(task.id) in FINAL_TASK_STATES:
+                    self._record_task(record, task.id, task.type)
+
+    def _record_task(self, record: RunRecord, task_id: str, task_type: str) -> None:
+        task_dir = self.store.run_dir(record.id) / "tasks" / task_id
+        reports_dir = task_dir / WORKERS_DIR
+        marks = task_dir / RECORDED_DIR
+        reports = (
+            sorted(
                 p.name
-                for p in reports.iterdir()
-                if p.suffix == ".json"
-                and not p.name.startswith(".")
-                and p.name not in recorded
+                for p in reports_dir.iterdir()
+                if p.suffix == ".json" and not p.name.startswith(".")
             )
-            if not new:
+            if reports_dir.is_dir()
+            else []
+        )
+        worker = re.compile(rf"{re.escape(task_id)}-w\d+")
+        kills = {
+            (w, attempt)
+            for w, count in record.oom_kills.items()
+            if worker.fullmatch(w)
+            for attempt in range(count)
+        }
+        if not reports and not kills:
+            return
+        key = ResourceKey(
+            task_type, record.sources[0].name if record.sources else "", ""
+        )
+        base = self.types[task_type].hint.memory_base_gb
+        marks.mkdir(exist_ok=True)
+        for name in reports:
+            if (marks / name).exists():
                 continue
-            key = ResourceKey(task.type, model, "")
-            base = self.types[task.type].hint.memory_base_gb
-            for name in new:
-                try:
-                    report = WorkerReport(**json.loads((reports / name).read_text()))
-                except (ValueError, TypeError) as error:
-                    logger.warning("report %s of run %s: %s", name, record.id, error)
-                    continue
-                oom = is_oom(report, _attempt(name), kills)
-                self.resources.record(key, report, base, oom=oom)
-            _write_json(done_file, sorted(recorded | set(new)))
+            try:
+                report = WorkerReport(**json.loads((reports_dir / name).read_text()))
+            except (ValueError, TypeError) as error:
+                logger.warning("report %s of run %s: %s", name, record.id, error)
+                (marks / name).touch()
+                continue
+            oom = is_oom(report, _attempt(name), record.oom_kills)
+            self.resources.record(key, report, base, oom=oom)
+            (marks / name).touch()
+        shape = record.plans.get(task_id, {}).get("shape")
+        for w, attempt in sorted(kills):
+            mark = marks / f"{w}-{attempt}.oom"
+            if f"{w}-{attempt}.json" in reports or mark.exists() or shape is None:
+                continue
+            report = WorkerReport(
+                worker=w,
+                node="",
+                processes=shape["processes"],
+                memory_limit_bytes=int(shape["memory_gb"] * GIB),
+            )
+            self.resources.record(key, report, base, oom=True)
+            mark.touch()

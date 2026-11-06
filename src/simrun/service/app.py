@@ -43,10 +43,10 @@ from simrun.resources import ResolvedResources, ResourceKey, ResourceStore
 from simrun.service.auth import Identity, authenticate, load_tokens, priority_of
 from simrun.service.backend import Backend
 from simrun.service.compare import CompareTable, compare_runs
-from simrun.service.controller import TERMINAL_RUN_STATES, Controller
+from simrun.service.controller import TERMINAL_RUN_STATES, Controller, read_records
 from simrun.snapshot import SourceProvenance
 from simrun.store import RunRecord, RunState, RunStore, TaskState
-from simrun.worker import PROGRESS_FILE, SETTINGS_FILE, UNITS_DIR
+from simrun.worker import MERGED_MARKER, PROGRESS_FILE, SETTINGS_FILE, UNITS_DIR
 from simrun.workflow import Priority, SplitMode, Workflow
 
 logger = logging.getLogger(__name__)
@@ -58,6 +58,8 @@ WAIT_MAX_S = 300.0
 # a snapshot younger than this is kept by a cleanup: a client may be submitting it
 SNAPSHOT_GRACE_S = 3600.0
 LATEST_LINK = "latest"
+# an ended run is moved to `runs/<prefix><id>-<pid>` under the lock, then removed
+TRASH_PREFIX = ".trash-"
 PROGRESS_TAIL_BYTES = 8192
 
 
@@ -465,22 +467,30 @@ class _Service:
             manifest = to_argo(record, plans, self.types, self.settings.cluster)
         except ValueError as error:
             raise HTTPException(422, str(error)) from error
+        # the name is known before the submission, so a workflow a failed or an
+        # interrupted submission created is found and cancelled
+        record = record.model_copy(
+            update={"backend_name": manifest["metadata"]["name"]}
+        )
         if reserve is not None:
             with self._reserve_lock:
                 self._free_node(self.backend.nodes(), reserve)
                 self.backend.reserve(reserve, record.id)
         try:
             self._write(record, lock)
-            name = self.backend.submit(manifest)
+            self.backend.submit(manifest)
         except Exception as error:
             self._abort(record, error)
             raise HTTPException(502, f"submitting the run failed: {error}") from error
         with self.controller.lock:
             current = self.store.read(record.id)
-            if current.state == RunState.CANCELLED:  # cancelled while submitted
-                self.backend.cancel(name)
-            current = current.model_copy(update={"backend_name": name})
-            self.store.write(current)
+            cancelled = current.state == RunState.CANCELLED
+            if cancelled:  # cancelled while it was submitted: cancel it again
+                current = current.model_copy(update={"pending_cancel": True})
+                self.store.write(current)
+        if cancelled:
+            self.controller.settle(record.id)
+            current = self.store.read(record.id)
         logger.info("run %s submitted by %s", record.id, identity.name)
         return current
 
@@ -497,24 +507,32 @@ class _Service:
             (task_dir / SETTINGS_FILE).write_text(settings.model_dump_json(indent=2))
 
     def _abort(self, record: RunRecord, error: Exception) -> None:
-        """Release the node of a run which was not submitted and fail its record."""
+        """Fail the record of a run whose submission failed, then settle it.
+
+        The workflow may have been created although the submission raised, so it is
+        cancelled like the node is released, retried by the controller on failure.
+        """
         logger.error("submitting run %s failed: %s", record.id, error)
-        if record.reserve is not None:
-            try:
-                self.backend.unreserve(record.reserve)
-            except Exception:
-                logger.exception("releasing node %s failed", record.reserve)
-        with self.controller.lock, suppress(OSError):
-            self.store.write(
-                record.model_copy(
-                    update={
-                        "state": RunState.FAILED,
-                        "tasks": dict.fromkeys(record.tasks, TaskState.SKIPPED),
-                        "finished": datetime.now(UTC),
-                        "message": f"submitting failed: {error}",
-                    }
-                )
-            )
+        failed = record.model_copy(
+            update={
+                "state": RunState.FAILED,
+                "tasks": dict.fromkeys(record.tasks, TaskState.SKIPPED),
+                "finished": datetime.now(UTC),
+                "message": f"submitting failed: {error}",
+                "pending_release": record.reserve,
+                "pending_cancel": True,
+            }
+        )
+        try:
+            with self.controller.lock:
+                self.store.write(failed)
+        except OSError:
+            logger.exception("writing the failed record of run %s failed", record.id)
+            if record.reserve is not None:
+                with suppress(Exception):
+                    self.backend.unreserve(record.reserve)
+            return
+        self.controller.settle(record.id)
 
     # queries
 
@@ -548,7 +566,11 @@ class _Service:
     def outputs(self, record: RunRecord, task_id: str) -> list[OutputFile]:
         """The files of the output of a task, relative to the store."""
         out = self.task_dir(record, task_id) / "out"
-        files = [p for p in out.rglob("*") if p.is_file()] if out.is_dir() else []
+        files = (
+            [p for p in out.rglob("*") if p.is_file() and p.name != MERGED_MARKER]
+            if out.is_dir()
+            else []
+        )
         return [
             OutputFile(
                 path=p.relative_to(self.settings.store).as_posix(),
@@ -561,17 +583,40 @@ class _Service:
 
     def delete(self, run_id: str) -> CleanupResult:
         """Remove an ended run; 409 for a run which has not ended."""
-        with self.controller.lock:
-            record = self.read(run_id)
-            if record.state not in TERMINAL_RUN_STATES:
-                raise HTTPException(409, f"run {run_id} is {record.state}, not ended")
-            run_dir = self.store.run_dir(run_id)
-            freed = freed_bytes([run_dir])
-            shutil.rmtree(run_dir)
+        trash = self._trash(run_id, check=True)
+        if trash is None:
+            raise HTTPException(404, f"unknown run {run_id!r}")
+        freed = freed_bytes([trash])
+        shutil.rmtree(trash)
         logger.info("run %s deleted", run_id)
         return CleanupResult(
             runs=[run_id], snapshots=[], bytes_freed=freed, dry_run=False
         )
+
+    def _trash(self, run_id: str, check: bool = False) -> Path | None:
+        """Move an ended run out of the runs, to remove it without the lock.
+
+        Returns:
+            The directory it was moved to, None when the run is gone or has not
+            ended and `check` is false.
+
+        Raises:
+            HTTPException: 409 when `check` is set and the run has not ended.
+        """
+        with self.controller.lock:
+            try:
+                record = self.store.read(run_id)
+            except KeyError:
+                return None
+            if record.state not in TERMINAL_RUN_STATES:
+                if check:
+                    raise HTTPException(
+                        409, f"run {run_id} is {record.state}, not ended"
+                    )
+                return None
+            trash = self.store.root / "runs" / f"{TRASH_PREFIX}{run_id}-{os.getpid()}"
+            os.rename(self.store.run_dir(run_id), trash)
+        return trash
 
     def _unreferenced_snapshots(
         self, kept: list[RunRecord], cutoff: datetime
@@ -611,37 +656,45 @@ class _Service:
     def cleanup(self, request: CleanupRequest) -> CleanupResult:
         """Remove ended runs and the snapshots no remaining run references."""
         cutoff = datetime.now(UTC) - timedelta(days=request.older_than_days)
-        with self.controller.lock:
-            records = list(self.store.iter_records())
-            chosen = [
-                r
-                for r in records
-                if r.state in TERMINAL_RUN_STATES
-                and (r.finished or r.created) <= cutoff
-                and (request.group is None or r.group == request.group)
-                and (not request.failed_only or r.state == RunState.FAILED)
+        records = list(read_records(self.store))
+        chosen = [
+            r.id
+            for r in records
+            if r.state in TERMINAL_RUN_STATES
+            and (r.finished or r.created) <= cutoff
+            and (request.group is None or r.group == request.group)
+            and (not request.failed_only or r.state == RunState.FAILED)
+        ]
+        kept = [r for r in records if r.id not in chosen]
+        snapshots = self._unreferenced_snapshots(kept, cutoff)
+        patches = [
+            p for s in snapshots if (p := s.with_name(f"{s.name}.patch")).is_file()
+        ]
+        if request.dry_run:
+            runs = [self.store.run_dir(run_id) for run_id in chosen]
+        else:
+            # an ended run does not change, so moving it under the lock suffices
+            moved = {run_id: self._trash(run_id) for run_id in chosen}
+            chosen = [run_id for run_id, path in moved.items() if path is not None]
+            runs = [path for path in moved.values() if path is not None]
+            runs += [  # left by an interrupted removal
+                p
+                for p in (self.store.root / "runs").glob(f"{TRASH_PREFIX}*")
+                if p not in runs
             ]
-            ids = {r.id for r in chosen}
-            kept = [r for r in records if r.id not in ids]
-            snapshots = self._unreferenced_snapshots(kept, cutoff)
-            patches = [
-                p for s in snapshots if (p := s.with_name(f"{s.name}.patch")).is_file()
-            ]
-            paths = [self.store.run_dir(r.id) for r in chosen] + snapshots + patches
-            freed = freed_bytes(paths)
-            if not request.dry_run:
-                for path in paths:
-                    if path.is_dir():
-                        shutil.rmtree(path)
-                    else:
-                        path.unlink(missing_ok=True)
-                logger.info(
-                    "cleanup removed %d runs and %d snapshots",
-                    len(chosen),
-                    len(snapshots),
-                )
+        paths = runs + snapshots + patches
+        freed = freed_bytes(paths)
+        if not request.dry_run:
+            for path in paths:
+                if path.is_dir():
+                    shutil.rmtree(path)
+                else:
+                    path.unlink(missing_ok=True)
+            logger.info(
+                "cleanup removed %d runs and %d snapshots", len(chosen), len(snapshots)
+            )
         return CleanupResult(
-            runs=sorted(ids),
+            runs=sorted(chosen),
             snapshots=[
                 s.relative_to(self.settings.store).as_posix() for s in snapshots
             ],
@@ -653,7 +706,7 @@ class _Service:
         """The bytes of every run and every group."""
         runs: dict[str, int] = {}
         groups: dict[str, int] = {}
-        for record in self.store.iter_records():
+        for record in read_records(self.store):
             size = disk_usage(self.store.run_dir(record.id))
             runs[record.id] = size
             group = record.group or ""
@@ -662,13 +715,23 @@ class _Service:
 
 
 async def _control(controller: Controller, poll_s: float) -> None:
-    """Reconcile every `poll_s` seconds in a thread, off the event loop."""
-    await asyncio.to_thread(controller.recover)
+    """Recover, then reconcile every `poll_s` seconds in a thread, off the event loop.
+
+    A failure is logged and the loop continues; a recovery which failed is tried
+    again at the next poll.
+    """
+    recovered = False
     while True:
+        if not recovered:
+            try:
+                await asyncio.to_thread(controller.recover)
+                recovered = True
+            except Exception:
+                logger.exception("the recovery of the controller failed")
         try:
             await asyncio.to_thread(controller.reconcile)
         except Exception:
-            logger.exception("reconciliation failed")
+            logger.exception("the reconciliation failed")
         await asyncio.sleep(poll_s)
 
 
@@ -714,7 +777,15 @@ def create_app(
             with suppress(asyncio.CancelledError):
                 await task
 
-    app = FastAPI(title="simrun", lifespan=lifespan, dependencies=[Depends(identity)])
+    # no documentation routes: they would answer without a token
+    app = FastAPI(
+        title="simrun",
+        lifespan=lifespan,
+        dependencies=[Depends(identity)],
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
     app.state.settings = settings
     app.state.backend = backend
     app.state.controller = service.controller
@@ -757,7 +828,7 @@ def create_app(
     ) -> list[RunSummary]:
         return [
             RunSummary.of(r)
-            for r in service.store.iter_records()
+            for r in read_records(service.store)
             if (group is None or r.group == group)
             and (owner is None or r.owner == owner)
             and (agent is None or r.agent == agent)
