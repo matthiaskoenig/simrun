@@ -1,0 +1,3 @@
+# podspec
+
+::: simrun.podspec

@@ -4,7 +4,7 @@
 # the path of `simrun_wheel` of the settings (the images of the environments install
 # it), and the plugins whose task types the service validates and splits.
 #
-# The build context, see "The service image" in the README:
+# The build context, see "The service image" in docs/deployment.md:
 #   requirements.txt  `uv export --frozen --no-dev --no-emit-project` of simrun
 #   constraints.txt   the same without hashes, the constraints of the plugins
 #   simrun-<version>-py3-none-any.whl
