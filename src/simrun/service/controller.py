@@ -26,8 +26,10 @@ final, each marked in `tasks/<task>/recorded/` right after its
 observation; a kill for memory of an attempt without a report is an observation of
 the pod shape at its limit (Ruling 24).
 
-The logs of the pods of a task are kept in the run store once the task is final,
-before the workflow is stopped or cancelled (`simrun.service.logs`).
+The logs of the pods of a task are kept in the run store once the task is final and
+its pods terminated, the ones which ended before the workflow is stopped or
+cancelled (`simrun.service.logs`); an ended run stays followed (`pending_logs`) until
+its logs are kept or its workflow is gone.
 
 A terminal record is written first; a release of the node or a cancellation of the
 workflow which fails stays in the record (`pending_release`, `pending_cancel`) and is
@@ -83,6 +85,9 @@ SUBMIT_GRACE_S = 120.0
 SUBMIT_WORKERS = 8
 # a marker per report of a task recorded as an observation
 RECORDED_DIR = "recorded"
+# seconds after the end of a run after which the logs of its pods are kept even
+# when a pod has not terminated
+LOGS_WAIT_S = 600.0
 
 
 def _split_state(task_id: str, nodes: dict[str, str]) -> TaskState:
@@ -209,6 +214,8 @@ def closed(
             "message": message,
             "finished": datetime.now(UTC),
             "pending_release": record.reserve,
+            # the logs of its pods, kept once they ended (or the workflow is gone)
+            "pending_logs": record.backend_name is not None,
             **update,
         }
     )
@@ -377,7 +384,10 @@ class Controller:
             stop = status.phase not in FINAL_PHASES
         # recorded before the record is written: a failure is retried at the next poll
         self._record_reports(new)
-        self._keep_logs(new)
+        if status is not None:
+            kept = self._keep_logs(new)
+            if new.state in TERMINAL_RUN_STATES and kept:
+                new = new.model_copy(update={"pending_logs": False})
         if new == record or not self.write_if_unchanged(record, new):
             return
         if new.state in TERMINAL_RUN_STATES:
@@ -596,11 +606,12 @@ class Controller:
         return self.store.read(run_id)
 
     def settle(self, run_id: str) -> None:
-        """Retry the pending release and cancellation of a terminal run.
+        """Retry the pending logs, release and cancellation of a terminal run.
 
-        An unknown node counts as released and an unknown workflow as cancelled; a
-        node is released only from the reservation of this run. A run which was
-        deleted meanwhile is ignored.
+        The logs are kept before the workflow is cancelled; a workflow which does
+        not exist (any more) has no logs to keep. An unknown node counts as released
+        and an unknown workflow as cancelled; a node is released only from the
+        reservation of this run. A run which was deleted meanwhile is ignored.
         """
         try:
             record = self.store.read(run_id)
@@ -608,9 +619,19 @@ class Controller:
             return
         if record.state not in TERMINAL_RUN_STATES:
             return
+        logs_kept = not record.pending_logs or record.backend_name is None
+        if not logs_kept and record.backend_name is not None:
+            try:
+                self.backend.status(record.backend_name)
+                logs_kept = self._keep_logs(record)
+            except KeyError:
+                logs_kept = True  # no workflow: no pods, no logs
+            except Exception:
+                logger.exception(
+                    "the status of the workflow %s cannot be read", record.backend_name
+                )
         cancelled = not record.pending_cancel or record.backend_name is None
         if not cancelled and record.backend_name is not None:
-            self._keep_logs(record)
             try:
                 self.backend.cancel(record.backend_name)
                 cancelled = True
@@ -633,6 +654,8 @@ class Controller:
             except Exception:
                 logger.exception("releasing node %s failed", record.pending_release)
         update: dict[str, object] = {}
+        if logs_kept and record.pending_logs:
+            update["pending_logs"] = False
         if cancelled and record.pending_cancel:
             update["pending_cancel"] = False
         if released and record.pending_release is not None:
@@ -640,24 +663,41 @@ class Controller:
         if update:
             self.write_if_unchanged(record, record.model_copy(update=update))
 
-    def _keep_logs(self, record: RunRecord) -> None:
+    def _keep_logs(self, record: RunRecord) -> bool:
         """Keep the logs of the tasks in a final state whose logs are not kept yet.
 
-        Called before the record is written, so before the workflow is stopped or
-        cancelled; a failure is logged and retried at the next poll.
+        A task's logs are kept once all its pods terminated (a skipped task's pods
+        stop after the workflow was stopped), or `LOGS_WAIT_S` after the end of the
+        run whatever they are. Called before the record is written, so the logs of
+        the pods which ended are read before the workflow is stopped or cancelled; a
+        failure is logged and retried at the next poll (`pending_logs`).
+
+        Returns:
+            Whether the logs of every final task are kept.
         """
-        if record.backend_name is None:
-            return
+        name = record.backend_name
+        if name is None:
+            return True
+        waited = record.finished is not None and (
+            (datetime.now(UTC) - record.finished).total_seconds() >= LOGS_WAIT_S
+        )
+        complete = True
         for task_id, state in record.tasks.items():
             task_dir = self.store.run_dir(record.id) / "tasks" / task_id
             if state not in FINAL_TASK_STATES or logs.kept(task_dir):
                 continue
             try:
-                logs.keep(task_dir, self.backend.logs(record.backend_name, task_id))
+                pods = self.backend.logs(name, task_id, logs.KEPT_TAIL_LINES)
+                if not waited and not all(p.done for p in pods):
+                    complete = False
+                    continue
+                logs.keep(task_dir, pods)
             except Exception:
+                complete = False
                 logger.exception(
                     "keeping the logs of task %s of run %s failed", task_id, record.id
                 )
+        return complete
 
     def _record_reports(self, record: RunRecord) -> None:
         """Record the reports of the tasks in a final state not recorded before."""

@@ -589,6 +589,9 @@ def test_cancel_during_the_build(service_factory, tmp_path, monkeypatch):
             assert backend.building.wait(30)
             response = service.post(f"/runs/{run_id}/cancel")
             assert response.json()["state"] == "cancelled"
+            # cancelled before it had a workflow: no logs to keep, none followed
+            assert not service.store.read(run_id).pending_logs
+            assert not (service.run_dir(run_id) / "tasks/squares/logs").exists()
         finally:
             backend.release.set()
         assert service.submitted(run_id)["state"] == "cancelled"
@@ -705,3 +708,74 @@ def test_unknown_settings_by_name_and_alias():
     settings = {"rate": 1, "k": 2, "d": 3, "amount": 4, "dose": 5, "x": 6}
     assert unknown_settings(Aliased, settings) == ["x"]
     assert unknown_settings(Open, {"anything": 1}) == []
+
+
+class _FlakyLogs(FakeBackend):
+    """The logs of a pod cannot be read the first two times (the copy before the
+    stop and the one of the settlement in the same poll)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.failures = 2
+
+    def logs(self, name, task_id, tail_lines=None):
+        if self.failures:
+            self.failures -= 1
+            raise RuntimeError("the API is down")
+        return super().logs(name, task_id, tail_lines)
+
+
+def test_logs_are_kept_after_a_failed_copy(service_factory):
+    with service_factory(_FlakyLogs()) as service:
+        run_id = service.submit()["id"]
+        name = service.name(run_id)
+        service.backend.add_log(name, "squares", "squares-w0(0)", "done\n")
+        service.backend.finish(name)
+        service.controller.reconcile()
+        record = service.store.read(run_id)
+        # the run ended in the poll whose copy failed: it stays followed
+        assert record.state == "succeeded"
+        assert record.pending_logs
+        assert service.store.index.live_ids() == [run_id]
+        service.controller.reconcile()
+        assert not service.store.read(run_id).pending_logs
+        assert service.store.index.live_ids() == []
+        logs = service.run_dir(run_id) / "tasks/squares/logs"
+        assert (logs / "index.json").is_file()
+
+
+def test_logs_of_a_skipped_task_are_kept_once_its_pods_stopped(service):
+    workflow = service.workflow()
+    command = {"image": "x:1", "args": ["true"], "cores": 1, "memory_gb": 1.0}
+    workflow["tasks"].append({"id": "cmd", "type": "command", "settings": command})
+    run_id = service.submit(workflow=workflow)["id"]
+    name = service.name(run_id)
+    backend = service.backend
+    backend.add_log(name, "squares", "squares-w0(0)", "unit 1\n", done=False)
+    backend.add_log(name, "cmd", "cmd(0)", "failed\n")
+    backend.start(name)
+    backend.set_node(name, "cmd", "Failed")
+    service.controller.reconcile()
+    record = service.store.read(run_id)
+    assert record.tasks == {"squares": "skipped", "cmd": "failed"}
+    assert ("stop", name) in backend.calls
+    tasks = service.run_dir(run_id) / "tasks"
+    assert (tasks / "cmd/logs/index.json").is_file()
+    # the pod of the skipped task still stops: its log is kept once it ended
+    assert not (tasks / "squares/logs").exists()
+    (pod,) = backend.pod_logs[(name, "squares")]
+    pod.text, pod.done = "unit 1\nstopped on SIGTERM\n", True
+    service.controller.reconcile()
+    assert (
+        "stopped on SIGTERM" in (tasks / "squares/logs" / f"{pod.pod}.log").read_text()
+    )
+    assert not service.store.read(run_id).pending_logs
+
+
+def test_no_logs_are_kept_for_a_run_without_a_workflow(service_factory, tmp_path):
+    with service_factory(simrun_wheel=_wheel(tmp_path), default_image=None) as service:
+        source = _model(service.settings.store, lock=False)
+        record = service.submit(sources=[source])
+        assert record["state"] == "failed"
+        assert not record["pending_logs"]
+        assert not (service.run_dir(record["id"]) / "tasks/squares/logs").exists()

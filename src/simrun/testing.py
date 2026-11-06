@@ -176,10 +176,12 @@ class FakeBackend:
             self.calls.append(("stop", name))
             self._status[name].phase = "Failed"
 
-    def add_log(self, name: str, task_id: str, node: str, text: str) -> None:
+    def add_log(
+        self, name: str, task_id: str, node: str, text: str, done: bool = True
+    ) -> None:
         """Add the log of a pod of a task, the pod named `<workflow>-<node>`."""
         with self._lock:
-            pod = PodLog(node=node, pod=f"{name}-{node}", text=text)
+            pod = PodLog(node=node, pod=f"{name}-{node}", text=text, done=done)
             self.pod_logs.setdefault((name, task_id), []).append(pod)
 
     def logs(

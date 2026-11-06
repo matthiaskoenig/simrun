@@ -381,9 +381,12 @@ manifests and the code:
   (`workflow shutdown with strategy: Stop`); the backend deletes their gated pods.
 - **Logs.** The logs of an attempt whose pod Kueue deleted are gone with the pod.
   The controller keeps the logs of the main containers of the pods of a task which
-  still exist in `tasks/<task>/logs/` of the run store once the task is final, before
-  it stops or cancels the workflow; `GET /runs/{id}/logs/{task}` serves them, and the
-  logs of the live pods before.
+  still exist in `tasks/<task>/logs/` of the run store once the task is final and its
+  pods terminated (the pods which ended before it stops or cancels the workflow, the
+  pods of a skipped task after they stopped; the last 100000 lines, at most 8 MiB
+  read of each); an ended run is followed until its logs are kept or its workflow is
+  gone. `GET /runs/{id}/logs/{task}` serves them, and the logs of the live pods
+  before.
 - **Priority classes.** The pods name a Kubernetes `PriorityClass`, which must exist;
   it has `preemptionPolicy: Never`, so only Kueue preempts.
 - **Registry and builds.** The nodes and BuildKit name the registry as

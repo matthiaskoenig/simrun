@@ -40,11 +40,13 @@ class PodLog(BaseModel):
         node: The node of the pod in the workflow, e.g. `squares-w0(1)`.
         pod: The name of the pod.
         text: The log.
+        done: Whether the pod has terminated, so its log is complete.
     """
 
     node: str
     pod: str
     text: str
+    done: bool = True
 
 
 class BackendStatus(BaseModel):

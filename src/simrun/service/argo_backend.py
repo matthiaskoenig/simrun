@@ -103,6 +103,8 @@ MAX_CONTEXT_BYTES = 1_000_000
 BUILD_TIMEOUT_S = 3600.0
 BUILD_POLL_S = 2.0
 BUILD_TTL_S = 600
+# the bytes of a log of a pod read at most, into the memory of the service
+LOG_LIMIT_BYTES = 8 * 2**20
 MANIFEST_TYPES = (
     "application/vnd.oci.image.index.v1+json",
     "application/vnd.oci.image.manifest.v1+json",
@@ -467,12 +469,17 @@ class ArgoBackend:
             tail_lines: The last lines of every log, all without.
 
         Returns:
-            A log per pod which still exists, every attempt; a log which cannot be
-            read says why.
+            A log per pod which still exists, every attempt, with whether the pod
+            terminated; a log which cannot be read says why. At most
+            `LOG_LIMIT_BYTES` of a log are read (the first of its last `tail_lines`
+            lines).
         """
         prefix = f"{name}."
         found: list[PodLog] = []
-        options: dict[str, Any] = {"container": CONTAINER}
+        options: dict[str, Any] = {
+            "container": CONTAINER,
+            "limit_bytes": LOG_LIMIT_BYTES,
+        }
         if tail_lines is not None:
             options["tail_lines"] = tail_lines
         for pod in sorted(
@@ -490,7 +497,9 @@ class ArgoBackend:
                 )
             except ApiException as error:
                 text = f"(no logs: {error.reason})\n"
-            found.append(PodLog(node=node, pod=pod_name, text=text))
+            phase = (pod.get("status") or {}).get("phase")
+            done = phase in ("Succeeded", "Failed")
+            found.append(PodLog(node=node, pod=pod_name, text=text, done=done))
         return found
 
     # nodes

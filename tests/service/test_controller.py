@@ -444,7 +444,8 @@ def test_cancel_during_submit_cancels_the_workflow(service):
     assert summary["state"] == "cancelled"
     name = service.name(summary["id"])
     # the cancel during the submission found no workflow; the one after it did
-    assert backend.calls[-2:] == [("submit", name), ("cancel", name)]
+    calls = [c for c in backend.calls if c[0] != "logs"]
+    assert calls[-2:] == [("submit", name), ("cancel", name)]
     assert backend.status(name).phase == "Failed"
     record = service.store.read(summary["id"])
     assert not record.pending_cancel
