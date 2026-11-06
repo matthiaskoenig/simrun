@@ -41,7 +41,9 @@ def test_cli_json(cli) -> None:
     assert json.loads(result.output) == []
 
 
-def test_cli_submit_list_status_compare(cli, repo: Path, tmp_path: Path) -> None:
+def test_cli_submit_list_status_compare(
+    cli, service, repo: Path, tmp_path: Path
+) -> None:
     wf = _workflow(tmp_path / "wf.yaml")
     result = cli(
         "submit", str(wf), "--source", f"model={repo}", "--group", "g", "--json"
@@ -62,6 +64,8 @@ def test_cli_submit_list_status_compare(cli, repo: Path, tmp_path: Path) -> None
     assert cli("estimate", str(wf), "--source", f"model={repo}").exit_code == 0
     assert cli("usage").exit_code == 0
     assert cli("cleanup", "--dry-run").exit_code == 0
+    service.backend.add_log(f"simrun-{run_id}", "squares", "squares-w0(0)", "a\nb\n")
+    assert cli("logs", run_id, "squares", "--tail", "1").output.endswith("<==\nb\n")
     cancelled = cli("cancel", run_id)
     assert cancelled.exit_code == 0 and "cancelled" in cancelled.output
     waited = cli("wait", run_id, "--timeout", "1")

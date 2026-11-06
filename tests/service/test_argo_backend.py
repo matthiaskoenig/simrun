@@ -18,7 +18,7 @@ from simrun.service.argo_backend import (
     node_from,
     workflow_status,
 )
-from simrun.service.backend import FailedAttempt
+from simrun.service.backend import FailedAttempt, PodLog
 
 WF = "simrun-r1"
 CONFIG = ClusterConfig(registry="k3d-simrun-registry:5000")
@@ -439,13 +439,17 @@ def test_cancel_of_an_unknown_workflow() -> None:
 
 def test_logs_of_the_pods_of_a_task_in_their_order() -> None:
     created, calls = _fake_backend()
-    text = created.logs(WF, "a")
-    assert text == (
-        f"==> {WF}.a-w0(0) (p-w0) <==\nlog of p-w0\n\n"
-        f"==> {WF}.a-merge(0) (p-merge) <==\nlog of p-merge\n"
-    )
+    assert created.logs(WF, "a") == [
+        PodLog(node="a-w0(0)", pod="p-w0", text="log of p-w0\n"),
+        PodLog(node="a-merge(0)", pod="p-merge", text="log of p-merge\n"),
+    ]
     reads = [c for c in calls if c[0] == "read_namespaced_pod_log"]
     assert all(c[2]["container"] == "main" for c in reads)
+    assert all("tail_lines" not in c[2] for c in reads)
+    calls.clear()
+    created.logs(WF, "a", tail_lines=50)
+    reads = [c for c in calls if c[0] == "read_namespaced_pod_log"]
+    assert [c[2]["tail_lines"] for c in reads] == [50, 50]
 
 
 def test_reserve_taints_and_labels_the_node() -> None:

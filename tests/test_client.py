@@ -114,6 +114,10 @@ def test_wait_unknown_run(service, make_client) -> None:
 def test_cancel_logs_usage_cleanup(service, make_client) -> None:
     client = make_client(service)
     run_id = service.submit()["id"]
+    name = f"simrun-{run_id}"
+    service.backend.add_log(name, "squares", "squares-w0(0)", "a\nb\nc\n")
+    assert client.logs(run_id, "squares", tail_lines=1).endswith("<==\nc\n")
+    assert client.logs(run_id, "squares").endswith("<==\na\nb\nc\n")
     assert client.cancel(run_id).state == "cancelled"
     with pytest.raises(ClientError) as error:
         client.cancel(run_id)

@@ -20,6 +20,7 @@ from rich.table import Column, Table
 
 from simrun.client import Client, ClientError
 from simrun.service.app import RunSummary
+from simrun.service.logs import DEFAULT_TAIL_LINES
 from simrun.store import RunState
 from simrun.workflow import SplitMode
 
@@ -239,9 +240,12 @@ def cancel(
 def logs(
     run: Annotated[str, typer.Argument(help="The run id.")],
     task: Annotated[str, typer.Argument(help="The task id.")],
+    tail: Annotated[
+        int, typer.Option(help="The last lines of every pod, 0 for all of them.")
+    ] = DEFAULT_TAIL_LINES,
 ) -> None:
-    """Print the log of a task."""
-    sys.stdout.write(make_client().logs(run, task))
+    """Print the logs of the pods of a task."""
+    sys.stdout.write(make_client().logs(run, task, tail))
 
 
 @app.command()

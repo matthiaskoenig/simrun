@@ -41,6 +41,7 @@ from simrun.service.auth import Identity, authenticate, load_tokens, priority_of
 from simrun.service.backend import Backend
 from simrun.service.compare import CompareTable, compare_runs
 from simrun.service.controller import TERMINAL_RUN_STATES, Controller, read_records
+from simrun.service.logs import DEFAULT_TAIL_LINES, read_kept, render
 from simrun.service.submission import Submitter, has_model_project
 from simrun.snapshot import SourceProvenance
 from simrun.store import RunRecord, RunState, RunStore, TaskState
@@ -844,12 +845,25 @@ def create_app(
         return service.progress(service.read(run_id))
 
     @app.get("/runs/{run_id}/logs/{task_id}", response_class=PlainTextResponse)
-    def logs(run_id: str, task_id: str) -> str:
+    def logs(
+        run_id: str,
+        task_id: str,
+        tail_lines: Annotated[int, Query(ge=0)] = DEFAULT_TAIL_LINES,
+    ) -> str:
+        """The logs of the pods of a task, the last `tail_lines` of each (0: all).
+
+        The logs kept in the store once the task was final, else the ones of its
+        live pods.
+        """
         record = service.read(run_id)
-        service.task_dir(record, task_id)
-        if record.backend_name is None:
-            raise HTTPException(409, f"run {run_id} has no workflow")
-        return backend.logs(record.backend_name, task_id)
+        task_dir = service.task_dir(record, task_id)
+        lines = tail_lines or None
+        found = read_kept(task_dir, lines)
+        if found is None:
+            if record.backend_name is None:
+                raise HTTPException(409, f"run {run_id} has no workflow")
+            found = backend.logs(record.backend_name, task_id, lines)
+        return render(found)
 
     @app.get("/runs/{run_id}/outputs/{task_id}")
     def outputs(run_id: str, task_id: str) -> list[OutputFile]:
