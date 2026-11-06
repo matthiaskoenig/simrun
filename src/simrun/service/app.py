@@ -28,7 +28,7 @@ import yaml
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
 from fastapi.responses import PlainTextResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import AliasChoices, BaseModel, Field, ValidationError
 
 from simrun.argo import workflow_name
 from simrun.config import ClusterConfig
@@ -200,8 +200,32 @@ class CompareRequest(BaseModel):
     runs: list[str]
 
 
+def unknown_settings(model: type[BaseModel], settings: dict[str, Any]) -> list[str]:
+    """The keys of settings which are no field of their model, sorted.
+
+    A field counts by its name and its aliases; a model which allows extra keys
+    (`extra="allow"`) has none unknown.
+    """
+    if model.model_config.get("extra") == "allow":
+        return []
+    known: set[str] = set()
+    for name, field in model.model_fields.items():
+        known.add(name)
+        if field.alias is not None:
+            known.add(field.alias)
+        alias = field.validation_alias
+        if isinstance(alias, str):
+            known.add(alias)
+        elif isinstance(alias, AliasChoices):
+            known.update(a for a in alias.choices if isinstance(a, str))
+    return sorted(set(settings) - known)
+
+
 def validate_workflow(workflow: Workflow, types: dict[str, TaskType]) -> list[str]:
     """The errors of a workflow beyond its structure: types, settings and ports.
+
+    A setting which is no field of the settings model of its type is an error, so a
+    misspelled one is not silently dropped.
 
     Args:
         workflow: The workflow.
@@ -216,6 +240,10 @@ def validate_workflow(workflow: Workflow, types: dict[str, TaskType]) -> list[st
         if task_type is None:
             errors.append(f"task {task.id!r}: unknown task type {task.type!r}")
             continue
+        errors.extend(
+            f"task {task.id!r}: unknown setting {key!r}"
+            for key in unknown_settings(task_type.settings, task.settings)
+        )
         try:
             task_type.settings.model_validate(task.settings)
         except ValidationError as error:
@@ -467,15 +495,19 @@ class _Service:
         return record
 
     def _write(self, record: RunRecord) -> None:
-        """Write the record and the settings of every task."""
+        """Write the record and the settings of every task.
+
+        The settings are written as submitted, not as the model of the service
+        validates them: the worker validates them with the plugin of the snapshot,
+        whose defaults may differ from the ones of the service.
+        """
         with self.controller.lock:
             self.store.write(record)
         run_dir = self.store.run_dir(record.id)
         for task in record.workflow.tasks:
-            settings = self.types[task.type].settings.model_validate(task.settings)
             task_dir = run_dir / "tasks" / task.id
             task_dir.mkdir(parents=True, exist_ok=True)
-            (task_dir / SETTINGS_FILE).write_text(settings.model_dump_json(indent=2))
+            (task_dir / SETTINGS_FILE).write_text(json.dumps(task.settings, indent=2))
 
     # queries
 

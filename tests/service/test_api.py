@@ -7,10 +7,11 @@ from pathlib import Path
 
 import pytest
 import yaml
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 from simrun.service import app as app_module
 from simrun.service import controller as controller_module
-from simrun.service.app import serve
+from simrun.service.app import serve, unknown_settings
 from simrun.service.auth import Identity, load_tokens, priority_of
 from simrun.snapshot import SourceProvenance
 from simrun.store import RunStore
@@ -83,6 +84,18 @@ def test_validate(service):
     assert "cycle" in service.post("/validate", cycle).json()["errors"][0]
 
 
+def test_unknown_settings_are_errors(service):
+    misspelled = service.workflow()
+    misspelled["tasks"][0]["settings"] = {"n": 4, "sleep": 2}
+    result = service.post("/validate", misspelled).json()
+    assert result["ok"] is False
+    assert result["errors"] == ["task 'squares': unknown setting 'sleep'"]
+    response = service.post("/runs", {"workflow": misspelled, "sources": []})
+    assert response.status_code == 422
+    assert "unknown setting 'sleep'" in response.json()["detail"]
+    assert not (service.settings.store / "runs").exists()
+
+
 def test_submit_returns_id_at_once(service):
     response = service.post(
         "/runs", {"workflow": service.workflow(), "sources": [], "group": "g1"}
@@ -94,9 +107,9 @@ def test_submit_returns_id_at_once(service):
     assert summary["group"] == "g1"
     assert summary["tasks"] == {"squares": "waiting"}
     run_dir = service.run_dir(summary["id"])
+    # as submitted: the worker validates them with the plugin of the snapshot
     settings = json.loads((run_dir / "tasks/squares/settings.json").read_text())
-    assert settings["n"] == 4
-    assert settings["sleep_s"] == 0.0
+    assert settings == {"n": 4}
     record = service.submitted(summary["id"])
     assert record["state"] == "queued"
     assert record["backend_name"] == service.name(summary["id"])
@@ -590,3 +603,17 @@ def test_pending_work_blocks_deletion(service, monkeypatch):
     )
     response = service.client.delete(f"/runs/{run_id}", headers=service.auth())
     assert response.status_code == 409
+
+
+def test_unknown_settings_by_name_and_alias():
+    class Aliased(BaseModel):
+        model_config = ConfigDict(populate_by_name=True)
+        rate: float = Field(1.0, alias="k")
+        dose: float = Field(1.0, validation_alias=AliasChoices("d", "amount"))
+
+    class Open(BaseModel):
+        model_config = ConfigDict(extra="allow")
+
+    settings = {"rate": 1, "k": 2, "d": 3, "amount": 4, "dose": 5, "x": 6}
+    assert unknown_settings(Aliased, settings) == ["x"]
+    assert unknown_settings(Open, {"anything": 1}) == []
