@@ -261,13 +261,9 @@ class _Orphaning(FakeBackend):
 def test_recover_cancels_orphan(service_factory):
     backend = _Orphaning()
     with service_factory(backend) as service:
-        response = service.post(
-            "/runs", {"workflow": service.workflow(), "sources": []}
-        )
-        assert response.status_code == 502
-        (summary,) = service.get("/runs").json()
-        run_id = summary["id"]
+        run_id = service.submit()["id"]
         record = RunStore(service.settings.store).read(run_id)
+        assert record.state == "failed"
         assert record.backend_name == service.name(run_id)
         assert record.pending_cancel
     backend.broken = False
@@ -382,15 +378,21 @@ def test_cancel_during_submit_cancels_the_workflow(service):
     assert not record.pending_cancel
 
 
-def _submitting(service, age_s: float, since=None) -> str:
-    """A run submitting since `age_s` seconds before `since` (default now)."""
-    run_id = service.submit(reserve="srv-02")["id"]
+def _submitting(
+    service, age_s: float, since=None, built_age_s=None, reserve="srv-02"
+) -> str:
+    """A run submitting since `age_s` seconds before `since` (default now), its
+    image ready `built_age_s` seconds before, not yet without."""
+    run_id = service.submit(reserve=reserve)["id"]
     store = RunStore(service.settings.store)
     record = store.read(run_id)
     since = since or datetime.now(UTC)
     created = since - timedelta(seconds=age_s)
+    built = None if built_age_s is None else since - timedelta(seconds=built_age_s)
     store.write(
-        record.model_copy(update={"state": RunState.SUBMITTING, "created": created})
+        record.model_copy(
+            update={"state": RunState.SUBMITTING, "created": created, "built": built}
+        )
     )
     return run_id
 
@@ -436,10 +438,9 @@ def test_cancel_and_delete_during_submit(service):
         return original(self, manifest)
 
     backend.submit = submit.__get__(backend)
-    body = {"workflow": service.workflow(), "sources": []}
-    response = service.post("/runs", body)
-    assert response.status_code == 409
-    assert "deleted while it was submitted" in response.json()["detail"]
+    run_id = service.submit(wait=False)["id"]
+    service.submitted(run_id)
+    assert not service.run_dir(run_id).exists()
     (name,) = backend.manifests
     assert backend.calls[-2:] == [("submit", name), ("cancel", name)]
     assert backend.status(name).phase == "Failed"
@@ -523,3 +524,15 @@ def test_command_tasks_are_not_learned(service):
     resources = ResourceStore(service.settings.db)
     assert resources.resolve(key, COMMAND.hint, None).samples == 0
     assert not (service.run_dir(run_id) / "tasks/cmd/recorded").exists()
+
+
+def test_grace_counts_from_the_build(service):
+    # created long ago, its image was ready a second ago: in the grace
+    run_id = _submitting(service, SUBMIT_GRACE_S * 10, built_age_s=1.0)
+    service.controller.reconcile()
+    assert RunStore(service.settings.store).read(run_id).state == "submitting"
+    old = _submitting(
+        service, SUBMIT_GRACE_S * 10, built_age_s=SUBMIT_GRACE_S + 1, reserve="srv-03"
+    )
+    service.controller.reconcile()
+    assert RunStore(service.settings.store).read(old).state == "failed"

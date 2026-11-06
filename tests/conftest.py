@@ -1,5 +1,6 @@
 import os
 import subprocess
+import time
 from collections.abc import Callable, Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
@@ -73,11 +74,24 @@ class Service:
     def post(self, path: str, body: Any = None, token: str = "t-mk") -> Any:
         return self.client.post(path, json=body, headers=self.auth(token))
 
-    def submit(self, token: str = "t-mk", **kw: Any) -> dict[str, Any]:
+    def submit(
+        self, token: str = "t-mk", wait: bool = True, **kw: Any
+    ) -> dict[str, Any]:
+        """Submit a run; with `wait` the record once its submission ended."""
         body = {"workflow": kw.pop("workflow", self.workflow()), "sources": [], **kw}
         response = self.post("/runs", body, token)
         assert response.status_code == 201, response.text
-        return response.json()
+        summary = response.json()
+        assert summary["state"] == "submitting"
+        return self.submitted(summary["id"]) if wait else summary
+
+    def submitted(self, run_id: str, timeout_s: float = 60.0) -> dict[str, Any]:
+        """The record of a run once its submission in the background ended."""
+        deadline = time.monotonic() + timeout_s
+        while self.controller.in_flight(run_id):
+            assert time.monotonic() < deadline, f"run {run_id} is still submitted"
+            time.sleep(0.01)
+        return self.get(f"/runs/{run_id}").json()
 
     def name(self, run_id: str) -> str:
         return f"simrun-{run_id}"

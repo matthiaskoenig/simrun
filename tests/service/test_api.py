@@ -1,5 +1,6 @@
 import json
 import os
+import threading
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -8,6 +9,7 @@ import pytest
 import yaml
 
 from simrun.service import app as app_module
+from simrun.service import controller as controller_module
 from simrun.service.app import serve
 from simrun.service.auth import Identity, load_tokens, priority_of
 from simrun.snapshot import SourceProvenance
@@ -82,18 +84,25 @@ def test_validate(service):
 
 
 def test_submit_returns_id_at_once(service):
-    summary = service.submit(group="g1")
-    assert summary["state"] == "queued"
+    response = service.post(
+        "/runs", {"workflow": service.workflow(), "sources": [], "group": "g1"}
+    )
+    assert response.status_code == 201, response.text
+    summary = response.json()
+    # the environment, the image and the workflow follow in the background
+    assert summary["state"] == "submitting"
     assert summary["group"] == "g1"
     assert summary["tasks"] == {"squares": "waiting"}
     run_dir = service.run_dir(summary["id"])
-    record = json.loads((run_dir / "run.json").read_text())
-    assert record["backend_name"] == service.name(summary["id"])
-    assert record["image"] == "localhost:5000/base:1"
-    assert record["plans"]["squares"]["units"] == 4
     settings = json.loads((run_dir / "tasks/squares/settings.json").read_text())
     assert settings["n"] == 4
     assert settings["sleep_s"] == 0.0
+    record = service.submitted(summary["id"])
+    assert record["state"] == "queued"
+    assert record["backend_name"] == service.name(summary["id"])
+    assert record["image"] == "localhost:5000/base:1"
+    assert record["built"] is not None
+    assert record["plans"]["squares"]["units"] == 4
     assert service.name(summary["id"]) in service.backend.manifests
 
 
@@ -355,21 +364,31 @@ def test_reserved_node_must_be_free(service):
     assert response.status_code == 422
 
 
-def test_image_built_once(service_factory, tmp_path, monkeypatch):
-    monkeypatch.setenv("UV_OFFLINE", "1")
+def _wheel(tmp_path: Path) -> Path:
     wheel = tmp_path / "simrun-0.1.0-py3-none-any.whl"
     wheel.write_bytes(b"wheel")
-    with service_factory(simrun_wheel=wheel, default_image=None) as service:
-        model = service.settings.store / "snapshots/model/a"
-        model.mkdir(parents=True)
-        (model / "pyproject.toml").write_text(
-            '[project]\nname = "model"\nversion = "0.1"\nrequires-python = ">=3.14"\n'
-            "dependencies = []\n"
-        )
+    return wheel
+
+
+def _model(store: Path, lock: bool = True) -> dict:
+    model = store / "snapshots/model/a"
+    model.mkdir(parents=True, exist_ok=True)
+    (model / "pyproject.toml").write_text(
+        '[project]\nname = "model"\nversion = "0.1"\nrequires-python = ">=3.14"\n'
+        "dependencies = []\n"
+    )
+    if lock:
         (model / "uv.lock").write_text(
             'version = 1\nrevision = 5\nrequires-python = ">=3.14"\n'
         )
-        source = provenance("model", "snapshots/model/a")
+    return provenance("model", "snapshots/model/a")
+
+
+def test_image_built_once(service_factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    wheel = _wheel(tmp_path)
+    with service_factory(simrun_wheel=wheel, default_image=None) as service:
+        source = _model(service.settings.store)
         first = service.submit(sources=[source])["id"]
         second = service.submit(sources=[source])["id"]
     builds = [c for c in service.backend.calls if c[0] == "build_image"]
@@ -382,6 +401,90 @@ def test_image_built_once(service_factory, tmp_path, monkeypatch):
     assert (
         'name = "pydantic"' in (service.run_dir(first) / "environment.lock").read_text()
     )
+
+
+class _SlowBuild(FakeBackend):
+    """A build which waits until the test releases it."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.building = threading.Event()
+        self.release = threading.Event()
+
+    def build_image(self, context, ref):
+        self.building.set()
+        assert self.release.wait(30)
+        super().build_image(context, ref)
+
+
+def test_submission_returns_before_the_build(service_factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    backend = _SlowBuild()
+    wheel = _wheel(tmp_path)
+    with service_factory(backend, simrun_wheel=wheel, default_image=None) as service:
+        try:
+            source = _model(service.settings.store)
+            first = service.submit(sources=[source], wait=False)["id"]
+            assert backend.building.wait(30)
+            assert service.get(f"/runs/{first}").json()["state"] == "submitting"
+            # a build longer than the grace: the controller leaves the run alone
+            monkeypatch.setattr(controller_module, "SUBMIT_GRACE_S", 0.0)
+            service.controller.reconcile()
+            assert service.get(f"/runs/{first}").json()["state"] == "submitting"
+            monkeypatch.setattr(controller_module, "SUBMIT_GRACE_S", 120.0)
+            # the same new environment again while it is built: built once
+            second = service.submit(sources=[source], wait=False)["id"]
+        finally:
+            backend.release.set()
+        for run_id in (first, second):
+            record = service.submitted(run_id)
+            assert record["state"] == "queued", record["message"]
+            assert record["built"] is not None
+    assert len([c for c in backend.calls if c[0] == "build_image"]) == 1
+
+
+def test_cancel_during_the_build(service_factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    backend = _SlowBuild()
+    wheel = _wheel(tmp_path)
+    with service_factory(backend, simrun_wheel=wheel, default_image=None) as service:
+        try:
+            source = _model(service.settings.store)
+            run_id = service.submit(sources=[source], wait=False)["id"]
+            assert backend.building.wait(30)
+            response = service.post(f"/runs/{run_id}/cancel")
+            assert response.json()["state"] == "cancelled"
+        finally:
+            backend.release.set()
+        assert service.submitted(run_id)["state"] == "cancelled"
+    assert ("submit", service.name(run_id)) not in backend.calls
+
+
+def test_failed_environment_lands_in_the_record(service_factory, tmp_path):
+    with service_factory(simrun_wheel=_wheel(tmp_path), default_image=None) as service:
+        source = _model(service.settings.store, lock=False)
+        record = service.submit(sources=[source], reserve="srv-02")
+        assert record["state"] == "failed"
+        assert "uv.lock" in record["message"]
+        assert record["tasks"] == {"squares": "skipped"}
+        assert not [c for c in service.backend.calls if c[0] in ("submit", "reserve")]
+
+
+class _FailingBuild(FakeBackend):
+    def build_image(self, context, ref):
+        raise RuntimeError("buildkit is down")
+
+
+def test_failed_build_lands_in_the_record(service_factory, tmp_path, monkeypatch):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    wheel = _wheel(tmp_path)
+    with service_factory(_FailingBuild(), simrun_wheel=wheel, default_image=None) as (
+        service
+    ):
+        record = service.submit(sources=[_model(service.settings.store)])
+        assert record["state"] == "failed"
+        assert "building the image" in record["message"]
+        assert "buildkit is down" in record["message"]
 
 
 def test_no_image_is_422(service_factory):
@@ -422,11 +525,8 @@ class _FailingSubmit(FakeBackend):
 
 def test_failed_submission_releases_node(service_factory):
     with service_factory(_FailingSubmit()) as service:
-        body = {"workflow": service.workflow(), "sources": [], "reserve": "srv-02"}
-        response = service.post("/runs", body)
-        assert response.status_code == 502
-        assert "no cluster" in response.json()["detail"]
-        (record,) = service.get("/runs").json()
+        record = service.submit(reserve="srv-02")
+        assert "no cluster" in record["message"]
         assert ("unreserve", "srv-02", record["id"]) in service.backend.calls
         assert record["state"] == "failed"
         assert record["tasks"] == {"squares": "skipped"}
