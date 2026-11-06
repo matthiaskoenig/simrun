@@ -305,16 +305,31 @@ class Submitter:
         logger.info("run %s submitted by %s", record.id, record.submitted_by)
 
     def _cancel_orphan(self, record: RunRecord) -> None:
-        """Cancel the workflow of a run cancelled and deleted while it was submitted."""
+        """Undo the submission of a run cancelled and deleted while it was submitted.
+
+        Its workflow is cancelled and its node released (the job may have reserved
+        it after the run was released and deleted); no record is left to retry
+        either, so both are best effort and logged.
+        """
         name = record.backend_name
         logger.warning(
             "run %s was cancelled and deleted while it was submitted", record.id
         )
-        if name is None:
-            return
-        try:
-            self.backend.cancel(name)
-        except KeyError:
-            pass
-        except Exception:
-            logger.exception("cancelling the orphan workflow %s failed", name)
+        if name is not None:
+            try:
+                self.backend.cancel(name)
+            except KeyError:
+                pass
+            except Exception:
+                logger.exception("cancelling the orphan workflow %s failed", name)
+        if record.reserve is not None:
+            try:
+                self.backend.unreserve(record.reserve, record.id)
+            except KeyError:
+                pass
+            except Exception:
+                logger.exception(
+                    "releasing node %s of the orphan run %s failed",
+                    record.reserve,
+                    record.id,
+                )
