@@ -56,3 +56,22 @@ def memory_anon(root: Path = CGROUP_ROOT) -> int | None:
         if key == "anon":
             return int(value)
     return None
+
+
+def memory_oom_kills(root: Path = CGROUP_ROOT) -> int | None:
+    """The processes of the cgroup the out of memory killer killed (`oom_kill`).
+
+    The counter of `memory.events`, the evidence of a kill for memory: a process
+    which exits 137 may have been killed by anyone with SIGKILL.
+
+    Returns:
+        The count, `None` without the file or the field.
+    """
+    text = _read(root / "memory.events")
+    if text is None:
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "oom_kill":
+            return int(value)
+    return None

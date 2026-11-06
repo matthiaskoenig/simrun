@@ -8,8 +8,11 @@ task failed the run failed; in both cases the controller stops the workflow, so 
 workers still waiting for admission go away, and releases the reserved node.
 
 A pod is retried once with the retry memory after a kill for memory: a worker, a
-merge or an unsplit task the backend reports killed for memory twice fails the run
-(Ruling 35), whose message names the retry memory.
+merge or an unsplit task killed for memory again with the retry memory fails the run
+(Ruling 35), whose message names the retry memory. A kill for memory needs the
+evidence of the out of memory killer (Ruling 39): the reason `OOMKilled` of the
+backend, or the report of an attempt which exited 137 counting kills of the out of
+memory killer in its cgroup; a pod killed after its grace period was evicted.
 
 The states of the tasks and the out of memory kills are stored in the record at every
 poll. When the workflow is gone (deleted by its time to live before the controller saw
@@ -20,8 +23,8 @@ undetermined fail.
 The reports of the workers of a task (of `simrun-exec` for an unsplit plugin task,
 by the task id) are recorded as resource observations once the state of the task is
 final, each marked in `tasks/<task>/recorded/` right after its
-observation; a kill for memory the backend reports for an attempt without a report is
-an observation of the pod shape at its limit (Ruling 24).
+observation; a kill for memory of an attempt without a report is an observation of
+the pod shape at its limit (Ruling 24).
 
 A terminal record is written first; a release of the node or a cancellation of the
 workflow which fails stays in the record (`pending_release`, `pending_cancel`) and is
@@ -51,9 +54,10 @@ from simrun.service.backend import (
     PREEMPTED_PHASE,
     Backend,
     BackendStatus,
+    FailedAttempt,
 )
 from simrun.store import RunRecord, RunState, RunStore, TaskState
-from simrun.worker import MERGED_MARKER, WORKERS_DIR, WorkerReport
+from simrun.worker import EXIT_POOL_BROKEN, MERGED_MARKER, WORKERS_DIR, WorkerReport
 from simrun.workflow import TaskSpec, Workflow
 
 logger = logging.getLogger(__name__)
@@ -144,23 +148,23 @@ def _attempt(name: str) -> int:
         return 0
 
 
-def is_oom(report: WorkerReport, attempt: int, kills: dict[str, int]) -> bool:
+def is_oom(report: WorkerReport, attempt: int, kills: dict[str, list[int]]) -> bool:
     """Whether a report is of a worker which was killed for memory.
 
-    Only the kills the backend reports count (Ruling 34): a peak near the limit is
-    no kill, the kernel reclaims the page cache there.
+    Only the evidence of the out of memory killer counts (Rulings 34, 39): a peak
+    near the limit is no kill, the kernel reclaims the page cache there, and an
+    exit 137 may be a kill after the grace period.
 
     Args:
         report: The report.
         attempt: Its attempt.
-        kills: The pods killed for memory per worker, over all attempts.
+        kills: The attempts killed for memory per worker (`RunRecord.oom_kills`).
 
     Returns:
-        True when the backend counts more kills of the worker than the attempt (the
-        first attempts of a worker are the killed ones, the retries have more
-        memory).
+        True when the attempt is one killed for memory, or the report counts kills
+        of the out of memory killer in its cgroup.
     """
-    return attempt < kills.get(report.worker, 0)
+    return report.oom_kills > 0 or attempt in kills.get(report.worker, ())
 
 
 def run_ids(store: RunStore) -> list[str]:
@@ -403,35 +407,111 @@ class Controller:
             self.store.write(after)
             return True
 
-    def _killed_twice(
-        self, record: RunRecord, oom: dict[str, int]
-    ) -> tuple[str, str] | None:
-        """The task and the message of a pod killed for memory more than once.
+    def _pods(
+        self, task: TaskSpec, shape: PodShape | None
+    ) -> list[tuple[str, PodShape | None]]:
+        """The patterns of the pod keys of a task with the shapes of their pods."""
+        task_type = self.types[task.type]
+        if not task_type.splittable:
+            return [(re.escape(task.id), shape)]
+        merge = (
+            None
+            if shape is None
+            else podspec.merge_shape(shape, task_type.hint.memory_base_gb)
+        )
+        return [
+            (rf"{re.escape(task.id)}-w\d+", shape),
+            (rf"{re.escape(task.id)}-merge", merge),
+        ]
 
-        The retry after a kill has the retry memory (`RETRY_FACTOR` per process), so
-        a second kill of the same worker, merge or unsplit task is a kill with it:
-        the run fails instead of retrying again (Ruling 35).
+    def _task_of(self, record: RunRecord, key: str) -> TaskSpec | None:
+        """The task of a pod key: a worker, a merge or an unsplit task."""
+        for task in record.workflow.tasks:
+            if any(re.fullmatch(p, key) for p, _ in self._pods(task, None)):
+                return task
+        return None
+
+    def _reported_kill(self, record: RunRecord, key: str, attempt: int) -> bool:
+        """Whether the report of an attempt counts kills of the out of memory killer.
+
+        A worker (or `simrun-exec`) which exits 137 itself because a process of its
+        pool (its command) died writes its report first.
+        """
+        task = self._task_of(record, key)
+        if task is None:
+            return False
+        path = (
+            self.store.run_dir(record.id)
+            / "tasks"
+            / task.id
+            / WORKERS_DIR
+            / f"{key}-{attempt}.json"
+        )
+        try:
+            report = WorkerReport(**json.loads(path.read_text()))
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError, TypeError) as error:
+            logger.warning("report %s of run %s: %s", path.name, record.id, error)
+            return False
+        return report.oom_kills > 0
+
+    def _memory_kills(
+        self, record: RunRecord, failed: dict[str, list[FailedAttempt]]
+    ) -> dict[str, list[int]]:
+        """The attempts killed for memory per pod key, with the ones known before.
+
+        An attempt was killed for memory with the evidence of the out of memory
+        killer (Ruling 39): its container `OOMKilled`, or an exit 137 whose report
+        counts kills of the out of memory killer. A pod killed after its grace
+        period (exit 137 without either) was evicted.
+        """
+        kills = {key: set(attempts) for key, attempts in record.oom_kills.items()}
+        for key, attempts in failed.items():
+            for a in attempts:
+                if a.attempt in kills.get(key, ()):
+                    continue
+                if a.oom_killed or (
+                    a.exit_code == EXIT_POOL_BROKEN
+                    and self._reported_kill(record, key, a.attempt)
+                ):
+                    kills.setdefault(key, set()).add(a.attempt)
+        return {key: sorted(attempts) for key, attempts in sorted(kills.items())}
+
+    def _killed_twice(
+        self,
+        record: RunRecord,
+        failed: dict[str, list[FailedAttempt]],
+        kills: dict[str, list[int]],
+    ) -> tuple[str, str] | None:
+        """The task and the message of a pod killed for memory with the retry memory.
+
+        The attempt after an exit 137 has the retry memory (`RETRY_FACTOR` per
+        process, the `podSpecPatch` of `simrun.argo`), so a kill for memory of
+        such an attempt after a first kill fails the run instead of retrying again
+        (Ruling 35). Argo knows only the last attempt: an attempt after one which
+        was preempted has the first memory again, and its kill does not count
+        (Ruling 39), the attempt after it has the retry memory again.
         """
         for task in record.workflow.tasks:
             shape_values = record.plans.get(task.id, {}).get("shape")
             if shape_values is None:
                 continue
-            shape = PodShape(**shape_values)
-            task_type = self.types[task.type]
-            if task_type.splittable:
-                merge = podspec.merge_shape(shape, task_type.hint.memory_base_gb)
-                pods = [(rf"{re.escape(task.id)}-w\d+", shape)]
-                pods.append((rf"{re.escape(task.id)}-merge", merge))
-            else:
-                pods = [(re.escape(task.id), shape)]
-            for key, count in sorted(oom.items()):
-                if count < 2:
+            pods = self._pods(task, PodShape(**shape_values))
+            for key, killed in kills.items():
+                exits = {a.attempt: a.exit_code for a in failed.get(key, [])}
+                counted = sum(
+                    1
+                    for i, attempt in enumerate(killed)
+                    if i == 0 or exits.get(attempt - 1) == EXIT_POOL_BROKEN
+                )
+                if counted < 2:
                     continue
                 for pattern, pod in pods:
-                    if re.fullmatch(pattern, key):
+                    if pod is not None and re.fullmatch(pattern, key):
                         return task.id, (
-                            f"task {task.id}: {key} was killed for memory {count} "
-                            f"times, also with the retry memory of "
+                            f"task {task.id}: {key} was killed for memory "
+                            f"{len(killed)} times, also with the retry memory of "
                             f"{pod.retry_memory_gb} GiB ({pod.retry_per_worker_gb} "
                             "GiB per process); give the task more memory"
                         )
@@ -440,8 +520,9 @@ class Controller:
     def _next(self, record: RunRecord, status: BackendStatus) -> RunRecord:
         """The record after a status of its workflow."""
         tasks = task_states(record.workflow, self.types, status)
-        record = record.model_copy(update={"oom_kills": dict(status.oom)})
-        killed = self._killed_twice(record, status.oom)
+        kills = self._memory_kills(record, status.failed)
+        record = record.model_copy(update={"oom_kills": kills})
+        killed = self._killed_twice(record, status.failed, kills)
         if killed is not None:
             task_id, message = killed
             return closed(
@@ -584,9 +665,9 @@ class Controller:
         worker = re.compile(rf"{re.escape(task_id)}(-w\d+)?")
         kills = {
             (w, attempt)
-            for w, count in record.oom_kills.items()
+            for w, attempts in record.oom_kills.items()
             if worker.fullmatch(w)
-            for attempt in range(count)
+            for attempt in attempts
         }
         if not reports and not kills:
             return

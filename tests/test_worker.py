@@ -844,6 +844,20 @@ def test_report_carries_the_peak_of_the_sampled_anonymous_memory(
     assert read_report(worker_env, "squares-w0")["peak_memory_bytes"] == 3 * 2**30
 
 
+def test_report_counts_the_kills_of_the_out_of_memory_killer(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the evidence of a kill for memory: `memory.events` `oom_kill` rose during the
+    # worker (a process of its pool was killed, the worker exits 137 itself)
+    counts = iter([3, 5])
+    monkeypatch.setattr(worker.cgroup, "memory_oom_kills", lambda: next(counts))
+    (worker_env / "settings.json").write_text(SquaresSettings(n=2).model_dump_json())
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == 0
+    assert read_report(worker_env, "squares-w0")["oom_kills"] == 2
+
+
 def test_sampler_keeps_the_maximum(monkeypatch: pytest.MonkeyPatch) -> None:
     samples = iter([5, None, 9, 2])
     monkeypatch.setattr(worker.cgroup, "memory_anon", lambda: next(samples))

@@ -3,7 +3,7 @@
 from pathlib import Path
 from typing import Any, Protocol
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from simrun.planner import Node
 
@@ -11,6 +11,23 @@ from simrun.planner import Node
 FINAL_PHASES = frozenset({"Succeeded", "Failed", "Error"})
 # the phase of a task node whose pod was evicted (or lost) and waits for its retry
 PREEMPTED_PHASE = "Preempted"
+
+
+class FailedAttempt(BaseModel):
+    """An attempt of a pod which failed.
+
+    Attributes:
+        attempt: The number of the attempt, from 0, as the pod has it in
+            `SIMRUN_ATTEMPT` (Argo's `{{retries}}`) and in the name of its report.
+        exit_code: The exit code of its main container, None without one (e.g. a
+            pod deleted by an eviction of Kueue).
+        oom_killed: Whether the main container was killed by the out of memory
+            killer (the reason `OOMKilled`); an exit 137 alone is no evidence of it.
+    """
+
+    attempt: int
+    exit_code: int | None = None
+    oom_killed: bool = False
 
 
 class BackendStatus(BaseModel):
@@ -25,13 +42,14 @@ class BackendStatus(BaseModel):
             `<task>-extra(<i>:<item>)` and `<task>-merge` of a split task, `<task>` of
             an unsplit one; a node not yet created is missing. A node whose pod was
             evicted and whose retry waits is `Preempted` (`PREEMPTED_PHASE`).
-        oom: Pods killed for memory, over all attempts: per worker id (`<task>-w<i>`),
-            per task id of an unsplit task and per `<task>-merge` of a merge.
+        failed: The attempts of pods which failed, in the order of their number: per
+            worker id (`<task>-w<i>`), per task id of an unsplit task and per
+            `<task>-merge` of a merge.
     """
 
     phase: str
     tasks: dict[str, str]
-    oom: dict[str, int]
+    failed: dict[str, list[FailedAttempt]] = Field(default_factory=dict)
 
 
 class Backend(Protocol):
