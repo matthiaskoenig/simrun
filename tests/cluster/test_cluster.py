@@ -50,6 +50,14 @@ def test_demo_run_end_to_end(service: Service) -> None:
     assert nodes == set(AGENTS)
     # the controller recorded the three reports as observations
     assert sorted(p.name for p in (task_dir / "recorded").iterdir()) == reports
+    # and kept the logs of the pods, which the API serves after the workflow
+    index = json.loads((task_dir / "logs" / "index.json").read_text())
+    nodes = {entry["node"] for entry in index}
+    assert {"squares-w0(0)", "squares-merge(0)"} <= nodes, nodes
+    logs = service.http.get(
+        f"/runs/{run['id']}/logs/squares", headers={"Authorization": "Bearer t-mk"}
+    ).text
+    assert "==> squares-merge(0) (" in logs
 
 
 def test_take_back_same_priority(service: Service) -> None:
