@@ -395,10 +395,19 @@ class ArgoBackend:
     # workflows
 
     def submit(self, manifest: dict[str, Any]) -> str:
-        """Create the workflow; returns its name."""
-        created = self.custom.create_namespaced_custom_object(
-            GROUP, VERSION, self.config.namespace, PLURAL, manifest
-        )
+        """Create the workflow; returns its name.
+
+        A workflow of the name which exists already is taken as submitted: the name
+        of the workflow of a run is fixed, so a resumed submission creates it once.
+        """
+        try:
+            created = self.custom.create_namespaced_custom_object(
+                GROUP, VERSION, self.config.namespace, PLURAL, manifest
+            )
+        except ApiException as error:
+            if error.status == 409:
+                return manifest["metadata"]["name"]
+            raise
         return created["metadata"]["name"]  # ty: ignore[not-subscriptable]
 
     def _workflow(self, name: str) -> dict[str, Any]:

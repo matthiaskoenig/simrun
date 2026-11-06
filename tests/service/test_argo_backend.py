@@ -647,3 +647,18 @@ def test_the_infrastructure_stays_off_the_worker_nodes() -> None:
         assert terms == [
             {"matchExpressions": [{"key": WORKER_LABEL, "operator": "DoesNotExist"}]}
         ]
+
+
+def test_a_workflow_which_exists_is_taken_as_submitted() -> None:
+    def exists(*args: Any, **kw: Any) -> None:
+        raise ApiException(status=409)
+
+    created, _ = _fake_backend(create_namespaced_custom_object=exists)
+    assert created.submit({"metadata": {"name": WF}}) == WF
+
+    def forbidden(*args: Any, **kw: Any) -> None:
+        raise ApiException(status=403)
+
+    created, _ = _fake_backend(create_namespaced_custom_object=forbidden)
+    with pytest.raises(ApiException):
+        created.submit({"metadata": {"name": WF}})

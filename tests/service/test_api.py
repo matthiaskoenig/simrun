@@ -779,3 +779,51 @@ def test_no_logs_are_kept_for_a_run_without_a_workflow(service_factory, tmp_path
         assert record["state"] == "failed"
         assert not record["pending_logs"]
         assert not (service.run_dir(record["id"]) / "tasks/squares/logs").exists()
+
+
+def test_a_restart_resumes_a_submission_in_flight(
+    service_factory, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    wheel = _wheel(tmp_path)
+    first_backend = _SlowBuild()
+    try:
+        with service_factory(
+            first_backend, simrun_wheel=wheel, default_image=None
+        ) as first:
+            run_id = first.submit(sources=[_model(first.settings.store)], wait=False)[
+                "id"
+            ]
+            assert first_backend.building.wait(30)
+            stopping = time.monotonic()
+        # the service stops without waiting for the build
+        assert time.monotonic() - stopping < 5
+        backend = FakeBackend()
+        with service_factory(backend, simrun_wheel=wheel, default_image=None) as second:
+            deadline = time.monotonic() + 30
+            while second.store.read(run_id).state == "submitting":
+                assert time.monotonic() < deadline, "the submission was not resumed"
+                time.sleep(0.05)
+            record = second.store.read(run_id)
+            assert record.state == "queued", record.message
+            name = second.name(run_id)
+            assert [c[0] for c in backend.calls] == ["build_image", "submit"]
+            assert ("submit", name) in backend.calls
+    finally:
+        first_backend.release.set()
+    # the job of the first service finds the run changed and submits nothing
+    deadline = time.monotonic() + 30
+    while first.controller.in_flight(run_id):
+        assert time.monotonic() < deadline
+        time.sleep(0.05)
+    assert not [c for c in first_backend.calls if c[0] == "submit"]
+
+
+def test_a_workflow_submitted_twice_is_submitted_once(service):
+    run_id = service.submit()["id"]
+    name = service.name(run_id)
+    manifest = service.backend.manifests[name]
+    service.backend.start(name)
+    # a resumed submission submits the workflow of the run again
+    assert service.backend.submit(manifest) == name
+    assert service.backend.status(name).phase == "Running"

@@ -332,6 +332,7 @@ class _Service:
             settings.python,
             settings.simrun_wheel,
         )
+        self.controller.resume = self.submitter.run
         self.tokens = load_tokens(settings.tokens)
 
     # submission
