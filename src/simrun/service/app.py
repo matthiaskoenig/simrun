@@ -22,7 +22,7 @@ from collections.abc import AsyncGenerator, Iterable
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 
 import yaml
 from fastapi import Body, Depends, FastAPI, HTTPException, Query
@@ -38,9 +38,14 @@ from simrun.plugins import TaskType, load_task_types, resolve
 from simrun.plugins_builtin import COMMAND
 from simrun.resources import ResolvedResources, ResourceStore, resource_key
 from simrun.service.auth import Identity, authenticate, load_tokens, priority_of
-from simrun.service.backend import Backend
+from simrun.service.backend import Backend, Placement
 from simrun.service.compare import CompareTable, compare_runs
-from simrun.service.controller import TERMINAL_RUN_STATES, Controller
+from simrun.service.controller import (
+    TERMINAL_RUN_STATES,
+    Controller,
+    _attempt,
+    is_oom,
+)
 from simrun.service.index import IndexedRunStore, RunIndex
 from simrun.service.logs import DEFAULT_TAIL_LINES, read_kept, render
 from simrun.service.submission import Submitter, has_model_project
@@ -52,6 +57,8 @@ from simrun.worker import (
     PROVENANCE_FILE,
     SETTINGS_FILE,
     UNITS_DIR,
+    WORKERS_DIR,
+    WorkerReport,
 )
 from simrun.workflow import Priority, SplitMode, Workflow
 
@@ -147,6 +154,74 @@ class TaskProgress(BaseModel):
 
     counts: LedgerCounts | None
     last: dict[str, Any] | None
+
+
+class RunItem(RunSummary):
+    """A run of the list of runs: its summary with its owner and workflow name."""
+
+    owner: str
+    workflow: str
+
+
+class PodUsage(BaseModel):
+    """A pod of a run on a server.
+
+    Attributes:
+        run_id: The run of the pod, None when the pod belongs to no known run.
+        task_id: The task of the pod.
+        pod: The name of the pod.
+        phase: The phase of the pod.
+        cores: The cores it requests.
+        memory_gb: The GiB of memory it requests.
+    """
+
+    run_id: str | None
+    task_id: str
+    pod: str
+    phase: str
+    cores: float
+    memory_gb: float
+
+
+class ServerUsage(BaseModel):
+    """A server of the cluster with the pods of runs on it."""
+
+    name: str
+    cores: int
+    memory_gb: float
+    gpus: int
+    reserved_by: str | None
+    pods: list[PodUsage]
+
+
+class WorkerView(BaseModel):
+    """A worker of a task, from its reports, its pod and its claims.
+
+    Attributes:
+        worker: The worker id.
+        node: The server of the worker, None while its pod is not bound.
+        state: `running` while its pod lives and the last attempt has no final
+            report, `failed` when the last attempt was killed for memory, else
+            `done`.
+        attempts: The attempts of the worker (reports, and the running one).
+        processes: The processes of its pool, None before a report.
+        units_done: The units its reports count as done.
+        units_claimed: The units it holds claimed now.
+        peak_memory_gb: The peak memory of the last report.
+        memory_limit_gb: The memory limit of the last report.
+        oom_killed: Whether the last attempt was killed for memory.
+    """
+
+    worker: str
+    node: str | None
+    state: Literal["running", "done", "failed"]
+    attempts: int
+    processes: int | None
+    units_done: int
+    units_claimed: int
+    peak_memory_gb: float | None
+    memory_limit_gb: float | None
+    oom_killed: bool
 
 
 class OutputFile(BaseModel):
@@ -290,6 +365,19 @@ def disk_usage(path: Path) -> int:
     """The bytes of the files below `path`, every hard linked file once."""
     sizes = {(st.st_dev, st.st_ino): st.st_size for st in _files(path)}
     return sum(sizes.values())
+
+
+def _task_of(dag_task: str) -> str:
+    """The task id of a DAG task: `<task>-w0`, `<task>-extra`, `<task>-merge`."""
+    for suffix in ("-w0", "-extra", "-merge"):
+        if dag_task.endswith(suffix):
+            return dag_task.removesuffix(suffix)
+    return dag_task
+
+
+def _gb(value: int | None) -> float | None:
+    """Bytes as GiB, None stays None."""
+    return None if value is None else value / 1024**3
 
 
 def _pending(record: RunRecord) -> bool:
@@ -558,6 +646,107 @@ class _Service:
             for p in sorted(files)
         ]
 
+    def run_items(
+        self,
+        group: str | None,
+        owner: str | None,
+        agent: str | None,
+        state: RunState | None,
+        limit: int,
+    ) -> list[RunItem]:
+        """The most recent runs matching the filters, the newest first."""
+        runs = self.store.index.runs(group, owner, agent, state)
+        runs.sort(key=lambda r: (r.summary.created, r.summary.id), reverse=True)
+        return [
+            RunItem(**r.summary.model_dump(), owner=r.owner, workflow=r.workflow)
+            for r in runs[:limit]
+        ]
+
+    def servers(self) -> list[ServerUsage]:
+        """Every node with the pods of the runs on it."""
+        run_ids = {
+            workflow_name(r.summary.id): r.summary.id for r in self.store.index.runs()
+        }
+        pods: dict[str, list[PodUsage]] = {}
+        for p in self.backend.placements():
+            if p.node is None:
+                continue
+            pods.setdefault(p.node, []).append(
+                PodUsage(
+                    run_id=run_ids.get(p.workflow),
+                    task_id=_task_of(p.dag_task),
+                    pod=p.pod,
+                    phase=p.phase,
+                    cores=p.cores,
+                    memory_gb=p.memory_gb,
+                )
+            )
+        return [
+            ServerUsage(
+                name=n.name,
+                cores=n.cores,
+                memory_gb=n.memory_gb,
+                gpus=n.gpus,
+                reserved_by=n.reserved_by,
+                pods=pods.get(n.name, []),
+            )
+            for n in self.backend.nodes()
+        ]
+
+    def workers(self, record: RunRecord, task_id: str) -> list[WorkerView]:
+        """The workers of a task, sorted by id; 404 for an unknown task."""
+        task_dir = self.task_dir(record, task_id)
+        reports: dict[str, dict[int, WorkerReport]] = {}
+        for path in sorted((task_dir / WORKERS_DIR).glob("*.json")):
+            try:
+                report = WorkerReport(**json.loads(path.read_text()))
+            except (OSError, ValueError, TypeError) as error:
+                logger.warning("report %s of run %s: %s", path.name, record.id, error)
+                continue
+            reports.setdefault(report.worker, {})[_attempt(path.name)] = report
+        live: dict[str, Placement] = {}
+        if record.backend_name is not None:
+            for p in self.backend.placements():
+                if (
+                    p.workflow == record.backend_name
+                    and p.worker is not None
+                    and _task_of(p.dag_task) == task_id
+                ):
+                    live[p.worker] = p
+        units = record.plans.get(task_id, {}).get("units")
+        claims: dict[str, list[int]] = {}
+        if units is not None and (task_dir / UNITS_DIR).is_dir():
+            claims = Ledger(task_dir / UNITS_DIR, units).claims()
+        views = []
+        for worker in sorted(reports.keys() | live.keys()):
+            attempts = reports.get(worker, {})
+            last = attempts[max(attempts)] if attempts else None
+            oom = last is not None and is_oom(last, max(attempts), record.oom_kills)
+            pod = live.get(worker)
+            state: Literal["running", "done", "failed"]
+            if pod is not None and (last is None or oom):
+                state = "running"
+            else:
+                state = "failed" if oom else "done"
+            node = pod.node if state == "running" and pod else None
+            if node is None and last is not None and last.node:
+                node = last.node
+            views.append(
+                WorkerView(
+                    worker=worker,
+                    node=node,
+                    state=state,
+                    attempts=len(attempts) + (1 if state == "running" else 0),
+                    processes=last.processes if last else None,
+                    units_done=sum(len(r.units_done) for r in attempts.values()),
+                    units_claimed=len(claims.get(worker, [])),
+                    peak_memory_gb=_gb(last.peak_memory_bytes if last else None),
+                    memory_limit_gb=_gb(last.memory_limit_bytes if last else None),
+                    oom_killed=oom,
+                )
+            )
+        return views
+
     # removal
 
     def delete(self, run_id: str) -> CleanupResult:
@@ -780,6 +969,7 @@ def create_app(
     app.state.settings = settings
     app.state.backend = backend
     app.state.controller = service.controller
+    app.state.service = service
     Caller = Annotated[Identity, Depends(identity)]
 
     @app.post("/validate")
@@ -809,6 +999,18 @@ def create_app(
     @app.post("/runs", status_code=201)
     def submit(request: SubmitRequest, caller: Caller) -> RunSummary:
         return RunSummary.of(service.submit(request, caller))
+
+    @app.get("/me")
+    def me(caller: Caller) -> Identity:
+        return caller
+
+    @app.get("/servers")
+    def servers() -> list[ServerUsage]:
+        return service.servers()
+
+    @app.get("/runs/{run_id}/tasks/{task_id}/workers")
+    def workers(run_id: str, task_id: str) -> list[WorkerView]:
+        return service.workers(service.read(run_id), task_id)
 
     @app.get("/runs")
     def list_runs(
