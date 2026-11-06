@@ -1,8 +1,14 @@
+import shutil
+import time
+from datetime import UTC, datetime
+
+import pytest
+
 from simrun.demo import SQUARES
 from simrun.resources import GIB, ResourceKey, ResourceStore
 from simrun.service.backend import BackendStatus
-from simrun.service.controller import Controller, task_states
-from simrun.store import RunStore, TaskState
+from simrun.service.controller import SUBMIT_GRACE_S, Controller, task_states
+from simrun.store import RunState, RunStore, TaskState
 from simrun.testing import FakeBackend
 from simrun.worker import MERGED_MARKER, WorkerReport, write_report
 from simrun.workflow import Workflow
@@ -74,10 +80,10 @@ def test_reservation_released(service):
     assert manifest["spec"]["nodeSelector"] == {"simrun/reserved": run_id}
     service.backend.start(name)
     service.controller.reconcile()
-    assert ("unreserve", "srv-02") not in service.backend.calls
+    assert ("unreserve", "srv-02", run_id) not in service.backend.calls
     service.backend.set_node(name, "squares-merge", "Succeeded")
     service.controller.reconcile()
-    assert ("unreserve", "srv-02") in service.backend.calls
+    assert ("unreserve", "srv-02", run_id) in service.backend.calls
     # the extra workers were still running: the workflow is stopped
     assert ("stop", name) in service.backend.calls
     record = RunStore(service.settings.store).read(run_id)
@@ -167,10 +173,10 @@ def test_gone_with_merge_marker(service):
 class _BrokenRelease(FakeBackend):
     broken = True
 
-    def unreserve(self, node):
+    def unreserve(self, node, run_id):
         if self.broken:
             raise RuntimeError("api down")
-        super().unreserve(node)
+        super().unreserve(node, run_id)
 
 
 def test_failed_release_is_retried(service_factory):
@@ -185,7 +191,7 @@ def test_failed_release_is_retried(service_factory):
         service.backend.broken = False
         service.controller.reconcile()
         assert store.read(run_id).pending_release is None
-        assert ("unreserve", "srv-02") in service.backend.calls
+        assert ("unreserve", "srv-02", run_id) in service.backend.calls
 
 
 def test_unknown_node_counts_as_released(service):
@@ -288,3 +294,105 @@ def test_task_states():
     assert done == {"a": TaskState.DONE, "b": TaskState.RUNNING}
     assert _states(b="Succeeded")["b"] == TaskState.DONE
     assert _states(b="Failed")["b"] == TaskState.FAILED
+
+
+def test_late_release_keeps_a_later_reservation(service_factory):
+    with service_factory(_BrokenRelease()) as service:
+        run_id = service.submit(reserve="srv-02")["id"]
+        service.backend.finish(service.name(run_id))
+        service.controller.reconcile()  # the release fails, it is pending
+        # meanwhile the node was freed by hand and reserved by a later run
+        service.backend.broken = False
+        service.backend.unreserve("srv-02", run_id)
+        service.backend.reserve("srv-02", "later")
+        service.controller.reconcile()
+        store = RunStore(service.settings.store)
+        assert store.read(run_id).pending_release is None
+        (node,) = [n for n in service.backend.nodes() if n.name == "srv-02"]
+        assert node.reserved_by == "later"
+
+
+def test_fake_unreserve_only_own_reservation():
+    backend = FakeBackend()
+    backend.reserve("srv-02", "a")
+    backend.unreserve("srv-02", "b")
+    assert next(n for n in backend.nodes() if n.name == "srv-02").reserved_by == "a"
+    backend.unreserve("srv-02", "a")
+    assert next(n for n in backend.nodes() if n.name == "srv-02").reserved_by is None
+
+
+def test_settle_of_a_deleted_run(service):
+    run_id = service.submit()["id"]
+    service.backend.finish(service.name(run_id))
+    service.controller.reconcile()
+    shutil.rmtree(service.run_dir(run_id))
+    service.controller.settle(run_id)  # no KeyError
+
+
+def test_poll_during_submit(service):
+    backend = service.backend
+    original = FakeBackend.submit
+
+    def submit(self, manifest):
+        service.controller.reconcile()  # a poll lands while the submission is in flight
+        return original(self, manifest)
+
+    backend.submit = submit.__get__(backend)
+    summary = service.submit(reserve="srv-02")
+    assert summary["state"] == "queued"
+    assert summary["message"] is None
+    assert not [c for c in backend.calls if c[0] in ("unreserve", "cancel")]
+
+
+def test_cancel_during_submit_cancels_the_workflow(service):
+    backend = service.backend
+    original = FakeBackend.submit
+
+    def submit(self, manifest):
+        service.controller.cancel(manifest["metadata"]["labels"]["simrun/run"])
+        return original(self, manifest)
+
+    backend.submit = submit.__get__(backend)
+    summary = service.submit()
+    assert summary["state"] == "cancelled"
+    name = service.name(summary["id"])
+    # the cancel during the submission found no workflow; the one after it did
+    assert backend.calls[-2:] == [("submit", name), ("cancel", name)]
+    assert backend.status(name).phase == "Failed"
+    record = RunStore(service.settings.store).read(summary["id"])
+    assert not record.pending_cancel
+
+
+def _submitting(service, age_s: float) -> str:
+    run_id = service.submit(reserve="srv-02")["id"]
+    store = RunStore(service.settings.store)
+    record = store.read(run_id)
+    created = datetime.fromtimestamp(time.time() - age_s, UTC)
+    store.write(
+        record.model_copy(update={"state": RunState.SUBMITTING, "created": created})
+    )
+    return run_id
+
+
+def test_young_submission_is_left_alone(service):
+    run_id = _submitting(service, 1.0)
+    service.controller.reconcile()
+    assert RunStore(service.settings.store).read(run_id).state == "submitting"
+
+
+@pytest.mark.parametrize("age_s", [1.0, SUBMIT_GRACE_S + 1])
+def test_recover_fails_lost_submission(service, age_s):
+    run_id = _submitting(service, age_s)
+    service.controller.recover()
+    record = RunStore(service.settings.store).read(run_id)
+    assert record.state == "failed"
+    assert "submission" in (record.message or "")
+    assert not record.pending_cancel and record.pending_release is None
+    assert ("cancel", service.name(run_id)) in service.backend.calls
+    assert ("unreserve", "srv-02", run_id) in service.backend.calls
+
+
+def test_reconcile_fails_old_submission(service):
+    run_id = _submitting(service, SUBMIT_GRACE_S + 1)
+    service.controller.reconcile()
+    assert RunStore(service.settings.store).read(run_id).state == "failed"

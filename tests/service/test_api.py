@@ -258,7 +258,7 @@ def test_cancel(service):
     assert response.json()["state"] == "cancelled"
     assert response.json()["tasks"] == {"squares": "skipped"}
     assert ("cancel", service.name(run_id)) in service.backend.calls
-    assert ("unreserve", "srv-03") in service.backend.calls
+    assert ("unreserve", "srv-03", run_id) in service.backend.calls
     assert service.post(f"/runs/{run_id}/cancel").status_code == 409
 
 
@@ -426,7 +426,33 @@ def test_failed_submission_releases_node(service_factory):
         response = service.post("/runs", body)
         assert response.status_code == 502
         assert "no cluster" in response.json()["detail"]
-        assert ("unreserve", "srv-02") in service.backend.calls
         (record,) = service.get("/runs").json()
+        assert ("unreserve", "srv-02", record["id"]) in service.backend.calls
         assert record["state"] == "failed"
         assert record["tasks"] == {"squares": "skipped"}
+
+
+def test_pending_work_blocks_deletion(service, monkeypatch):
+    monkeypatch.setattr(app_module, "SNAPSHOT_GRACE_S", 0.0)
+    run_id = service.submit()["id"]
+    service.backend.finish(service.name(run_id))
+    service.controller.reconcile()
+    store = RunStore(service.settings.store)
+    record = store.read(run_id)
+    old = datetime.fromtimestamp(time.time() - 5 * DAY, UTC)
+    pending = record.model_copy(
+        update={"pending_release": "srv-02", "created": old, "finished": old}
+    )
+    store.write(pending)
+    response = service.client.delete(f"/runs/{run_id}", headers=service.auth())
+    assert response.status_code == 409
+    assert "release its node" in response.json()["detail"]
+    for dry_run in (True, False):
+        body = {"older_than_days": 1, "dry_run": dry_run}
+        assert service.post("/cleanup", body).json()["runs"] == []
+    assert service.run_dir(run_id).exists()
+    store.write(
+        pending.model_copy(update={"pending_release": None, "pending_cancel": True})
+    )
+    response = service.client.delete(f"/runs/{run_id}", headers=service.auth())
+    assert response.status_code == 409

@@ -47,7 +47,7 @@ class FakeBackend:
     Attributes:
         manifests: The submitted manifests by name.
         calls: `("submit", name)`, `("cancel", name)`, `("stop", name)`,
-            `("reserve", node, run_id)`, `("unreserve", node)` and
+            `("reserve", node, run_id)`, `("unreserve", node, run_id)` and
             `("build_image", ref, files of the context)`.
         images: The images of the registry.
         logs_text: The logs returned by `logs`, by workflow name and task id.
@@ -166,11 +166,14 @@ class FakeBackend:
             )
             self.calls.append(("reserve", node, run_id))
 
-    def unreserve(self, node: str) -> None:
-        """Release a node."""
+    def unreserve(self, node: str, run_id: str) -> None:
+        """Release a node reserved by the run; KeyError for an unknown node."""
         with self._lock:
-            self._nodes[node] = dataclasses.replace(self._nodes[node], reserved_by=None)
-            self.calls.append(("unreserve", node))
+            self.calls.append(("unreserve", node, run_id))
+            if self._nodes[node].reserved_by == run_id:
+                self._nodes[node] = dataclasses.replace(
+                    self._nodes[node], reserved_by=None
+                )
 
     def build_image(self, context: Path, ref: str) -> None:
         """Record the build and add the image to the registry."""
