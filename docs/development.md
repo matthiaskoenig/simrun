@@ -28,10 +28,6 @@ A pull request can only be merged once the four required checks are green:
 
 The tests on the k3d cluster, the job `cluster` (`cluster.yml`), take about half an hour and are no required check. They run on every push to `develop`, on a release, which waits for them, and when `CI-CD` is started by hand (`workflow_dispatch`). A pull request which changes what runs on the cluster gets the label `cluster`: the tests run once the label is added and with every push after it.
 
-```bash
-gh-axi pr edit <number> --add-label cluster   # or the label in the web interface
-```
-
 Every job sets up its environment with the action `.github/actions/setup`: uv with its cache of the packages and the interpreters, the python of the job and `uv sync --locked` with the extras of the job, i.e. the versions of `uv.lock`. The key of the cache of uv has the os and the python version but not the job, so jobs on the same python would race to save it and warn `Unable to reserve cache`: only the jobs of the test matrix save the cache (`save-cache: "true"`), the others restore it. The jobs run the same commands as a local environment (`pytest`, `ty check`, `zensical build`), the tests against the package installed as a wheel (`uv sync --no-editable`). A run of a pull request is cancelled by the next push to it; a push to `develop` or `main` is never cancelled, a release waits for the run of its commit. The release builds the distributions without the cache (`cache: "false"`). Dependabot proposes its updates once a month.
 
 Further rules of a pull request:

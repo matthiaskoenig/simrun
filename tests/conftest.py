@@ -1,7 +1,9 @@
 import dataclasses
 import os
 import subprocess
+import sys
 import time
+import tomllib
 from collections.abc import Callable, Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
@@ -9,6 +11,7 @@ from typing import Any
 
 import httpx
 import pytest
+import tomlkit
 import yaml
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -16,12 +19,56 @@ from pydantic import BaseModel
 from simrun.client import Client
 from simrun.config import ClusterConfig
 from simrun.demo import SQUARES, SquaresSettings
+from simrun.environment import BUILD_CONSTRAINTS
 from simrun.plugins import ResourceHint, TaskType
 from simrun.plugins_builtin import COMMAND
 from simrun.service.app import ServiceSettings, create_app
 from simrun.service.controller import Controller
 from simrun.service.index import IndexedRunStore
 from simrun.testing import TOKENS, FakeBackend
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _uv_cache_with_the_build_backends(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    """Put the pinned build backends and simrun's dependencies into the uv cache.
+
+    The tests of the environments, the submissions and the installs of snapshots
+    run uv offline (`UV_OFFLINE=1`), as a pod installs without an index, so they
+    read from the cache of uv the build backends at the pins of
+    `build_constraints.txt` and the dependencies of simrun, whose wheel the
+    environments of the tests lock. A universal lock reads the metadata of other
+    wheels than an install, so a project of all of them is locked and synced. A
+    cold cache, e.g. of a fresh runner of continuous integration, gets them from
+    the index, once per worker; a warm one is not asked, so the tests run without
+    a network once the cache has them.
+    """
+    project = tmp_path_factory.mktemp("uv-cache")
+    with (Path(__file__).parents[1] / "pyproject.toml").open("rb") as f:
+        dependencies = tomllib.load(f)["project"]["dependencies"]
+    pins = [
+        line.strip()
+        for line in BUILD_CONSTRAINTS.read_text().splitlines()
+        if line.strip() and not line.startswith("#")
+    ]
+    (project / "pyproject.toml").write_text(
+        tomlkit.dumps(
+            {
+                "project": {
+                    "name": "uv-cache",
+                    "version": "0",
+                    "requires-python": ">=3.14",
+                    # pytest: the dev group of a model of the tests
+                    "dependencies": [*dependencies, *pins, "pytest"],
+                }
+            }
+        )
+    )
+    sync = ["uv", "sync", "-q", "--no-install-project", "--python", sys.executable]
+    offline = {**os.environ, "UV_OFFLINE": "1"}
+    if subprocess.run(sync, cwd=project, env=offline, check=False).returncode != 0:
+        subprocess.run(sync, cwd=project, check=True)
 
 
 class ReportSettings(BaseModel):
