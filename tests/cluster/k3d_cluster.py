@@ -213,6 +213,55 @@ def build_image() -> tuple[str, Path]:
     return f"{REGISTRY}/{tag}", kept
 
 
+def build_service_image(wheel: Path, plugins: list[Path]) -> str:
+    """Build the image of the service from `deploy/service/Dockerfile` with docker.
+
+    The context as the README describes it: the requirements of the lock of simrun,
+    its wheel and the wheels of the plugins; the base is the mirror of the base image
+    of the environments.
+
+    Returns:
+        The image, as the host names it.
+    """
+    with tempfile.TemporaryDirectory(prefix="simrun-service-") as tmp:
+        context = Path(tmp)
+        requirements = _run(
+            "uv",
+            "export",
+            "--frozen",
+            "--no-dev",
+            "--no-emit-project",
+            "--no-header",
+            "--no-annotate",
+            "--project",
+            REPO,
+        )
+        (context / "requirements.txt").write_text(requirements)
+        shutil.copy2(wheel, context / wheel.name)
+        (context / "plugins").mkdir()
+        for plugin in plugins:
+            shutil.copy2(plugin, context / "plugins" / plugin.name)
+        dockerfile = REPO / "deploy" / "service" / "Dockerfile"
+        shutil.copy2(dockerfile, context / "Dockerfile")
+        digest = hashlib.sha256(
+            b"".join(p.read_bytes() for p in sorted(context.rglob("*")) if p.is_file())
+        ).hexdigest()[:12]
+        tag = f"{REGISTRY_HOST}/simrun-service:{digest}"
+        _run(
+            "docker",
+            "build",
+            "--quiet",
+            "--build-arg",
+            f"BASE={REGISTRY_HOST}/{DEFAULT_BASE_IMAGE}",
+            "--build-arg",
+            f"WHEEL={wheel.name}",
+            "-t",
+            tag,
+            context,
+        )
+    return tag
+
+
 def mirror_uv_image() -> None:
     """Copy the base image of the environments into the registry of the cluster.
 
@@ -252,9 +301,13 @@ def delete_cluster() -> None:
         check=False,
     )
     _run(K3D, "cluster", "delete", CLUSTER, check=False)
-    images = _run(
-        "docker", "images", "--quiet", f"{REGISTRY_HOST}/simrun-test", check=False
-    ).split()
+    images = [
+        image
+        for repository in ("simrun-test", "simrun-service")
+        for image in _run(
+            "docker", "images", "--quiet", f"{REGISTRY_HOST}/{repository}", check=False
+        ).split()
+    ]
     if images:
         _run("docker", "image", "rm", "--force", *sorted(set(images)), check=False)
     _run(K3D, "registry", "delete", REGISTRY_NAME, check=False)
