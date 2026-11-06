@@ -645,3 +645,24 @@ def test_observations_are_kept_apart_by_the_cost_setting(service):
         workflow["tasks"][0]["settings"]["subset"] = subset
         estimate = service.post("/estimate", {"workflow": workflow, "sources": []})
         assert estimate.json()["fit"]["resources"]["source"] == source
+
+
+def test_cancel_and_delete_before_the_reservation_releases_the_node(service):
+    backend = service.backend
+    original = FakeBackend.reserve
+
+    def reserve(self, node, run_id):
+        # cancelled and deleted before its job reserves the node: the job finds no
+        # record after the submission and cancels the orphan workflow
+        service.controller.cancel(run_id)
+        deleted = service.client.delete(f"/runs/{run_id}", headers=service.auth())
+        assert deleted.status_code == 200, deleted.text
+        return original(self, node, run_id)
+
+    backend.reserve = reserve.__get__(backend)
+    run_id = service.submit(reserve="srv-02", wait=False)["id"]
+    service.submitted(run_id)
+    name = service.name(run_id)
+    assert ("cancel", name) in backend.calls
+    (node,) = [n for n in backend.nodes() if n.name == "srv-02"]
+    assert node.reserved_by is None
