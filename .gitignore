@@ -34,3 +34,7 @@ docs/superpowers/
 .vscode/
 *~
 .DS_Store
+
+# the dependencies and the build of the web app
+frontend/node_modules/
+frontend/dist/
