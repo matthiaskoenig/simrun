@@ -450,3 +450,36 @@ def test_reconcile_fails_old_submission(service):
     run_id = _submitting(service, SUBMIT_GRACE_S + 1)
     service.controller.reconcile()
     assert RunStore(service.settings.store).read(run_id).state == "failed"
+
+
+def test_second_memory_kill_of_a_worker_fails_the_run(service):
+    run_id = service.submit()["id"]
+    name = service.name(run_id)
+    service.backend.start(name)
+    service.backend.oom_kill(name, "squares-w1")
+    service.controller.reconcile()
+    assert RunStore(service.settings.store).read(run_id).state == "running"
+    service.backend.oom_kill(name, "squares-w1")  # also with the retry memory
+    service.controller.reconcile()
+    record = RunStore(service.settings.store).read(run_id)
+    assert record.state == "failed"
+    assert record.tasks == {"squares": TaskState.FAILED}
+    # the plan of the demo on the test nodes: 40 processes, a retry of 31 GiB
+    assert record.message == (
+        "task squares: squares-w1 was killed for memory 2 times, also with the "
+        "retry memory of 31 GiB (0.75 GiB per process); give the task more memory"
+    )
+    assert ("stop", name) in service.backend.calls
+
+
+def test_second_memory_kill_of_a_merge_or_unsplit_task_fails_the_run(service):
+    for key, retry in (("squares-merge", "2 GiB (0.75"), ("cmd", "2 GiB (2.0")):
+        run_id = service.submit(workflow=_two_tasks(service))["id"]
+        name = service.name(run_id)
+        service.backend.start(name)
+        service.backend.oom_kill(name, key, count=2)
+        service.controller.reconcile()
+        record = RunStore(service.settings.store).read(run_id)
+        assert record.state == "failed"
+        assert f"{key} was killed for memory 2 times" in (record.message or "")
+        assert f"retry memory of {retry} GiB per process)" in (record.message or "")

@@ -99,7 +99,11 @@ manifests and the code:
   as a kill for memory too, and so does the kill of an unsplit task (by its task id)
   or a merge (`<task>-merge`). The `podSpecPatch` of the retry
   (`lastRetry.exitCode == '137'`) gives the next attempt the retry memory and memory
-  per process, as designed.
+  per process, as designed. A second kill of the same worker, merge or unsplit task
+  is one with the retry memory: the controller fails the run and stops its workflow,
+  with a message naming the retry memory. The retry limit of a pod is 100
+  (`RETRY_LIMIT`): every eviction by Kueue counts against it, and a pod of a long run
+  of low priority on a busy cluster may be evicted many times.
 - **Stopping a workflow.** After `shutdown: Stop` Argo fails the nodes still pending
   (`workflow shutdown with strategy: Stop`); the backend deletes their gated pods.
 - **Logs.** The logs of an attempt whose pod Kueue deleted are gone with the pod.

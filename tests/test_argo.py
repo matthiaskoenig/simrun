@@ -168,7 +168,8 @@ def test_retry_strategy() -> None:
     for task in ("squares-w0", "squares-extra", "squares-merge", "report"):
         template = _template(manifest, task)
         retry = template["retryStrategy"]
-        assert retry["limit"] == 20
+        # evictions count against it; the controller ends a second kill for memory
+        assert retry["limit"] == 100
         assert retry["retryPolicy"] == "Always"
         assert retry["expression"] == (
             "lastRetry.exitCode != '3' && lastRetry.exitCode != '4'"

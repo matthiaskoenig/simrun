@@ -7,6 +7,10 @@ unsplit task is its node `<task>`. When every task is done the run succeeded, wh
 task failed the run failed; in both cases the controller stops the workflow, so extra
 workers still waiting for admission go away, and releases the reserved node.
 
+A pod is retried once with the retry memory after a kill for memory: a worker, a
+merge or an unsplit task the backend reports killed for memory twice fails the run
+(Ruling 35), whose message names the retry memory.
+
 The states of the tasks and the out of memory kills are stored in the record at every
 poll. When the workflow is gone (deleted by its time to live before the controller saw
 its end) the tasks are resolved from these states and from the store: a split task
@@ -35,6 +39,8 @@ import threading
 from collections.abc import Iterator
 from datetime import UTC, datetime
 
+from simrun import podspec
+from simrun.planner import PodShape
 from simrun.plugins import TaskType
 from simrun.resources import GIB, ResourceKey, ResourceStore
 from simrun.service.backend import (
@@ -319,10 +325,50 @@ class Controller:
             self.store.write(after)
             return True
 
+    def _killed_twice(
+        self, record: RunRecord, oom: dict[str, int]
+    ) -> tuple[str, str] | None:
+        """The task and the message of a pod killed for memory more than once.
+
+        The retry after a kill has the retry memory (`RETRY_FACTOR` per process), so
+        a second kill of the same worker, merge or unsplit task is a kill with it:
+        the run fails instead of retrying again (Ruling 35).
+        """
+        for task in record.workflow.tasks:
+            shape_values = record.plans.get(task.id, {}).get("shape")
+            if shape_values is None:
+                continue
+            shape = PodShape(**shape_values)
+            task_type = self.types[task.type]
+            if task_type.splittable:
+                merge = podspec.merge_shape(shape, task_type.hint.memory_base_gb)
+                pods = [(rf"{re.escape(task.id)}-w\d+", shape)]
+                pods.append((rf"{re.escape(task.id)}-merge", merge))
+            else:
+                pods = [(re.escape(task.id), shape)]
+            for key, count in sorted(oom.items()):
+                if count < 2:
+                    continue
+                for pattern, pod in pods:
+                    if re.fullmatch(pattern, key):
+                        return task.id, (
+                            f"task {task.id}: {key} was killed for memory {count} "
+                            f"times, also with the retry memory of "
+                            f"{pod.retry_memory_gb} GiB ({pod.retry_per_worker_gb} "
+                            "GiB per process); give the task more memory"
+                        )
+        return None
+
     def _next(self, record: RunRecord, status: BackendStatus) -> RunRecord:
         """The record after a status of its workflow."""
         tasks = task_states(record.workflow, self.types, status)
         record = record.model_copy(update={"oom_kills": dict(status.oom)})
+        killed = self._killed_twice(record, status.oom)
+        if killed is not None:
+            task_id, message = killed
+            return _closed(
+                record, RunState.FAILED, {**tasks, task_id: TaskState.FAILED}, message
+            )
         failed = [t for t, s in tasks.items() if s == TaskState.FAILED]
         if failed:
             message = f"task {', '.join(failed)} failed"
