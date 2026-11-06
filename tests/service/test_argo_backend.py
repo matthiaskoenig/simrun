@@ -10,6 +10,7 @@ from kubernetes.client.exceptions import ApiException
 from simrun.config import ClusterConfig
 from simrun.planner import Node
 from simrun.service.argo_backend import (
+    LOG_LIMIT_BYTES,
     WORKER_LABEL,
     ArgoBackend,
     _task_node,
@@ -415,13 +416,16 @@ class FakeApi:
         return call
 
 
-def _pod(name: str, node: str, created: str) -> dict[str, Any]:
+def _pod(
+    name: str, node: str, created: str, phase: str = "Succeeded"
+) -> dict[str, Any]:
     return {
         "metadata": {
             "name": name,
             "creationTimestamp": created,
             "annotations": {"workflows.argoproj.io/node-name": f"{WF}.{node}"},
-        }
+        },
+        "status": {"phase": phase},
     }
 
 
@@ -444,7 +448,7 @@ def _fake_backend(**answers: Any) -> tuple[ArgoBackend, list[tuple[str, tuple, d
         "list_namespaced_pod": SimpleNamespace(
             items=[
                 _pod("p-merge", "a-merge(0)", "2026-01-01T00:00:03Z"),
-                _pod("p-w0", "a-w0(0)", "2026-01-01T00:00:01Z"),
+                _pod("p-w0", "a-w0(0)", "2026-01-01T00:00:01Z", "Running"),
                 _pod("p-b", "b(0)", "2026-01-01T00:00:02Z"),
             ]
         ),
@@ -548,12 +552,14 @@ def test_cancel_of_an_unknown_workflow() -> None:
 def test_logs_of_the_pods_of_a_task_in_their_order() -> None:
     created, calls = _fake_backend()
     assert created.logs(WF, "a") == [
-        PodLog(node="a-w0(0)", pod="p-w0", text="log of p-w0\n"),
+        PodLog(node="a-w0(0)", pod="p-w0", text="log of p-w0\n", done=False),
         PodLog(node="a-merge(0)", pod="p-merge", text="log of p-merge\n"),
     ]
     reads = [c for c in calls if c[0] == "read_namespaced_pod_log"]
     assert all(c[2]["container"] == "main" for c in reads)
     assert all("tail_lines" not in c[2] for c in reads)
+    # never more than a bounded part of a log into the memory of the service
+    assert all(c[2]["limit_bytes"] == LOG_LIMIT_BYTES for c in reads)
     calls.clear()
     created.logs(WF, "a", tail_lines=50)
     reads = [c for c in calls if c[0] == "read_namespaced_pod_log"]

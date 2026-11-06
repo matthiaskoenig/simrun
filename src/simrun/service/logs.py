@@ -3,10 +3,14 @@
 The logs of a pod are gone with the pod: Kueue deletes a preempted pod, Argo deletes
 the pods of a workflow with it after its time to live, and stopping a workflow ends
 its pods. So the controller copies the logs of the main containers of the pods of a
-task into `tasks/<task>/logs/` once the task is final, and before it stops or cancels
-a workflow: a file `<pod>.log` per pod (every attempt the backend can still read)
-and `index.json`, the pods in their order, written last, which marks the logs as
-kept. The API serves the kept logs first and the logs of the live pods otherwise.
+task into `tasks/<task>/logs/` once the task is final and its pods terminated, the
+ones which ended before it stops or cancels a workflow (the last `KEPT_TAIL_LINES`
+lines, at most what the backend reads of a log): a file `<pod>.log` per pod (every
+attempt the backend can still read) and `index.json`, the pods in their order,
+written last, which marks the logs as kept. An ended run is followed until its logs
+are kept or its workflow is gone (`RunRecord.pending_logs`); a run which never had a
+workflow keeps none. The API serves the kept logs first and the logs of the live pods
+otherwise.
 """
 
 import json
@@ -21,6 +25,8 @@ LOGS_DIR = "logs"
 INDEX_FILE = "index.json"
 # the lines of every pod an agent or a person gets by default
 DEFAULT_TAIL_LINES = 300
+# the last lines of every pod kept in the store
+KEPT_TAIL_LINES = 100_000
 
 
 def _write(path: Path, text: str) -> None:

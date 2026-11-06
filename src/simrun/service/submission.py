@@ -70,6 +70,7 @@ def _undo(current: RunRecord, record: RunRecord) -> dict[str, object]:
     return {
         "pending_cancel": True,
         "pending_release": current.pending_release or record.reserve,
+        "pending_logs": True,
     }
 
 
@@ -237,7 +238,9 @@ class Submitter:
     def _fail(self, record: RunRecord, message: str) -> None:
         """Fail a run whose submission cannot go on; nothing was submitted."""
         logger.error("the submission of run %s failed: %s", record.id, message)
-        failed = closed(record, RunState.FAILED, record.tasks, message)
+        failed = closed(
+            record, RunState.FAILED, record.tasks, message, pending_logs=False
+        )
         if self.controller.write_if_unchanged(record, failed):
             self.controller.settle(record.id)
 

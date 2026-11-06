@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 TERMINAL = (RunState.SUCCEEDED, RunState.FAILED, RunState.CANCELLED)
 COLUMNS = (
     "id, owner, agent, grp, workflow, state, created, finished, pending_release, "
-    "pending_cancel, snapshots, summary"
+    "pending_cancel, pending_logs, snapshots, summary"
 )
 
 
@@ -61,6 +61,7 @@ def _row(record: RunRecord) -> tuple[object, ...]:
         None if record.finished is None else record.finished.isoformat(),
         record.pending_release,
         int(record.pending_cancel),
+        int(record.pending_logs),
         json.dumps([s.snapshot for s in record.sources]),
         RunSummary.of(record).model_dump_json(),
     )
@@ -83,11 +84,16 @@ class RunIndex:
         db.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as con:
             con.execute("PRAGMA journal_mode=WAL")
+            columns = {row[1] for row in con.execute("PRAGMA table_info(runs)")}
+            if columns and "pending_logs" not in columns:
+                # an index of an earlier version: a cache, rebuilt at the start
+                con.execute("DROP TABLE runs")
             con.execute(
                 "CREATE TABLE IF NOT EXISTS runs ("
                 "id TEXT PRIMARY KEY, owner TEXT NOT NULL, agent TEXT, grp TEXT, "
                 "workflow TEXT NOT NULL, state TEXT NOT NULL, created TEXT NOT NULL, "
                 "finished TEXT, pending_release TEXT, pending_cancel INTEGER NOT NULL, "
+                "pending_logs INTEGER NOT NULL DEFAULT 0, "
                 "snapshots TEXT NOT NULL, summary TEXT NOT NULL)"
             )
             con.execute("CREATE INDEX IF NOT EXISTS runs_state ON runs (state)")
@@ -123,14 +129,15 @@ class RunIndex:
     def live_ids(self) -> list[str]:
         """The ids of the runs the controller follows, sorted.
 
-        Runs which have not ended, and ended runs with a release of their node or a
-        cancellation of their workflow pending.
+        Runs which have not ended, and ended runs with a release of their node, a
+        cancellation of their workflow or the logs of their pods pending.
         """
         terminal = ", ".join("?" for _ in TERMINAL)
         with self._connect() as con:
             rows = con.execute(
                 f"SELECT id FROM runs WHERE state NOT IN ({terminal}) "
-                "OR pending_release IS NOT NULL OR pending_cancel ORDER BY id",
+                "OR pending_release IS NOT NULL OR pending_cancel OR pending_logs "
+                "ORDER BY id",
                 [s.value for s in TERMINAL],
             ).fetchall()
         return [r[0] for r in rows]

@@ -75,6 +75,8 @@ class RunRecord(BaseModel):
         pending_release: A reserved node whose release failed, retried by the service.
         pending_cancel: Whether the workflow must still be cancelled, e.g. one which
             may have been created by a submission that failed.
+        pending_logs: Whether the logs of the pods of an ended run must still be
+            kept in the store (`simrun.service.logs`).
     """
 
     id: str
@@ -98,6 +100,7 @@ class RunRecord(BaseModel):
     oom_kills: dict[str, list[int]] = Field(default_factory=dict)
     pending_release: str | None = None
     pending_cancel: bool = False
+    pending_logs: bool = False
 
 
 class RunSummary(BaseModel):
