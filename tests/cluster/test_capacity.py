@@ -84,8 +84,13 @@ def test_pods_of_other_namespaces_are_subtracted(service: Service, request) -> N
     after = _memory(service)
     assert set(after) == set(AGENTS)
     assert all(after[a] == before[a] - 1 for a in AGENTS), (before, after)
-    # the hint of the demo, 0.5 GiB per process: a pod takes all a node has left
-    run = service.submit("t-mk", service.workflow(n=60, sleep_s=0.2))
+    # one process takes all a node has left besides the base of 0.5 GiB, so memory
+    # binds and not the cores of the node (a runner of continuous integration has 4)
+    largest = max(after.values())
+    workflow = service.workflow(
+        n=60, sleep_s=0.2, resources={"memory_per_worker_gb": largest - 0.5}
+    )
+    run = service.submit("t-mk", workflow)
     record = service.wait(run["id"])
     assert record["state"] == "succeeded", record["message"]
-    assert record["plans"]["squares"]["shape"]["memory_gb"] == max(after.values())
+    assert record["plans"]["squares"]["shape"]["memory_gb"] == largest

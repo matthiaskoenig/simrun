@@ -129,14 +129,20 @@ def test_owner_preempts_agent(service: Service) -> None:
 
 
 def test_oom_retry(service: Service) -> None:
-    # the hint of the demo is 0.5 GiB per process: 9 processes in 5 GiB, which the
-    # units of 600 MB exceed; the retry has 0.75 GiB per process, 6 processes
-    workflow = service.workflow(n=33, sleep_s=1.0, memory_mb=600)
+    # memory binds, not the cores of the node (a runner of continuous integration
+    # has 4): 1.5 GiB per process gives 3 processes in 5 GiB, which units of
+    # 1900 MiB exceed; the retry has 2.25 GiB per process, 2 processes. The
+    # override sizes the pods, the observations go to the key of the task
+    workflow = service.workflow(n=33, sleep_s=1.0, memory_mb=1900)
     before = service.estimate("t-mk", workflow)["squares"]["resources"]
     assert before["memory_per_worker_gb"] == 0.5
-    run = service.submit("t-mk", workflow, split="single-server")
+    sized = service.workflow(
+        n=33, sleep_s=1.0, memory_mb=1900, resources={"memory_per_worker_gb": 1.5}
+    )
+    run = service.submit("t-mk", sized, split="single-server")
     record = service.wait(run["id"])
     assert record["state"] == "succeeded", record["message"]
+    assert record["plans"]["squares"]["shape"]["processes"] == 3
     assert service.total(run["id"]) == squares(33)
     assert record["oom_kills"] == {"squares-w0": [0]}
     after = service.estimate("t-mk", workflow)["squares"]["resources"]
