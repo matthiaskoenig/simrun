@@ -73,7 +73,7 @@ and use it from another shell:
   export SIMRUN_URL=http://localhost:8000
   export SIMRUN_TOKEN=t-mk
   export SIMRUN_STORE={STORE}
-  uv run simrun submit squares.yaml
+  uv run simrun submit examples/squares.yaml
 """)
 
 

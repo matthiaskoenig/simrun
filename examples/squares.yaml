@@ -1,0 +1,7 @@
+name: squares
+tasks:
+  - id: squares
+    type: demo.squares
+    settings:
+      n: 1000
+      sleep_s: 0.1
