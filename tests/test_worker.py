@@ -1,4 +1,5 @@
 import contextlib
+import dataclasses
 import json
 import os
 import signal
@@ -231,6 +232,28 @@ def test_main_stages_inputs(worker_env: Path, monkeypatch: pytest.MonkeyPatch) -
     assert raised.value.code == 0
     scratch = Path(os.environ["SIMRUN_SCRATCH"])
     assert (scratch / "mesh" / "mesh.txt").read_text() == "mesh"
+
+
+class _SnapshotSettings(SquaresSettings):
+    sleep_s: float = 0.5
+    added: str = "new"
+
+
+def test_settings_are_validated_with_the_plugin_of_the_pod(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # settings.json holds the settings as submitted; a default of the plugin of the
+    # snapshot and a setting the service does not know reach the task
+    task_dir = tmp_path / "runs" / "r1" / "tasks" / "squares"
+    task_dir.mkdir(parents=True)
+    (task_dir / "settings.json").write_text('{"n": 2, "added": "x"}')
+    snapshot = dataclasses.replace(SQUARES, settings=_SnapshotSettings)
+    monkeypatch.setattr(worker, "load_task_types", lambda: {SQUARES.name: snapshot})
+    _, settings, _ = worker._task(
+        {"SIMRUN_TASK_DIR": str(task_dir), "SIMRUN_TASK_TYPE": SQUARES.name}
+    )
+    assert isinstance(settings, _SnapshotSettings)
+    assert (settings.n, settings.sleep_s, settings.added) == (2, 0.5, "x")
 
 
 def test_paths_from_env(tmp_path: Path) -> None:
