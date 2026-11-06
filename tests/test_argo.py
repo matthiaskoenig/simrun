@@ -230,7 +230,9 @@ def test_unsplit_plugin_command() -> None:
     manifest = to_argo(record, plans, {"plot": plot}, CONFIG)
     container = _template(manifest, "plot")["container"]
     task_dir = f"/store/runs/{RUN}/tasks/plot"
+    # through the harness, which installs the snapshots and writes a report
     assert container["command"] == [
+        "simrun-exec",
         "plot",
         "--settings",
         f"{task_dir}/settings.json",

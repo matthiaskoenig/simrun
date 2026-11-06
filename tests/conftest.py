@@ -9,16 +9,30 @@ import httpx
 import pytest
 import yaml
 from fastapi.testclient import TestClient
+from pydantic import BaseModel
 
 from simrun.client import Client
 from simrun.config import ClusterConfig
 from simrun.demo import SQUARES
+from simrun.plugins import ResourceHint, TaskType
 from simrun.plugins_builtin import COMMAND
 from simrun.service.app import ServiceSettings, create_app
 from simrun.service.controller import Controller
 from simrun.testing import TOKENS, FakeBackend
 
-TYPES = {SQUARES.name: SQUARES, COMMAND.name: COMMAND}
+
+class ReportSettings(BaseModel):
+    title: str = "report"
+
+
+# an unsplit plugin type: its command runs through `simrun-exec`
+REPORT = TaskType(
+    name="demo.report",
+    settings=ReportSettings,
+    command="report --settings {settings} --out {out}",
+    hint=ResourceHint(memory_base_gb=0.5, memory_per_worker_gb=1.0),
+)
+TYPES = {SQUARES.name: SQUARES, COMMAND.name: COMMAND, REPORT.name: REPORT}
 
 
 def pytest_xdist_auto_num_workers(config: pytest.Config) -> int | None:

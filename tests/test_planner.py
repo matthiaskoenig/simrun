@@ -160,3 +160,37 @@ def test_command_too_large(kw):
     with pytest.raises(PlanError) as e:
         _command(**kw)
     assert "srv-01" in str(e.value) or "GPUs" in str(e.value)
+
+
+def test_unsplit_plugin_task_is_one_process():
+    # without records a single command takes one core and the memory of one process,
+    # not the whole server
+    p = plan_task(
+        TaskSpec(id="r", type="t"),
+        _type("report {settings}"),
+        _res(),
+        NODES,
+        SplitMode.FASTEST,
+        Priority.OWNER,
+        None,
+    )
+    assert (p.pods, p.units) == (1, None)
+    assert (p.shape.cores, p.shape.processes, p.shape.memory_gb) == (1, 1, 8)
+    assert p.shape.retry_memory_gb == 10
+    assert p.shape.retry_per_worker_gb == pytest.approx(7.65)
+
+
+def test_unsplit_plugin_task_which_uses_the_cores_of_its_pod():
+    task_type = TaskType(
+        name="t", settings=_S, command="fit {settings}", uses_cores=True
+    )
+    p = plan_task(
+        TaskSpec(id="r", type="t"),
+        task_type,
+        _res(),
+        NODES,
+        SplitMode.FASTEST,
+        Priority.OWNER,
+        None,
+    )
+    assert (p.shape.cores, p.shape.processes) == (36, 36)

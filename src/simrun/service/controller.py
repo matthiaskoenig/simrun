@@ -17,8 +17,9 @@ its end) the tasks are resolved from these states and from the store: a split ta
 whose merge wrote `out/.simrun-merged` is done (Ruling 23); only the tasks still
 undetermined fail.
 
-The reports of the workers of a task are recorded as resource observations once the
-state of the task is final, each marked in `tasks/<task>/recorded/` right after its
+The reports of the workers of a task (of `simrun-exec` for an unsplit plugin task,
+by the task id) are recorded as resource observations once the state of the task is
+final, each marked in `tasks/<task>/recorded/` right after its
 observation; a kill for memory the backend reports for an attempt without a report is
 an observation of the pod shape at its limit (Ruling 24).
 
@@ -42,6 +43,7 @@ from datetime import UTC, datetime
 from simrun import podspec
 from simrun.planner import PodShape
 from simrun.plugins import TaskType
+from simrun.plugins_builtin import COMMAND
 from simrun.resources import GIB, ResourceKey, ResourceStore
 from simrun.service.backend import (
     FINAL_PHASES,
@@ -481,7 +483,11 @@ class Controller:
         """Record the reports of the tasks in a final state not recorded before."""
         with self._reports_lock:
             for task in record.workflow.tasks:
-                if record.tasks.get(task.id) in FINAL_TASK_STATES:
+                # a command task has the memory of its settings, nothing to learn
+                if (
+                    record.tasks.get(task.id) in FINAL_TASK_STATES
+                    and task.type != COMMAND.name
+                ):
                     self._record_task(record, task.id, task.type)
 
     def _record_task(self, record: RunRecord, task_id: str, task_type: str) -> None:
@@ -497,7 +503,8 @@ class Controller:
             if reports_dir.is_dir()
             else []
         )
-        worker = re.compile(rf"{re.escape(task_id)}-w\d+")
+        # the workers of a split task, an unsplit task by its id (`simrun-exec`)
+        worker = re.compile(rf"{re.escape(task_id)}(-w\d+)?")
         kills = {
             (w, attempt)
             for w, count in record.oom_kills.items()

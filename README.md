@@ -23,6 +23,19 @@ and the planner count as free for the runs.
 
 `deploy/k3d` is the overlay of the integration tests.
 
+## Pods and their harness
+
+A split task runs `simrun-worker` in its pods and `simrun-merge` in its merge; an
+unsplit task of a plugin type runs its command through `simrun-exec`, which installs
+the snapshots of the run, stages the inputs, sets `OMP_NUM_THREADS`,
+`OPENBLAS_NUM_THREADS` and `MKL_NUM_THREADS` to 1, passes a SIGTERM on to the
+command and writes a report of its memory, by the task id. Its exit codes: 0 done,
+3 the command failed (not retried), 4 a configuration error, 137 the command was
+killed (retried with the retry memory), 143 stopped on SIGTERM (retried). An unsplit
+plugin task is sized as one process (one core, `base + per_worker`), unless its type
+sets `uses_cores`, then it takes the processes a node allows like a worker. A task of
+the built-in type `command` runs its argv as given, in its own image.
+
 ## Learned resources
 
 A pod requests `base + per_worker x processes` of memory, limit equal to request.

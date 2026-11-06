@@ -73,7 +73,10 @@ class TaskType:
         outputs: Names of the output ports.
         hint: Default resources.
         checkpoints: Whether the task resumes from checkpoints.
-        command: Argv template with `{settings}` and `{out}` for unsplit tasks.
+        command: Argv template with `{settings}` and `{out}` for unsplit tasks; it
+            runs through `simrun-exec` (see `simrun.worker.exec_main`).
+        uses_cores: Whether the command of an unsplit task uses the cores of its pod
+            (a pool of processes); else the pod is sized for one process.
         count_units: Reference to the function counting the units of work.
         setup: Reference to the function preparing a process.
         compute_unit: Reference to the function computing one unit.
@@ -88,6 +91,7 @@ class TaskType:
     hint: ResourceHint = ResourceHint()
     checkpoints: bool = False
     command: str | None = None
+    uses_cores: bool = False
     count_units: str | None = None
     setup: str | None = None
     compute_unit: str | None = None

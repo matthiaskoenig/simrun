@@ -26,6 +26,7 @@ simrun = "simrun.cli:app"
 simrun-mcp = "simrun.mcp:main"
 simrun-worker = "simrun.worker:main"
 simrun-merge = "simrun.worker:merge_main"
+simrun-exec = "simrun.worker:exec_main"
 
 [project.optional-dependencies]
 dev = [
