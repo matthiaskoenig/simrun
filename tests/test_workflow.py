@@ -85,3 +85,32 @@ def test_workflow_yaml_is_compact_and_round_trips() -> None:
 
 def test_workflow_yaml_keeps_empty_tasks() -> None:
     assert "tasks: []" in workflow_yaml(Workflow(name="x", tasks=[]))
+
+
+def test_workflow_yaml_indents_sequences_as_the_examples() -> None:
+    wf = Workflow(
+        name="squares",
+        tasks=[
+            TaskSpec(
+                id="squares", type="demo.squares", settings={"n": 1000, "sleep_s": 0.1}
+            ),
+            TaskSpec(
+                id="cmd", type="command", settings={"args": ["echo", "hi"]}, stage=[]
+            ),
+        ],
+    )
+    text = workflow_yaml(wf)
+    assert text.startswith(
+        "name: squares\n"
+        "tasks:\n"
+        "  - id: squares\n"
+        "    type: demo.squares\n"
+        "    settings:\n"
+        "      'n': 1000\n"
+    )
+    assert "      args:\n        - echo\n        - hi\n" in text
+    assert Workflow.model_validate(yaml.safe_load(text)) == wf
+    example = Path(__file__).parent.parent / "examples" / "squares.yaml"
+    assert workflow_yaml(load_workflow(example)) == example.read_text().replace(
+        "n: 1000", "'n': 1000"
+    )
