@@ -96,22 +96,58 @@ jobs:
         "$RUNNER_TEMP/plain/bin/simrun" --help
         "$RUNNER_TEMP/plain/bin/simrun" submit --help
 
+  frontend:
+    # the web app in frontend/: the versions of package-lock.json, the types,
+    # the tests and the build the service serves at /ui/
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+    - uses: actions/checkout@v7
+      with:
+        persist-credentials: false
+    - name: Set up node
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    - name: Install the dependencies
+      run: npm ci
+    - name: Check the types
+      run: npm run typecheck
+    - name: Test
+      run: npm test
+    - name: Build
+      run: npm run build
+    - name: Check that the types of the API are those of openapi.json
+      # src/api/schema.d.ts is generated from src/api/openapi.json, which a
+      # test of the service keeps equal to the API; after a change of the API
+      # run `uv run python scripts/openapi.py`, then `npm run types`
+      run: |
+        npm run types
+        git diff --exit-code -- src/api/schema.d.ts
+
   tests:
     # the one check the branch protection requires; the names of the matrix
     # jobs change with the matrix, this name does not, see .github/rulesets/
     name: tests
-    needs: [test, install]
+    needs: [test, install, frontend]
     if: ${{ always() && !startsWith(github.ref, 'refs/tags/') }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-    - name: Check the results of the test matrix and of the plain install
+    - name: Check the results of the test matrix, of the plain install and of the web app
       env:
         RESULT: ${{ needs.test.result }}
         INSTALL: ${{ needs.install.result }}
+        FRONTEND: ${{ needs.frontend.result }}
       run: |
-        echo "test matrix: $RESULT, plain install: $INSTALL"
-        test "$RESULT" = "success" && test "$INSTALL" = "success"
+        echo "test matrix: $RESULT, plain install: $INSTALL, web app: $FRONTEND"
+        test "$RESULT" = "success" && test "$INSTALL" = "success" && test "$FRONTEND" = "success"
 
   cluster:
     # the tests on a k3d cluster with Kueue, Argo Workflows and BuildKit, on a

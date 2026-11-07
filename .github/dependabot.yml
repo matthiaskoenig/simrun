@@ -32,3 +32,24 @@ updates:
     open-pull-requests-limit: 5
     commit-message:
       prefix: "build"
+
+  # the locked npm dependencies of the web app (frontend/package-lock.json), bumped together
+  - package-ecosystem: "npm"
+    directory: "/frontend"
+    schedule:
+      interval: "monthly"
+    ignore:
+      # vue-tsc and openapi-typescript need the API of the compiler in
+      # javascript, which TypeScript 7 (the native port) does not have
+      - dependency-name: "typescript"
+        update-types: ["version-update:semver-major"]
+      # the types of node follow the node of continuous integration (24)
+      - dependency-name: "@types/node"
+        update-types: ["version-update:semver-major"]
+    groups:
+      npm-dependencies:
+        patterns:
+          - "*"
+    open-pull-requests-limit: 5
+    commit-message:
+      prefix: "build"
