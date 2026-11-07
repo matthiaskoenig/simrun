@@ -1,13 +1,13 @@
-<!-- The pill of the state of a run or a task, `tpl-pill` of the mockup. -->
+<!-- The pill of the state of a run or a task, `tpl-pill` of the mockup, or of a look of another state (of a worker). -->
 <script setup lang="ts">
 import { computed } from "vue";
 import type { RunState, TaskState } from "../api/client";
-import { spins, STATUS } from "../lib/status";
+import { spins, STATUS, type StatusStyle } from "../lib/status";
 import AppIcon from "./AppIcon.vue";
 
-const props = defineProps<{ status: RunState | TaskState; small?: boolean }>();
+const props = defineProps<{ status: RunState | TaskState | StatusStyle; small?: boolean }>();
 
-const style = computed(() => STATUS[props.status]);
+const style = computed(() => (typeof props.status === "string" ? STATUS[props.status] : props.status));
 </script>
 
 <template>

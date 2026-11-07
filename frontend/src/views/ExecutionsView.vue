@@ -1,14 +1,16 @@
 <!--
   The executions: the runs on the left, the canvas of the selected run in the
   center with its run bar above and the servers below, from the live streams
-  of the service. The route `/runs/:id` selects a run, a click on a task of
-  the canvas selects the task for the inspector.
+  of the service, the inspector of the run or its selected task on the right.
+  The route `/runs/:id` selects a run, a click on a task of the canvas
+  selects the task for the inspector.
 -->
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { auth } from "../auth";
 import AppIcon from "../components/AppIcon.vue";
+import Inspector from "../components/Inspector.vue";
 import RunBar from "../components/RunBar.vue";
 import RunCanvas from "../components/RunCanvas.vue";
 import RunList from "../components/RunList.vue";
@@ -77,7 +79,19 @@ function select(id: string): void {
         <ServerStrip :servers="live.servers.value" :selected="run.notFound.value ? null : selectedId" />
       </main>
 
-      <!-- the inspector of the run and of `selectedTask`, w-[380px] (Task 8) -->
+      <Inspector
+        v-if="run.record.value"
+        :record="run.record.value"
+        :progress="run.progress.value"
+        :workers="run.workers.value"
+        :task="selectedTask"
+      />
+      <!-- the column of the inspector while the run loads, so that the canvas keeps its width -->
+      <aside
+        v-else-if="selectedId !== null && !run.notFound.value"
+        class="w-[352px] shrink-0 border-l border-gray-200 bg-white"
+        aria-hidden="true"
+      ></aside>
     </div>
   </div>
 </template>
