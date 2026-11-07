@@ -243,15 +243,32 @@ def _requests(container: dict[str, Any]) -> tuple[float, float]:
     return cpu, memory
 
 
-def _worker_of(pod: dict[str, Any]) -> str | None:
-    """The `SIMRUN_WORKER` of the main container of a pod, None without it."""
+def _env_of(pod: dict[str, Any], name: str) -> str | None:
+    """A variable of the environment of the main container of a pod, None without it."""
     for container in (pod.get("spec") or {}).get("containers") or []:
-        if container.get("name") != "main":
+        if container.get("name") != CONTAINER:
             continue
         for var in container.get("env") or []:
-            if var.get("name") == "SIMRUN_WORKER":
+            if var.get("name") == name:
                 return var.get("value")
     return None
+
+
+def _worker_of(pod: dict[str, Any]) -> str | None:
+    """The `SIMRUN_WORKER` of the main container of a pod, None without it."""
+    return _env_of(pod, "SIMRUN_WORKER")
+
+
+def _attempt_of(pod: dict[str, Any]) -> int | None:
+    """The `SIMRUN_ATTEMPT` of the main container of a pod, the retries Argo set.
+
+    None without it or when it is no number, e.g. a `{{retries}}` Argo did not
+    substitute.
+    """
+    try:
+        return int(_env_of(pod, "SIMRUN_ATTEMPT") or "")
+    except ValueError:
+        return None
 
 
 def pod_requests(pod: dict[str, Any]) -> tuple[float, float]:
@@ -591,6 +608,7 @@ class ArgoBackend:
                     cores=cores,
                     memory_gb=memory,
                     worker=_worker_of(pod),
+                    attempt=_attempt_of(pod),
                 )
             )
         return found

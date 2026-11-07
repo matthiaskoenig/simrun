@@ -13,6 +13,7 @@ from simrun.service.argo_backend import (
     LOG_LIMIT_BYTES,
     WORKER_LABEL,
     ArgoBackend,
+    _attempt_of,
     _task_node,
     backend,
     manifest_url,
@@ -686,6 +687,22 @@ def test_a_workflow_which_exists_is_taken_as_submitted() -> None:
         created.submit({"metadata": {"name": WF}})
 
 
+def test_attempt_of_a_pod() -> None:
+    def pod(*env: dict[str, str], name: str = "main") -> dict[str, Any]:
+        return {"spec": {"containers": [{"name": name, "env": list(env)}]}}
+
+    assert _attempt_of(pod({"name": "SIMRUN_ATTEMPT", "value": "1"})) == 1
+    assert _attempt_of(pod({"name": "SIMRUN_ATTEMPT", "value": "0"})) == 0
+    # not substituted, not a number, missing, or of another container
+    assert _attempt_of(pod({"name": "SIMRUN_ATTEMPT", "value": "{{retries}}"})) is None
+    assert _attempt_of(pod({"name": "SIMRUN_ATTEMPT"})) is None
+    assert _attempt_of(pod({"name": "SIMRUN_WORKER", "value": "a-w0"})) is None
+    assert (
+        _attempt_of(pod({"name": "SIMRUN_ATTEMPT", "value": "1"}, name="wait")) is None
+    )
+    assert _attempt_of({}) is None
+
+
 def test_placements_of_run_pods() -> None:
     run = _k8s_pod(
         "n2",
@@ -700,7 +717,8 @@ def test_placements_of_run_pods() -> None:
     run["status"] = {"phase": "Running"}
     run["spec"]["containers"][0]["name"] = "main"
     run["spec"]["containers"][0]["env"] = [
-        {"name": "SIMRUN_WORKER", "value": "squares-w1"}
+        {"name": "SIMRUN_WORKER", "value": "squares-w1"},
+        {"name": "SIMRUN_ATTEMPT", "value": "2"},
     ]
     merge = _k8s_pod(
         "n2",
@@ -727,6 +745,7 @@ def test_placements_of_run_pods() -> None:
             cores=4.0,
             memory_gb=6.0,
             worker="squares-w1",
+            attempt=2,
         ),
         Placement(
             workflow=WF,
@@ -737,6 +756,7 @@ def test_placements_of_run_pods() -> None:
             cores=1.0,
             memory_gb=0.0,
             worker=None,
+            attempt=None,
         ),
     ]
     (listing,) = [c for c in calls if c[0] == "list_namespaced_pod"]

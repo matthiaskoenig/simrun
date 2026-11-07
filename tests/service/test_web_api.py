@@ -186,6 +186,61 @@ def test_workers_failed_by_oom(service):
     assert view["oom_killed"] is True
 
 
+def test_workers_retried_after_an_eviction(service):
+    run_id = service.submit()["id"]
+    task_dir = service.run_dir(run_id) / "tasks" / "squares"
+    # attempt 0 was evicted (SIGTERM, no OOM): a worker reports in `finally`
+    write_report(
+        WorkerReport(worker="squares-w0", node="srv-01", processes=2), task_dir, 0
+    )
+    # its retry, attempt 1, waits for a node
+    service.backend.place(
+        _placement(
+            service, run_id, pod="pod-w0-1", node=None, phase="Pending", attempt=1
+        )
+    )
+    service.backend.start(service.name(run_id))
+    (view,) = service.get(f"/runs/{run_id}/tasks/squares/workers").json()
+    assert view["state"] == "running"
+    assert view["node"] is None  # never the node of the evicted attempt
+    assert view["attempts"] == 2
+    assert view["oom_killed"] is False
+    service.backend.place(
+        _placement(service, run_id, pod="pod-w0-1", node="srv-02", attempt=1)
+    )
+    (view,) = service.get(f"/runs/{run_id}/tasks/squares/workers").json()
+    assert (view["state"], view["node"], view["attempts"]) == ("running", "srv-02", 2)
+
+
+def test_workers_retried_after_an_oom_kill(service):
+    run_id = service.submit()["id"]
+    task_dir = service.run_dir(run_id) / "tasks" / "squares"
+    write_report(
+        WorkerReport(worker="squares-w0", node="srv-01", processes=2, oom_kills=1),
+        task_dir,
+        0,
+    )
+    service.backend.place(_placement(service, run_id, pod="pod-w0-1", attempt=1))
+    service.backend.start(service.name(run_id))
+    (view,) = service.get(f"/runs/{run_id}/tasks/squares/workers").json()
+    assert (view["state"], view["node"], view["attempts"]) == ("running", "srv-02", 2)
+    # the attempt before was killed for memory
+    assert view["oom_killed"] is True
+
+
+def test_workers_done_while_the_pod_of_the_reported_attempt_ends(service):
+    run_id = service.submit()["id"]
+    task_dir = service.run_dir(run_id) / "tasks" / "squares"
+    write_report(
+        WorkerReport(worker="squares-w0", node="srv-01", processes=2), task_dir, 0
+    )
+    # the pod of attempt 0 is still listed while its container exits
+    service.backend.place(_placement(service, run_id, node="srv-01", attempt=0))
+    service.backend.start(service.name(run_id))
+    (view,) = service.get(f"/runs/{run_id}/tasks/squares/workers").json()
+    assert (view["state"], view["node"], view["attempts"]) == ("done", "srv-01", 1)
+
+
 def test_workers_unknown_task(service):
     run_id = service.submit()["id"]
     assert service.get(f"/runs/{run_id}/tasks/nope/workers").status_code == 404
