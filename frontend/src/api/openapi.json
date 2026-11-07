@@ -128,6 +128,35 @@
         "title": "HTTPValidationError",
         "type": "object"
       },
+      "HintView": {
+        "description": "The default resources of a task type.",
+        "properties": {
+          "gpus": {
+            "title": "Gpus",
+            "type": "integer"
+          },
+          "memory_base_gb": {
+            "title": "Memory Base Gb",
+            "type": "number"
+          },
+          "memory_per_worker_gb": {
+            "title": "Memory Per Worker Gb",
+            "type": "number"
+          },
+          "scratch_gb": {
+            "title": "Scratch Gb",
+            "type": "number"
+          }
+        },
+        "required": [
+          "memory_base_gb",
+          "memory_per_worker_gb",
+          "scratch_gb",
+          "gpus"
+        ],
+        "title": "HintView",
+        "type": "object"
+      },
       "Identity": {
         "description": "Who calls the service: a person or an agent acting for a person.\n\nAttributes:\n    name: Name of the person or the agent.\n    kind: `person` or `agent`.\n    owner: The person responsible; a person's owner is the person.",
         "properties": {
@@ -1186,6 +1215,73 @@
         ],
         "title": "TaskState",
         "type": "string"
+      },
+      "TaskTypeView": {
+        "description": "A task type with the JSON Schema of its settings, for the editor.",
+        "properties": {
+          "cost_setting": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Cost Setting"
+          },
+          "has_plan": {
+            "title": "Has Plan",
+            "type": "boolean"
+          },
+          "hint": {
+            "$ref": "#/components/schemas/HintView"
+          },
+          "inputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Inputs",
+            "type": "array"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "outputs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Outputs",
+            "type": "array"
+          },
+          "settings_schema": {
+            "additionalProperties": true,
+            "title": "Settings Schema",
+            "type": "object"
+          },
+          "splittable": {
+            "title": "Splittable",
+            "type": "boolean"
+          },
+          "uses_cores": {
+            "title": "Uses Cores",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "settings_schema",
+          "inputs",
+          "outputs",
+          "splittable",
+          "uses_cores",
+          "has_plan",
+          "cost_setting",
+          "hint"
+        ],
+        "title": "TaskTypeView",
+        "type": "object"
       },
       "Usage": {
         "description": "Bytes of the run store per run and per group (`\"\"` without a group).",
@@ -2296,6 +2392,33 @@
         "summary": "Servers"
       }
     },
+    "/task-types": {
+      "get": {
+        "operationId": "task_types_task_types_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/TaskTypeView"
+                  },
+                  "title": "Response Task Types Task Types Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Task Types"
+      }
+    },
     "/usage": {
       "get": {
         "operationId": "usage_usage_get",
@@ -2362,6 +2485,49 @@
           }
         ],
         "summary": "Validate"
+      }
+    },
+    "/workflows/yaml": {
+      "post": {
+        "operationId": "workflow_to_yaml_workflows_yaml_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/Workflow"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Workflow To Yaml"
       }
     }
   }

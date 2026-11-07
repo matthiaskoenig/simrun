@@ -73,7 +73,7 @@ from simrun.worker import (
     WORKERS_DIR,
     WorkerReport,
 )
-from simrun.workflow import Priority, SplitMode, Workflow
+from simrun.workflow import Priority, SplitMode, Workflow, workflow_yaml
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +281,44 @@ class OutputFile(BaseModel):
 
     path: str
     bytes: int
+
+
+class HintView(BaseModel):
+    """The default resources of a task type."""
+
+    memory_base_gb: float
+    memory_per_worker_gb: float
+    scratch_gb: float
+    gpus: int
+
+
+class TaskTypeView(BaseModel):
+    """A task type with the JSON Schema of its settings, for the editor."""
+
+    name: str
+    settings_schema: dict[str, Any]
+    inputs: list[str]
+    outputs: list[str]
+    splittable: bool
+    uses_cores: bool
+    has_plan: bool
+    cost_setting: str | None
+    hint: HintView
+
+    @classmethod
+    def of(cls, task_type: TaskType) -> TaskTypeView:
+        """The view of a task type."""
+        return cls(
+            name=task_type.name,
+            settings_schema=task_type.settings.model_json_schema(),
+            inputs=list(task_type.inputs),
+            outputs=list(task_type.outputs),
+            splittable=task_type.splittable,
+            uses_cores=task_type.uses_cores,
+            has_plan=task_type.plan is not None,
+            cost_setting=task_type.cost_setting,
+            hint=HintView(**dataclasses.asdict(task_type.hint)),
+        )
 
 
 class CleanupRequest(BaseModel):
@@ -1279,6 +1317,14 @@ def create_app(
             return ValidationResult(ok=False, errors=_errors(error))
         errors = validate_workflow(workflow, service.types)
         return ValidationResult(ok=not errors, errors=errors)
+
+    @app.get("/task-types")
+    def task_types() -> list[TaskTypeView]:
+        return [TaskTypeView.of(service.types[name]) for name in sorted(service.types)]
+
+    @app.post("/workflows/yaml", response_class=PlainTextResponse)
+    def workflow_to_yaml(workflow: Workflow) -> str:
+        return workflow_yaml(workflow)
 
     @app.post("/estimate")
     def estimate(request: SubmitRequest, caller: Caller) -> dict[str, TaskEstimate]:

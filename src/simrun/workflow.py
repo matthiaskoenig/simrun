@@ -158,3 +158,19 @@ def dump_workflow(workflow: Workflow, path: Path) -> None:
     """Write a workflow as a YAML file."""
     data = workflow.model_dump(mode="json")
     path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+
+def workflow_yaml(workflow: Workflow) -> str:
+    """The compact YAML of a workflow: the fields which differ from the defaults.
+
+    `name` and `tasks` are always written, also when they are the defaults.
+
+    Args:
+        workflow: The workflow.
+
+    Returns:
+        The YAML text.
+    """
+    data = workflow.model_dump(mode="json", exclude_defaults=True)
+    data = {"name": workflow.name, "tasks": data.get("tasks", [])} | data
+    return yaml.safe_dump(data, sort_keys=False)
