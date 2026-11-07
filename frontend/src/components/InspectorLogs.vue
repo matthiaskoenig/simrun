@@ -1,7 +1,7 @@
 <!--
   The logs of a task in the inspector, the dark log block of the mockup: the
-  last lines of every pod under its header, read every `REFRESH_MS` while the
-  task is live and once more when it ends. The block stays at its bottom as
+  last lines of every pod under its header, read `REFRESH_MS` after the last
+  answer while the task is live and once more when it ends. The block stays at its bottom as
   lines come, unless the user scrolled up.
 -->
 <script setup lang="ts">
@@ -19,16 +19,21 @@ const error = ref<string | null>(null);
 const block = ref<HTMLElement | null>(null);
 let stick = true;
 
-let request = 0;
-async function load(): Promise<void> {
-  const own = ++request;
+// one request at a time: the next is due `REFRESH_MS` after the answer to the
+// last, since the service may take longer than that to read the logs of every
+// pod; another task or the end of a task starts a new generation, whose
+// answers alone count
+let generation = 0;
+let timer: ReturnType<typeof setTimeout> | null = null;
+
+async function load(own: number): Promise<void> {
   try {
     const found = await api.logs(props.runId, props.taskId);
-    if (own !== request) return;
+    if (own !== generation) return;
     text.value = found;
     error.value = null;
   } catch (cause) {
-    if (own !== request) return;
+    if (own !== generation) return;
     error.value = cause instanceof ApiError ? cause.message : "The service cannot be reached.";
   }
   if (stick) {
@@ -37,16 +42,23 @@ async function load(): Promise<void> {
   }
 }
 
+/** Reads the logs, and again `REFRESH_MS` after each answer while `repeat`. */
+async function poll(own: number, repeat: boolean): Promise<void> {
+  await load(own);
+  if (repeat && own === generation) timer = setTimeout(() => void poll(own, true), REFRESH_MS);
+}
+
+/** Ends the reads of the current generation. */
+function stop(): void {
+  if (timer !== null) clearTimeout(timer);
+  timer = null;
+  generation += 1;
+}
+
 function onScroll(): void {
   const el = block.value;
   if (el) stick = el.scrollHeight - el.scrollTop - el.clientHeight <= BOTTOM_PX;
 }
-
-let timer: ReturnType<typeof setInterval> | null = null;
-const stop = (): void => {
-  if (timer !== null) clearInterval(timer);
-  timer = null;
-};
 
 // another task is read at once; the logs a task left when it ended, which
 // the service keeps, are read once more
@@ -54,22 +66,19 @@ watch(
   () => [props.runId, props.taskId, props.live] as const,
   ([runId, taskId, live], old) => {
     stop();
+    const own = generation;
     if (old === undefined || old[0] !== runId || old[1] !== taskId) {
       text.value = null;
       error.value = null;
       stick = true;
-      void load();
-    } else if (!live && old[2]) {
-      void load();
+      void poll(own, live);
+    } else if (live !== old[2]) {
+      void poll(own, live);
     }
-    if (live) timer = setInterval(() => void load(), REFRESH_MS);
   },
   { immediate: true },
 );
-onScopeDispose(() => {
-  stop();
-  request += 1;
-});
+onScopeDispose(stop);
 
 /** The lines of the logs, the headers of the pods marked. */
 const lines = computed(() =>

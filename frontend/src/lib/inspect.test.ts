@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { TaskSpec } from "../api/client";
 import { runRecord } from "../test/fixtures";
 import { metrics, resourceNote, taskTimes } from "./inspect";
 
@@ -17,14 +18,26 @@ describe("resourceNote", () => {
 
 describe("taskTimes", () => {
   const now = Date.parse("2026-11-07T14:00:00Z");
+  const root: TaskSpec = { id: "squares", type: "demo.squares" };
+  const downstream: TaskSpec = { id: "plot", type: "command", inputs: { squares: "squares.squares" } };
 
   it("knows no time of a running task of a run which is not built", () => {
-    expect(taskTimes(runRecord({ built: null }), "running", undefined, now)).toEqual({ elapsed: null, remaining: null });
+    expect(taskTimes(runRecord({ built: null }), root, "running", undefined, now)).toEqual({ elapsed: null, remaining: null });
   });
 
   it("knows no elapsed time of a task which is over without progress lines", () => {
     const record = runRecord({ built: "2026-11-07T13:00:00Z" });
-    expect(taskTimes(record, "done", { counts: null, first: null, last: null }, now)).toEqual({ elapsed: null, remaining: null });
+    const none = { counts: null, first: null, last: null };
+    expect(taskTimes(record, root, "done", none, now)).toEqual({ elapsed: null, remaining: null });
+    expect(taskTimes(record, downstream, "done", none, now)).toEqual({ elapsed: null, remaining: null });
+  });
+
+  it("knows no time of a running task with inputs and no progress lines, whatever the age of its run", () => {
+    const record = runRecord({ built: "2026-11-07T13:00:00Z" });
+    expect(taskTimes(record, downstream, "running", { counts: null, first: null, last: null }, now)).toEqual({
+      elapsed: null,
+      remaining: null,
+    });
   });
 
   it("has no remaining time once every unit is done", () => {
@@ -33,7 +46,7 @@ describe("taskTimes", () => {
       first: { time: "2026-11-07T13:59:00Z" },
       last: { time: "2026-11-07T13:59:50Z" },
     };
-    expect(taskTimes(runRecord(), "running", progress, now)).toEqual({ elapsed: 60, remaining: null });
+    expect(taskTimes(runRecord(), downstream, "running", progress, now)).toEqual({ elapsed: 60, remaining: null });
   });
 });
 
