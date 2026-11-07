@@ -35,6 +35,16 @@ export function formatGb(gb: number): string {
   return gb >= 1024 ? `${amount(gb / 1024)} TB` : `${amount(Math.max(0, gb))} GB`;
 }
 
+/**
+ * Where a task runs: its pods, the worker processes of one pod and the memory
+ * of one pod, `"1 pod of 8 workers, 12 GB"`, `"4 pods of 36 workers, 180 GB each"`.
+ */
+export function formatPlacement(pods: number, processes: number, memoryGb: number): string {
+  const workers = `${processes} ${processes === 1 ? "worker" : "workers"}`;
+  if (pods === 1) return `1 pod of ${workers}, ${formatGb(memoryGb)}`;
+  return `${pods} pods of ${workers}, ${formatGb(memoryGb)} each`;
+}
+
 /** A number of cores, which a pod may request in fractions: `"4"`, `"1.5"`. */
 export function formatCores(cores: number): string {
   return String(Math.round(cores * 10) / 10);

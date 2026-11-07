@@ -146,7 +146,15 @@ onBeforeUnmount(() => controller?.abort());
           @reload="edit.reload()"
           @run="runDraft"
           @download="download"
-        />
+        >
+          <p
+            v-if="refused"
+            data-refused
+            class="pointer-events-auto self-center rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 shadow-sm ring-1 ring-amber-200"
+          >
+            {{ refused }}
+          </p>
+        </EditBar>
         <p v-if="edit.loadError.value" data-load-error class="m-4 rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 ring-1 ring-red-200">
           {{ edit.loadError.value }}
         </p>
@@ -162,13 +170,6 @@ onBeforeUnmount(() => controller?.abort());
           @change="(workflow) => ((refused = null), edit.change(workflow))"
           @refused="(message) => (refused = message)"
         />
-        <p
-          v-if="refused"
-          data-refused
-          class="absolute top-3 left-1/2 -translate-x-1/2 rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-800 ring-1 ring-amber-200"
-        >
-          {{ refused }}
-        </p>
       </main>
       <aside data-inspector class="w-[352px] shrink-0 border-l border-gray-200 bg-white">
         <EditInspector

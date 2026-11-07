@@ -28,10 +28,21 @@ const session: EditSession = {
 const reply = (data: unknown, status = 200): Response => new Response(JSON.stringify(data), { status });
 const summary = { id: "r9", state: "queued" };
 
+// sends more events on the open stream of the session
+let push: (text: string) => void = () => {};
+
 function mockFetch(runReply: () => Response, events = "") {
   const mock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
     const path = String(input);
-    if (path.endsWith("/events")) return new Response(new ReadableStream({ start: (c) => c.enqueue(new TextEncoder().encode(events)) }));
+    if (path.endsWith("/events"))
+      return new Response(
+        new ReadableStream({
+          start: (c) => {
+            push = (text) => c.enqueue(new TextEncoder().encode(text));
+            push(events);
+          },
+        }),
+      );
     if (path === "/task-types" || path === "/servers") return reply([]);
     if (path === "/validate") return reply({ ok: true, errors: [] });
     if (path === "/estimate") return reply({});
@@ -136,6 +147,24 @@ describe("EditorView bar", () => {
     await flushPromises();
     expect(post(mock, "/workflows/yaml")).toHaveLength(1);
     expect(click).toHaveBeenCalledOnce();
+    view.unmount();
+  });
+
+  it("switches to Download YAML and runs from the browser when the session goes disconnected", async () => {
+    const mock = mockFetch(() => reply(summary), sse("edit", session));
+    const { view, router } = await open("/edit/abc");
+    expect(view.find("[data-save]").exists()).toBe(true);
+    push(sse("edit", { ...session, connected: false }));
+    await flushPromises();
+    expect(view.get("[data-machine]").text()).toBe("not connected");
+    expect(view.find("[data-save]").exists()).toBe(false);
+    expect(view.find("[data-download]").exists()).toBe(true);
+    await view.get("[data-run]").trigger("click");
+    await flushPromises();
+    expect(post(mock, "/edits/abc/run")).toHaveLength(0);
+    const [call] = post(mock, "/runs");
+    expect(JSON.parse(String(call![1]!.body)).sources).toEqual([source]);
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe("/runs/r9"));
     view.unmount();
   });
 });
