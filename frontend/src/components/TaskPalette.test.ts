@@ -44,4 +44,20 @@ describe("TaskPalette", () => {
     });
     expect(data["application/x-simrun-task-type"]).toBe("command");
   });
+
+  it("shows the description of a type, else whether it splits", () => {
+    const described = { ...type("demo.squares"), description: "Squares of numbers, split over servers" };
+    const split = { ...type("sbmlsim.fit"), splittable: true, settings_schema: { description: "Settings of a fit." } };
+    const wrapper = mount(TaskPalette, { props: { types: [described, split, type("command")] } });
+    const subtitle = (name: string) => wrapper.get(`[data-type="${name}"] [data-description]`).text();
+    expect(subtitle("demo.squares")).toBe("Squares of numbers, split over servers");
+    expect(subtitle("sbmlsim.fit")).toBe("Split over servers");
+    expect(subtitle("command")).toBe("One process");
+  });
+
+  it("shows its footer under the types", () => {
+    const wrapper = mount(TaskPalette, { props: { types }, slots: { footer: "Saves to <b>w.yaml</b>" } });
+    expect(wrapper.get("[data-palette-footer]").text()).toBe("Saves to w.yaml");
+    expect(mount(TaskPalette, { props: { types } }).find("[data-palette-footer]").exists()).toBe(false);
+  });
 });

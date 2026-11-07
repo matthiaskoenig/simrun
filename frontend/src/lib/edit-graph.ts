@@ -146,3 +146,33 @@ export function renameTask(workflow: Workflow, from: string, to: string): Workfl
   }
   return next;
 }
+
+/** The pan and zoom of the canvas, as Vue Flow names them. */
+export interface View {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+/**
+ * The view which shows a node whole, panned as little as possible and at the
+ * same zoom, or null when the node is shown whole already. `rect` is the node
+ * in flow coordinates, `pane` the size of the canvas on screen, `margin` the
+ * room to keep free at each side (the bar floats over the top).
+ */
+export function panInto(
+  view: View,
+  pane: { width: number; height: number },
+  rect: { x: number; y: number; width: number; height: number },
+  margin: { top: number; right: number; bottom: number; left: number },
+): View | null {
+  const shift = (start: number, size: number, low: number, high: number): number => {
+    if (start < low) return low - start;
+    if (start + size > high) return Math.max(high - (start + size), low - start);
+    return 0;
+  };
+  const dx = shift(rect.x * view.zoom + view.x, rect.width * view.zoom, margin.left, pane.width - margin.right);
+  const dy = shift(rect.y * view.zoom + view.y, rect.height * view.zoom, margin.top, pane.height - margin.bottom);
+  if (dx === 0 && dy === 0) return null;
+  return { x: view.x + dx, y: view.y + dy, zoom: view.zoom };
+}

@@ -58,6 +58,28 @@ export function formatTime(iso: string): string {
   return `${date.toLocaleDateString("en-US", { month: "short", day: "numeric" })}, ${clock}`;
 }
 
+/** How long ago a time was, in its largest whole unit: `"just now"`, `"5 min ago"`, `"3 h ago"`, `"2 d ago"`. */
+export function formatAgo(iso: string, now: Date = new Date()): string {
+  const seconds = (now.getTime() - new Date(iso).getTime()) / 1000;
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} h ago`;
+  return `${Math.floor(hours / 24)} d ago`;
+}
+
+/** The short name of a run, the last part of its id: `"5f81f7"` of `"20261107-111319-5f81f7"`. */
+export function shortRun(id: string): string {
+  return id.slice(id.lastIndexOf("-") + 1);
+}
+
+/** The directory (with its trailing `/`) and the name of the file of a path. */
+export function fileOf(path: string): { dir: string; name: string } {
+  const cut = path.lastIndexOf("/") + 1;
+  return { dir: path.slice(0, cut), name: path.slice(cut) };
+}
+
 /** The initials of a name for an avatar: the first letters of two words, else its first two letters. */
 export function initials(name: string): string {
   const words = name.split(/[\s._-]+/).filter((w) => w !== "");

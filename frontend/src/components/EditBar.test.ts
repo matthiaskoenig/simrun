@@ -6,7 +6,7 @@ const tree = [{ name: "model", branch: "fit-cyp1a2", commit: "abcdef0123456789",
 
 const defaults = {
   tree,
-  host: "laptop",
+  host: "laptop" as string | null,
   connected: true,
   valid: true as boolean | null,
   errorCount: 0,
@@ -15,6 +15,7 @@ const defaults = {
   saving: false,
   running: false,
   error: null as string | null,
+  run: null as string | null,
 };
 
 function mountBar(props: Partial<typeof defaults> = {}) {
@@ -88,7 +89,7 @@ describe("EditBar", () => {
 
   it("shows not connected in gray and Download YAML instead of Save", async () => {
     const bar = mountBar({ connected: false });
-    expect(bar.get("[data-machine]").text()).toBe("not connected");
+    expect(bar.get("[data-machine]").text()).toBe("laptop not connected");
     expect(bar.get("[data-dot]").classes()).not.toContain("bg-emerald-500");
     expect(bar.find("[data-save]").exists()).toBe(false);
     expect(bar.get("[data-download]").text()).toBe("Download YAML");
@@ -122,5 +123,15 @@ describe("EditBar", () => {
     expect(bar.find("[data-reload]").exists()).toBe(false);
     expect(bar.find("[data-save-anyway]").exists()).toBe(false);
     expect(bar.get("[data-state]").text()).toBe("unsaved changes, download to keep them");
+  });
+
+  it("names the run a rerun comes from instead of a machine", () => {
+    const bar = mountBar({ connected: false, host: null, run: "20261107-111319-5f81f7" });
+    expect(bar.get("[data-machine]").text()).toBe("from run #5f81f7");
+    expect(bar.find("[data-dot]").exists()).toBe(false);
+  });
+
+  it("reads Run workflow as the mockup", () => {
+    expect(mountBar().get("[data-run]").text()).toBe("Run workflow");
   });
 });

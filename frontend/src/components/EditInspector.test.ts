@@ -120,4 +120,20 @@ describe("EditInspector", () => {
     await wrapper.get("[data-group]").setValue("team");
     expect(wrapper.emitted("update:group")!.at(-1)).toEqual(["team"]);
   });
+
+  it("heads a task with its kind, its type and its id as the title", () => {
+    const wrapper = mount(EditInspector, { props: { ...base, selected: "b" } });
+    const head = wrapper.get("[data-task-head]");
+    expect(head.classes()).toContain("border-b");
+    expect(head.get("[data-head-type]").text()).toBe("demo.squares");
+    expect(head.get("[data-head-type]").classes()).toContain("uppercase");
+    expect(head.get("[data-head-title]").text()).toBe("b");
+    expect(head.find("svg").exists()).toBe(true);
+  });
+
+  it("shows an error of a setting under its field and the others in the panel", () => {
+    const wrapper = mount(EditInspector, { props: { ...base, selected: "b", taskErrors: { b: ["n: Field required", "input x is bad"] } } });
+    expect(wrapper.get("[data-field='n'] [data-field-error]").text()).toBe("Field required");
+    expect(wrapper.get("[data-task-errors]").text()).toBe("input x is bad");
+  });
 });
