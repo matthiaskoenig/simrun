@@ -1398,6 +1398,7 @@ def create_app(
     @app.get("/edits/{session_id}/requests")
     async def edit_requests(
         session_id: str,
+        request: Request,
         caller: Caller,
         timeout: Annotated[float, Query(ge=0, le=EDIT_POLL_MAX_S)] = 20.0,
     ) -> list[EditRequest]:
@@ -1408,6 +1409,8 @@ def create_app(
         while True:
             found = await asyncio.to_thread(service.edits.requests, session_id)
             remaining = deadline - loop.time()
+            if await request.is_disconnected():
+                return found  # the command went away: no `seen`
             if found or remaining <= 0:
                 await asyncio.to_thread(service.edits.seen, session_id)
                 return found
@@ -1444,7 +1447,7 @@ def create_app(
             service.edits.saved,
             session_id,
             body.workflow,
-            result.file_sha256 or session.file_sha256,
+            result.file_sha256,
         )
 
     @app.post("/edits/{session_id}/run")
