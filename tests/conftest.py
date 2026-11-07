@@ -1,7 +1,9 @@
 import dataclasses
 import os
+import socket
 import subprocess
 import sys
+import threading
 import time
 import tomllib
 from collections.abc import Callable, Generator, Iterator
@@ -12,6 +14,7 @@ from typing import Any
 import httpx
 import pytest
 import tomlkit
+import uvicorn
 import yaml
 from fastapi.testclient import TestClient
 from pydantic import BaseModel
@@ -275,3 +278,85 @@ def repo(tmp_path: Path) -> Path:
     subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
     subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "init"], check=True)
     return path
+
+
+AUTH = {"Authorization": "Bearer t-mk"}
+
+
+class Live:
+    """A running app on a socket, for streams which are read while they change."""
+
+    def __init__(self, base: str, app: Any, backend: FakeBackend, settings: Any):
+        self.base = base
+        self.app = app
+        self.backend = backend
+        self.settings = settings
+        self.http = httpx.Client(base_url=base, headers=AUTH, timeout=30.0)
+
+    def submit(self) -> str:
+        workflow = {
+            "name": "demo",
+            "tasks": [{"id": "squares", "type": "demo.squares", "settings": {"n": 4}}],
+        }
+        response = self.http.post("/runs", json={"workflow": workflow, "sources": []})
+        assert response.status_code == 201, response.text
+        run_id = response.json()["id"]
+        deadline = time.monotonic() + 60
+        while self.app.state.controller.in_flight(run_id):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        return run_id
+
+    def name(self, run_id: str) -> str:
+        return f"simrun-{run_id}"
+
+    def stream(
+        self, path: str, headers: dict[str, str] | None = None
+    ) -> Iterator[tuple[str, str]]:
+        """The events `(name, data)` of a stream, until the server ends it."""
+        with httpx.stream(
+            "GET", self.base + path, headers=headers or AUTH, timeout=30.0
+        ) as response:
+            assert response.status_code == 200
+            assert response.headers["content-type"].startswith("text/event-stream")
+            assert response.headers["cache-control"] == "no-cache"
+            assert response.headers["x-accel-buffering"] == "no"
+            name = None
+            for line in response.iter_lines():
+                if line.startswith("event: "):
+                    name = line[7:]
+                elif line.startswith("data: ") and name is not None:
+                    yield name, line[6:]
+                    name = None
+
+
+@pytest.fixture
+def live(tmp_path: Path) -> Iterator[Callable[..., Live]]:
+    """Start an app on a socket: `live(**settings)` gives a `Live`."""
+    started: list[tuple[uvicorn.Server, threading.Thread, Live]] = []
+
+    def start(**kw: Any) -> Live:
+        settings: ServiceSettings = make_settings(tmp_path, **kw)
+        backend = FakeBackend()
+        app = create_app(settings, backend, TYPES)
+        with socket.socket() as s:
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
+        server = uvicorn.Server(
+            uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+        )
+        thread = threading.Thread(target=server.run, daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 30
+        while not server.started:
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        item = Live(f"http://127.0.0.1:{port}", app, backend, settings)
+        started.append((server, thread, item))
+        return item
+
+    yield start
+    for server, thread, item in started:
+        item.http.close()
+        server.should_exit = True
+        thread.join(30)

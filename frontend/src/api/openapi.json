@@ -115,6 +115,242 @@
         "title": "CompareTable",
         "type": "object"
       },
+      "EditRequest": {
+        "description": "A request of the browser to the command.\n\nAttributes:\n    id: Id of the request.\n    kind: `save` writes the file, `run` submits the workflow.\n    workflow: The workflow of the draft.\n    base: For a save, the hash of the file the draft started from.\n    force: Save although the file changed on disk.\n    group: Group of the run.\n    split: Split mode of the run.\n    reserve: Node reserved for the run.\n    created: When the request was made.",
+        "properties": {
+          "base": {
+            "title": "Base",
+            "type": "string"
+          },
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "save",
+              "run"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "reserve": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserve"
+          },
+          "split": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SplitMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "workflow",
+          "base",
+          "created"
+        ],
+        "title": "EditRequest",
+        "type": "object"
+      },
+      "EditResult": {
+        "description": "The answer of the command to a request.\n\nAttributes:\n    ok: Whether the request was done.\n    status: The status of a refusal: 409 conflict, 422 refused.\n    detail: The reason of a refusal.\n    file_sha256: For a save, the hash of the written file.\n    run: For a run, the submitted run.",
+        "properties": {
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "file_sha256": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "File Sha256"
+          },
+          "ok": {
+            "title": "Ok",
+            "type": "boolean"
+          },
+          "run": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/RunSummary"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "status": {
+            "default": 200,
+            "title": "Status",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "ok"
+        ],
+        "title": "EditResult",
+        "type": "object"
+      },
+      "EditSession": {
+        "description": "An edit session.\n\nAttributes:\n    id: Id of the session.\n    owner: The user of the token which opened it.\n    host: The machine of the command.\n    path: The absolute path of the workflow file there.\n    workflow: The workflow as in the file.\n    file_sha256: Hash of the file content, empty for a file which does not exist.\n    sources: The provenance of the last snapshots.\n    tree: Per source the state of the working tree.\n    created: When the session was opened.\n    seen: The last poll of the command.\n    closed: The command stopped.\n    connected: Not closed and seen lately; computed when read.",
+        "properties": {
+          "closed": {
+            "default": false,
+            "title": "Closed",
+            "type": "boolean"
+          },
+          "connected": {
+            "default": false,
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "file_sha256": {
+            "title": "File Sha256",
+            "type": "string"
+          },
+          "host": {
+            "title": "Host",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "seen": {
+            "format": "date-time",
+            "title": "Seen",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceProvenance"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "tree": {
+            "items": {
+              "$ref": "#/components/schemas/TreeState"
+            },
+            "title": "Tree",
+            "type": "array"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
+          }
+        },
+        "required": [
+          "id",
+          "owner",
+          "host",
+          "path",
+          "workflow",
+          "file_sha256",
+          "sources",
+          "tree",
+          "created",
+          "seen"
+        ],
+        "title": "EditSession",
+        "type": "object"
+      },
+      "EditState": {
+        "description": "What the command read from disk, sent when it changed.",
+        "properties": {
+          "file_sha256": {
+            "title": "File Sha256",
+            "type": "string"
+          },
+          "sources": {
+            "anyOf": [
+              {
+                "items": {
+                  "$ref": "#/components/schemas/SourceProvenance"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Sources"
+          },
+          "tree": {
+            "items": {
+              "$ref": "#/components/schemas/TreeState"
+            },
+            "title": "Tree",
+            "type": "array"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
+          }
+        },
+        "required": [
+          "workflow",
+          "file_sha256",
+          "tree"
+        ],
+        "title": "EditState",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -212,6 +448,50 @@
           "total"
         ],
         "title": "LedgerCounts",
+        "type": "object"
+      },
+      "OpenEdit": {
+        "description": "The body which opens a session.",
+        "properties": {
+          "file_sha256": {
+            "title": "File Sha256",
+            "type": "string"
+          },
+          "host": {
+            "title": "Host",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "$ref": "#/components/schemas/SourceProvenance"
+            },
+            "title": "Sources",
+            "type": "array"
+          },
+          "tree": {
+            "items": {
+              "$ref": "#/components/schemas/TreeState"
+            },
+            "title": "Tree",
+            "type": "array"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
+          }
+        },
+        "required": [
+          "host",
+          "path",
+          "workflow",
+          "file_sha256",
+          "sources",
+          "tree"
+        ],
+        "title": "OpenEdit",
         "type": "object"
       },
       "OutputFile": {
@@ -438,6 +718,51 @@
           }
         },
         "title": "ResourceOverride",
+        "type": "object"
+      },
+      "RunBody": {
+        "description": "The body of a run, with the options of `SubmitRequest`.",
+        "properties": {
+          "group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Group"
+          },
+          "reserve": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reserve"
+          },
+          "split": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/SplitMode"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
+          }
+        },
+        "required": [
+          "workflow"
+        ],
+        "title": "RunBody",
         "type": "object"
       },
       "RunItem": {
@@ -845,6 +1170,29 @@
           "message"
         ],
         "title": "RunSummary",
+        "type": "object"
+      },
+      "SaveBody": {
+        "description": "The body of a save.",
+        "properties": {
+          "base": {
+            "title": "Base",
+            "type": "string"
+          },
+          "force": {
+            "default": false,
+            "title": "Force",
+            "type": "boolean"
+          },
+          "workflow": {
+            "$ref": "#/components/schemas/Workflow"
+          }
+        },
+        "required": [
+          "workflow",
+          "base"
+        ],
+        "title": "SaveBody",
         "type": "object"
       },
       "ServerUsage": {
@@ -1283,6 +1631,45 @@
         "title": "TaskTypeView",
         "type": "object"
       },
+      "TreeState": {
+        "description": "The live state of the working tree of a source.\n\nAttributes:\n    name: Name of the source.\n    branch: The branch, none when detached.\n    commit: The commit.\n    changed_files: The files which differ from the commit.",
+        "properties": {
+          "branch": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Branch"
+          },
+          "changed_files": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Changed Files",
+            "type": "array"
+          },
+          "commit": {
+            "title": "Commit",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "branch",
+          "commit",
+          "changed_files"
+        ],
+        "title": "TreeState",
+        "type": "object"
+      },
       "Usage": {
         "description": "Bytes of the run store per run and per group (`\"\"` without a group).",
         "properties": {
@@ -1597,6 +1984,482 @@
           }
         ],
         "summary": "Compare"
+      }
+    },
+    "/edits": {
+      "get": {
+        "operationId": "list_edits_edits_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EditSession"
+                  },
+                  "title": "Response List Edits Edits Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "List Edits"
+      },
+      "post": {
+        "operationId": "open_edit_edits_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OpenEdit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditSession"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Open Edit"
+      }
+    },
+    "/edits/{session_id}": {
+      "get": {
+        "operationId": "get_edit_edits__session_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditSession"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Get Edit"
+      }
+    },
+    "/edits/{session_id}/close": {
+      "post": {
+        "operationId": "close_edit_edits__session_id__close_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditSession"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Close Edit"
+      }
+    },
+    "/edits/{session_id}/events": {
+      "get": {
+        "operationId": "edit_events_edits__session_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Edit Events"
+      }
+    },
+    "/edits/{session_id}/requests": {
+      "get": {
+        "operationId": "edit_requests_edits__session_id__requests_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "timeout",
+            "required": false,
+            "schema": {
+              "default": 20.0,
+              "maximum": 30.0,
+              "minimum": 0,
+              "title": "Timeout",
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/EditRequest"
+                  },
+                  "title": "Response Edit Requests Edits  Session Id  Requests Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Edit Requests"
+      }
+    },
+    "/edits/{session_id}/requests/{request_id}/result": {
+      "post": {
+        "operationId": "edit_result_edits__session_id__requests__request_id__result_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditResult"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "204": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Edit Result"
+      }
+    },
+    "/edits/{session_id}/run": {
+      "post": {
+        "operationId": "run_edit_edits__session_id__run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Run Edit"
+      }
+    },
+    "/edits/{session_id}/save": {
+      "post": {
+        "operationId": "save_edit_edits__session_id__save_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SaveBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditSession"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Save Edit"
+      }
+    },
+    "/edits/{session_id}/state": {
+      "put": {
+        "operationId": "put_edit_state_edits__session_id__state_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "session_id",
+            "required": true,
+            "schema": {
+              "title": "Session Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EditState"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EditSession"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "HTTPBearer": []
+          }
+        ],
+        "summary": "Put Edit State"
       }
     },
     "/estimate": {

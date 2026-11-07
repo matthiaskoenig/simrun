@@ -59,6 +59,16 @@ from simrun.service.controller import (
     attempt_of,
     is_oom,
 )
+from simrun.service.edits import (
+    EditRequest,
+    EditResult,
+    EditSession,
+    EditState,
+    EditStore,
+    OpenEdit,
+    RunBody,
+    SaveBody,
+)
 from simrun.service.index import IndexedRunStore, RunIndex
 from simrun.service.logs import DEFAULT_TAIL_LINES, read_kept, render
 from simrun.service.submission import Submitter, has_model_project
@@ -80,6 +90,10 @@ logger = logging.getLogger(__name__)
 CONFIG_ENV = "SIMRUN_CONFIG"
 WAIT_POLL_S = 0.2
 WAIT_MAX_S = 300.0
+# the longest long poll of the command of an edit session, and how long a save or
+# a run of the browser waits for its answer
+EDIT_POLL_MAX_S = 30.0
+EDIT_WAIT_S = 60.0
 # a snapshot younger than this is kept by a cleanup: a client may be submitting it
 SNAPSHOT_GRACE_S = 3600.0
 LATEST_LINK = "latest"
@@ -602,6 +616,7 @@ class _Service:
         )
         self.controller.resume = self.submitter.run
         self.tokens = load_tokens(settings.tokens)
+        self.edits = EditStore(settings.store)
 
     # submission
 
@@ -1325,6 +1340,149 @@ def create_app(
     @app.post("/workflows/yaml", response_class=PlainTextResponse)
     def workflow_to_yaml(workflow: Workflow) -> str:
         return workflow_yaml(workflow)
+
+    def own_edit(session_id: str, caller: Identity, owned: bool = True) -> EditSession:
+        """The session, 404 when unknown, 403 when `owned` and not the caller's."""
+        try:
+            session = service.edits.read(session_id)
+        except KeyError:
+            raise HTTPException(404, f"unknown edit session {session_id}") from None
+        if owned and session.owner != caller.owner:
+            raise HTTPException(403, "only the owner of the session may do this")
+        return session
+
+    async def ask(session_id: str, request_id: str) -> EditResult:
+        """Wait for the answer of the command to a request, then drop the request."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + EDIT_WAIT_S
+        try:
+            while True:
+                result = await asyncio.to_thread(
+                    service.edits.result, session_id, request_id
+                )
+                remaining = deadline - loop.time()
+                if result is not None:
+                    return result
+                if remaining <= 0:
+                    raise HTTPException(
+                        503, "the machine of the session did not answer"
+                    )
+                await asyncio.sleep(min(WAIT_POLL_S, remaining))
+        finally:
+            await asyncio.to_thread(service.edits.drop_request, session_id, request_id)
+
+    @app.post("/edits", status_code=201)
+    def open_edit(body: OpenEdit, caller: Caller) -> EditSession:
+        return service.edits.open(caller, body)
+
+    @app.get("/edits")
+    def list_edits(caller: Caller) -> list[EditSession]:
+        return service.edits.list(caller.owner)
+
+    @app.get("/edits/{session_id}")
+    def get_edit(session_id: str, caller: Caller) -> EditSession:
+        return own_edit(session_id, caller, owned=False)
+
+    @app.put("/edits/{session_id}/state")
+    def put_edit_state(
+        session_id: str, state: EditState, caller: Caller
+    ) -> EditSession:
+        own_edit(session_id, caller)
+        return service.edits.update(session_id, state)
+
+    @app.post("/edits/{session_id}/close")
+    def close_edit(session_id: str, caller: Caller) -> EditSession:
+        own_edit(session_id, caller)
+        return service.edits.close(session_id)
+
+    @app.get("/edits/{session_id}/requests")
+    async def edit_requests(
+        session_id: str,
+        caller: Caller,
+        timeout: Annotated[float, Query(ge=0, le=EDIT_POLL_MAX_S)] = 20.0,
+    ) -> list[EditRequest]:
+        await asyncio.to_thread(own_edit, session_id, caller)
+        await asyncio.to_thread(service.edits.seen, session_id)
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while True:
+            found = await asyncio.to_thread(service.edits.requests, session_id)
+            remaining = deadline - loop.time()
+            if found or remaining <= 0:
+                await asyncio.to_thread(service.edits.seen, session_id)
+                return found
+            await asyncio.sleep(min(WAIT_POLL_S, remaining))
+
+    @app.post("/edits/{session_id}/requests/{request_id}/result", status_code=204)
+    def edit_result(
+        session_id: str, request_id: str, result: EditResult, caller: Caller
+    ) -> None:
+        own_edit(session_id, caller)
+        try:
+            service.edits.answer(session_id, request_id, result)
+        except KeyError:
+            raise HTTPException(404, f"unknown request {request_id}") from None
+
+    @app.post("/edits/{session_id}/save")
+    async def save_edit(session_id: str, body: SaveBody, caller: Caller) -> EditSession:
+        session = await asyncio.to_thread(own_edit, session_id, caller)
+        if not session.connected:
+            raise HTTPException(503, "the machine of the session is not connected")
+        request = await asyncio.to_thread(
+            lambda: service.edits.add_request(
+                session_id,
+                "save",
+                body.workflow,
+                base=body.base,
+                force=body.force,
+            )
+        )
+        result = await ask(session_id, request.id)
+        if not result.ok:
+            raise HTTPException(result.status, result.detail)
+        return await asyncio.to_thread(
+            service.edits.saved,
+            session_id,
+            body.workflow,
+            result.file_sha256 or session.file_sha256,
+        )
+
+    @app.post("/edits/{session_id}/run")
+    async def run_edit(session_id: str, body: RunBody, caller: Caller) -> RunSummary:
+        session = await asyncio.to_thread(own_edit, session_id, caller)
+        if not session.connected:
+            raise HTTPException(503, "the machine of the session is not connected")
+        request = await asyncio.to_thread(
+            lambda: service.edits.add_request(
+                session_id,
+                "run",
+                body.workflow,
+                group=body.group,
+                split=body.split,
+                reserve=body.reserve,
+            )
+        )
+        result = await ask(session_id, request.id)
+        if not result.ok:
+            raise HTTPException(result.status, result.detail)
+        if result.run is None:
+            raise HTTPException(502, "the machine of the session sent no run")
+        return result.run
+
+    @app.get("/edits/{session_id}/events")
+    def edit_events(
+        session_id: str, request: Request, caller: Caller
+    ) -> StreamingResponse:
+        own_edit(session_id, caller, owned=False)
+
+        def compute() -> tuple[dict[str, str], bool]:
+            try:
+                session = service.edits.read(session_id)
+            except KeyError:
+                raise HTTPException(404, "the edit session is gone") from None
+            return {"edit": session.model_dump_json()}, False
+
+        return _event_response(_stream(request, settings, compute))
 
     @app.post("/estimate")
     def estimate(request: SubmitRequest, caller: Caller) -> dict[str, TaskEstimate]:
