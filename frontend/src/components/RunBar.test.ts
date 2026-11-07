@@ -2,6 +2,7 @@ import { flushPromises, mount } from "@vue/test-utils";
 import { describe, expect, it, vi } from "vitest";
 import type { RunRecord, TaskProgress } from "../api/client";
 import { api, ApiError } from "../api/client";
+import { formatTime } from "../lib/format";
 import { runRecord } from "../test/fixtures";
 import RunBar from "./RunBar.vue";
 
@@ -27,6 +28,19 @@ describe("RunBar", () => {
     expect(wrapper.get("[data-percent]").text()).toBe("34 %");
     expect(wrapper.get("[data-percent]").attributes("title")).toBe("1 of 4 tasks done, 390 of 1,250 units");
     wrapper.unmount();
+  });
+
+  it("starts a run when its image is ready, else when it was submitted", () => {
+    const created = "2026-11-07T13:02:00Z";
+    const built = "2026-11-07T13:09:00Z";
+    const wrapper = mountBar({ created, built });
+    const started = wrapper.get("[data-started]");
+    expect(started.text()).toBe(`started ${formatTime(built)}`);
+    expect(started.attributes("title")).toBe(`submitted ${formatTime(created)}`);
+    wrapper.unmount();
+    const submitting = mountBar({ created, built: null });
+    expect(submitting.get("[data-started]").text()).toBe(`started ${formatTime(created)}`);
+    submitting.unmount();
   });
 
   it("shows no 100 % while a task is not over, even with every unit done", () => {

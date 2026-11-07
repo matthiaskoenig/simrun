@@ -1,15 +1,18 @@
 """The API of the service: people and agents submit, follow and compare runs.
 
-Every route needs a bearer token of the tokens file (`simrun.service.auth`); the
-identity of the token decides the priority of its runs. A submission is validated,
-its resources resolved and its tasks planned on the nodes of the backend, and the
-record (`submitting`) and the settings of every task written; `POST /runs` returns
-then, and the environment, the image and the workflow follow in the background
-(`simrun.service.submission`). The controller (`simrun.service.controller`) runs the
-submissions and follows the workflows in a background task.
+Every route of the API needs a bearer token of the tokens file
+(`simrun.service.auth`); only the files of the web app at `/ui/` (setting `web`)
+answer without one. The identity of the token decides the priority of its runs. A
+submission is validated, its resources resolved and its tasks planned on the nodes
+of the backend, and the record (`submitting`) and the settings of every task
+written; `POST /runs` returns then, and the environment, the image and the workflow
+follow in the background (`simrun.service.submission`). The controller
+(`simrun.service.controller`) runs the submissions and follows the workflows in a
+background task.
 
-Run it with `uvicorn --factory simrun.service.app:serve`, which reads the
-`ServiceSettings` from the YAML file named by `SIMRUN_CONFIG`.
+Run it with `uvicorn --factory simrun.service.app:serve --timeout-graceful-shutdown 5`,
+which reads the `ServiceSettings` from the YAML file named by `SIMRUN_CONFIG`; the
+timeout ends the open event streams when the service stops.
 """
 
 import asyncio
@@ -50,9 +53,10 @@ from simrun.service.auth import Identity, authenticate, load_tokens, priority_of
 from simrun.service.backend import Backend, Placement
 from simrun.service.compare import CompareTable, compare_runs
 from simrun.service.controller import (
+    FINAL_TASK_STATES,
     TERMINAL_RUN_STATES,
     Controller,
-    _attempt,
+    attempt_of,
     is_oom,
 )
 from simrun.service.index import IndexedRunStore, RunIndex
@@ -909,7 +913,7 @@ class _Service:
             except (OSError, ValueError, TypeError) as error:
                 logger.warning("report %s of run %s: %s", path.name, record.id, error)
                 continue
-            reports.setdefault(report.worker, {})[_attempt(path.name)] = report
+            reports.setdefault(report.worker, {})[attempt_of(path.name)] = report
         live: dict[str, Placement] = {}
         for p in self.live_pods(record) if pods is None else pods:
             if p.worker is None or _task_of(p.dag_task) != task_id:
@@ -1106,7 +1110,6 @@ class _Service:
 
 EVENTS_MAX_RUNS = 200
 KEEP_ALIVE_S = 15.0
-FINAL_TASK_STATES = frozenset({TaskState.DONE, TaskState.FAILED, TaskState.SKIPPED})
 _RUN_ITEMS = TypeAdapter(list[RunItem])
 _SERVERS = TypeAdapter(list[ServerUsage])
 _PROGRESS = TypeAdapter(dict[str, TaskProgress])
@@ -1165,6 +1168,14 @@ async def _stream(
 
 
 def _event_response(stream: AsyncGenerator[str]) -> StreamingResponse:
+    """The response of an event stream: no caching, and no buffering by a proxy.
+
+    Args:
+        stream: The events, e.g. of `_stream`.
+
+    Returns:
+        A streaming response of `text/event-stream`.
+    """
     return StreamingResponse(
         stream,
         media_type="text/event-stream",

@@ -511,7 +511,8 @@ class ArgoBackend:
 
         Returns:
             A log per pod which still exists, every attempt, with whether the pod
-            terminated; a log which cannot be read says why. At most
+            terminated; a log which cannot be read says why, e.g. that its pod
+            has not started. At most
             `LOG_LIMIT_BYTES` of a log are read (the first of its last `tail_lines`
             lines).
         """
@@ -533,7 +534,7 @@ class ArgoBackend:
                 continue
             pod_name = pod["metadata"]["name"]
             try:
-                # a pod whose container has not started has no log yet: no body
+                # a container which has not started has no log: an empty body
                 text = (
                     self.core.read_namespaced_pod_log(
                         pod_name, self.config.namespace, **options
@@ -541,7 +542,12 @@ class ArgoBackend:
                     or ""
                 )
             except ApiException as error:
-                text = f"(no logs: {error.reason})\n"
+                # or 400, while the container waits, e.g. for its image or a node
+                text = (
+                    "(the pod has not started)\n"
+                    if error.status == 400
+                    else f"(no logs: {error.reason})\n"
+                )
             phase = (pod.get("status") or {}).get("phase")
             done = phase in ("Succeeded", "Failed")
             found.append(PodLog(node=node, pod=pod_name, text=text, done=done))

@@ -12,6 +12,7 @@ import httpx
 import pytest
 import uvicorn
 
+from simrun.service import app as app_module
 from simrun.service.app import ServiceSettings, create_app
 from simrun.service.controller import TERMINAL_RUN_STATES
 from simrun.testing import FakeBackend
@@ -161,6 +162,21 @@ def test_run_events_end_with_a_terminal_run(live):
     assert json.loads(by_name["run"])["id"] == run_id
     assert list(json.loads(by_name["progress"])) == ["squares"]
     assert list(json.loads(by_name["workers"])) == ["squares"]
+
+
+def test_events_keep_the_connection_alive(live, monkeypatch):
+    monkeypatch.setattr(app_module, "KEEP_ALIVE_S", 0.3)
+    web = live(events_max_s=5, poll_s=0.1)
+    web.submit()
+    lines: list[str] = []
+    with httpx.stream("GET", web.base + "/events", headers=AUTH, timeout=30) as r:
+        for line in r.iter_lines():
+            lines.append(line)
+            if line == ": keep-alive":
+                break
+    # the events first, then a comment while nothing changed
+    assert lines[0] == "event: runs"
+    assert lines[-1] == ": keep-alive"
 
 
 def test_events_need_a_token(live):

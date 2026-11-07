@@ -589,6 +589,22 @@ def test_logs_of_a_pod_without_a_log_yet() -> None:
     assert [(log.pod, log.text) for log in found] == [("p-w0", ""), ("p-merge", "")]
 
 
+def test_logs_of_a_pod_which_has_not_started() -> None:
+    # the API answers 400 for a pod whose container waits, e.g. for its image
+    def waiting(*args: Any, **kw: Any) -> None:
+        raise ApiException(status=400, reason="Bad Request")
+
+    def forbidden(*args: Any, **kw: Any) -> None:
+        raise ApiException(status=403, reason="Forbidden")
+
+    created, _ = _fake_backend(read_namespaced_pod_log=waiting)
+    texts = [log.text for log in created.logs(WF, "a")]
+    assert texts == ["(the pod has not started)\n"] * 2
+    created, _ = _fake_backend(read_namespaced_pod_log=forbidden)
+    texts = [log.text for log in created.logs(WF, "a")]
+    assert texts == ["(no logs: Forbidden)\n"] * 2
+
+
 def test_reserve_taints_and_labels_the_node() -> None:
     created, calls = _fake_backend(read_node=_k8s_reserved(None))
     created.reserve("n1", "r2")
