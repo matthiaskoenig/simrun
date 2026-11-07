@@ -273,5 +273,6 @@ jobs:
         # a shallow clone cannot be pushed to another branch
         fetch-depth: 0
     - name: Fast-forward main to the release
-      # no --force: the push fails loudly if it would not be a fast-forward
-      run: git push origin HEAD:main
+      # no --force: the push fails loudly if it would not be a fast-forward; the full
+      # ref name creates main at the first release, where `HEAD:main` is refused
+      run: git push origin HEAD:refs/heads/main
