@@ -142,6 +142,8 @@ class Editor:
         self._last: tuple[Workflow, str] | None = None
         # the results of handled requests which are not posted yet, by request id
         self._results: dict[str, EditResult] = {}
+        # the requests handled which the service may still list: never handled again
+        self._handled: set[str] = set()
 
     def _trees(self) -> list[TreeState]:
         """The state of the trees; the last one sent when git fails in one."""
@@ -183,8 +185,9 @@ class Editor:
         """Poll once for requests and answer them, then watch the file and trees.
 
         A request is handled once: its result is kept until it is posted, so that
-        a post which failed is posted again by the next step instead of the request
-        being done twice.
+        a post which failed is posted again by the next step, and its id is kept
+        while the service lists it, so that a request whose result was refused is
+        not done twice.
 
         Args:
             timeout: Seconds to wait for a request, at most `EDIT_WATCH_S`: the
@@ -197,12 +200,16 @@ class Editor:
         """
         self._post_results()
         poll = min(timeout, EDIT_WATCH_S)
-        for request in self.client.edit_requests(self.session_id, poll):
-            if request.id in self._results:
+        requests = self.client.edit_requests(self.session_id, poll)
+        for request in requests:
+            if request.id in self._handled:
                 continue
+            self._handled.add(request.id)
             with self._heartbeat():
                 self._results[request.id] = self.handle(request)
             self._post_results()
+        # a handled request the service no longer lists is answered or dropped
+        self._handled &= {r.id for r in requests} | set(self._results)
         self._watch()
 
     def _post_results(self) -> None:
@@ -245,11 +252,16 @@ class Editor:
 
         thread = threading.Thread(target=beat, name="edit-heartbeat", daemon=True)
         thread.start()
+        interrupted = False
         try:
             yield
+        except KeyboardInterrupt:
+            interrupted = True  # a second Ctrl-C does not wait for a poll in flight
+            raise
         finally:
             done.set()
-            thread.join(EDIT_WATCH_S)
+            if not interrupted:
+                thread.join(EDIT_WATCH_S)
 
     def _watch(self) -> None:
         """Send the file and the trees when they changed since they were sent.
@@ -360,12 +372,18 @@ def run_edit(
         sources: Working trees by source name.
         group: Group of the runs.
         should_stop: Checked after every step, true ends the loop.
+
+    Raises:
+        KeyboardInterrupt: A second Ctrl-C: it ends the command at once, without
+            closing the session, which shows not connected after
+            `EDIT_CONNECTED_S`.
     """
     editor = Editor(client, path, sources, group)
     session = editor.open()
     typer.echo(f"Editing {session.path} on {session.host}")
     typer.echo(f"Open {client.url}/ui/#/edit/{session.id}")
     backoff = BACKOFF_START_S
+    interrupted = False
     try:
         while not should_stop():
             try:
@@ -382,5 +400,9 @@ def run_edit(
             typer.echo(f"The service is not reachable, retrying in {backoff:.0f} s")
             _pause(backoff, should_stop)
             backoff = min(backoff * 2, BACKOFF_MAX_S)
+    except KeyboardInterrupt:
+        interrupted = True
+        raise
     finally:
-        editor.close()
+        if not interrupted:
+            editor.close()
