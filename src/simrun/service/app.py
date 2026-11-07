@@ -318,6 +318,7 @@ class TaskTypeView(BaseModel):
     has_plan: bool
     cost_setting: str | None
     hint: HintView
+    description: str
 
     @classmethod
     def of(cls, task_type: TaskType) -> TaskTypeView:
@@ -332,6 +333,7 @@ class TaskTypeView(BaseModel):
             has_plan=task_type.plan is not None,
             cost_setting=task_type.cost_setting,
             hint=HintView(**dataclasses.asdict(task_type.hint)),
+            description=task_type.description,
         )
 
 
@@ -398,7 +400,8 @@ def validate_workflow(workflow: Workflow, types: dict[str, TaskType]) -> list[st
     """The errors of a workflow beyond its structure: types, settings and ports.
 
     A setting which is no field of the settings model of its type is an error, so a
-    misspelled one is not silently dropped.
+    misspelled one is not silently dropped. An invalid setting is one error per
+    field, `task '<id>': <loc>: <msg>`, the location dotted.
 
     Args:
         workflow: The workflow.
@@ -420,7 +423,8 @@ def validate_workflow(workflow: Workflow, types: dict[str, TaskType]) -> list[st
         try:
             task_type.settings.model_validate(task.settings)
         except ValidationError as error:
-            errors.append(f"task {task.id!r}: invalid settings: {error}")
+            # one message per field, `<loc>: <msg>`, which the Editor puts under the field
+            errors.extend(f"task {task.id!r}: {message}" for message in _errors(error))
         for port in task.stage:
             if port not in task.inputs:
                 errors.append(f"task {task.id!r} stages {port!r}, which is no input")

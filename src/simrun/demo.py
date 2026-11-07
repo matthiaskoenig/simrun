@@ -102,4 +102,5 @@ SQUARES = TaskType(
     setup="simrun.demo:setup",
     compute_unit="simrun.demo:compute_unit",
     merge="simrun.demo:merge",
+    description="Squares of numbers, split over servers",
 )
