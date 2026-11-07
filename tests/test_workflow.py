@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 from pydantic import ValidationError
 
 from simrun.workflow import (
@@ -10,6 +11,7 @@ from simrun.workflow import (
     WorkflowError,
     dump_workflow,
     load_workflow,
+    workflow_yaml,
 )
 
 
@@ -64,3 +66,22 @@ def test_yaml_round_trip(tmp_path: Path) -> None:
 def test_task_id_pattern() -> None:
     with pytest.raises(ValidationError):
         TaskSpec(id="Fit", type="x")
+
+
+def test_workflow_yaml_is_compact_and_round_trips() -> None:
+    wf = Workflow(
+        name="w",
+        tasks=[
+            TaskSpec(id="fit", type="f", split=SplitMode.SINGLE_SERVER),
+            TaskSpec(id="report", type="r", inputs={"in": "fit.result"}),
+        ],
+    )
+    text = workflow_yaml(wf)
+    assert text.startswith("name:")
+    for absent in ("stage:", "resources:", "null"):
+        assert absent not in text
+    assert Workflow.model_validate(yaml.safe_load(text)) == wf
+
+
+def test_workflow_yaml_keeps_empty_tasks() -> None:
+    assert "tasks: []" in workflow_yaml(Workflow(name="x", tasks=[]))
