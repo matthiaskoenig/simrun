@@ -1,0 +1,141 @@
+import { flushPromises, mount } from "@vue/test-utils";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createMemoryHistory } from "vue-router";
+import type { EditSession, Workflow } from "../api/client";
+import { auth } from "../auth";
+import { createAppRouter } from "../router";
+import { mk, runRecord } from "../test/fixtures";
+import EditorView from "./EditorView.vue";
+
+const sse = (event: string, data: unknown): string => `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+const source = { name: "model", branch: "main", commit: "abc1234", changed_files: [], snapshot: "s1", diff_sha256: "d1", dirty: false, patch: null };
+const workflow: Workflow = { name: "squares", split: "fastest", tasks: [{ id: "squares", type: "demo.squares", settings: {} }] };
+const session: EditSession = {
+  id: "abc",
+  owner: "mk",
+  host: "laptop",
+  path: "/home/mk/squares.yaml",
+  workflow,
+  file_sha256: "h1",
+  sources: [source],
+  tree: [{ name: "model", branch: "main", commit: "abc1234", changed_files: [] }],
+  created: "2026-11-07T13:00:00Z",
+  seen: "2026-11-07T13:00:00Z",
+  closed: false,
+  connected: true,
+} as EditSession;
+
+const reply = (data: unknown, status = 200): Response => new Response(JSON.stringify(data), { status });
+const summary = { id: "r9", state: "queued" };
+
+function mockFetch(runReply: () => Response, events = "") {
+  const mock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+    const path = String(input);
+    if (path.endsWith("/events")) return new Response(new ReadableStream({ start: (c) => c.enqueue(new TextEncoder().encode(events)) }));
+    if (path === "/task-types" || path === "/servers") return reply([]);
+    if (path === "/validate") return reply({ ok: true, errors: [] });
+    if (path === "/estimate") return reply({});
+    if (path === "/runs/r1") return reply(runRecord({ workflow, group: "g1", sources: [source] }));
+    if (path.endsWith("/save")) return reply({ detail: "changed on disk" }, 409);
+    if (path.endsWith("/run") || path === "/runs") return runReply();
+    return reply({});
+  });
+  vi.stubGlobal("fetch", mock);
+  return mock;
+}
+
+async function open(path: string) {
+  const router = createAppRouter(createMemoryHistory());
+  router.push(path);
+  await router.isReady();
+  const view = mount(EditorView, {
+    props: { id: path.split("/")[2]!, run: path.startsWith("/runs") },
+    global: { plugins: [router] },
+    attachTo: document.body,
+  });
+  await flushPromises();
+  return { view, router };
+}
+
+const post = (mock: ReturnType<typeof mockFetch>, path: string) => mock.mock.calls.filter(([p, i]) => String(p) === path && i?.method === "POST");
+
+describe("EditorView bar", () => {
+  beforeEach(() => {
+    auth.token.value = "secret";
+    auth.identity.value = mk;
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+  });
+  afterEach(() => {
+    auth.logout();
+    localStorage.clear();
+    vi.unstubAllGlobals();
+  });
+
+  it("runs a session through its edit and navigates to the run", async () => {
+    const mock = mockFetch(() => reply(summary), sse("edit", session));
+    const { view, router } = await open("/edit/abc");
+    await view.get("[data-run]").trigger("click");
+    await flushPromises();
+    const [call] = post(mock, "/edits/abc/run");
+    expect(JSON.parse(String(call![1]!.body)).workflow.name).toBe("squares");
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe("/runs/r9"));
+    view.unmount();
+  });
+
+  it("runs a run with its sources and group", async () => {
+    const mock = mockFetch(() => reply(summary));
+    const { view, router } = await open("/runs/r1/edit");
+    expect(view.find("[data-download]").exists()).toBe(true);
+    await view.get("[data-run]").trigger("click");
+    await flushPromises();
+    const [call] = post(mock, "/runs");
+    const body = JSON.parse(String(call![1]!.body));
+    expect(body.sources).toEqual([source]);
+    expect(body.group).toBe("g1");
+    await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe("/runs/r9"));
+    view.unmount();
+  });
+
+  it("shows the detail of a refusal under the bar", async () => {
+    mockFetch(() => reply({ detail: "task 'squares': n must be positive" }, 422), sse("edit", session));
+    const { view, router } = await open("/edit/abc");
+    await view.get("[data-run]").trigger("click");
+    await flushPromises();
+    expect(view.get("[data-error]").text()).toBe("task 'squares': n must be positive");
+    expect(router.currentRoute.value.fullPath).toBe("/edit/abc");
+    view.unmount();
+  });
+
+  it("offers Reload and Save anyway after a conflicting save, without overwriting", async () => {
+    mockFetch(() => reply(summary), sse("edit", session));
+    const { view } = await open("/edit/abc");
+    await view.get("[data-save]").trigger("click");
+    await flushPromises();
+    expect(view.get("[data-state]").text()).toBe("changed on disk");
+    expect(view.find("[data-reload]").exists()).toBe(true);
+    expect(view.find("[data-save-anyway]").exists()).toBe(true);
+    view.unmount();
+  });
+
+  it("downloads the YAML of a run's draft as <name>.yaml", async () => {
+    const mock = mockFetch(() => reply(summary));
+    const { view } = await open("/runs/r1/edit");
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
+      expect(this.download).toBe("squares.yaml");
+    });
+    URL.createObjectURL = vi.fn(() => "blob:x");
+    URL.revokeObjectURL = vi.fn();
+    await view.get("[data-download]").trigger("click");
+    await flushPromises();
+    expect(post(mock, "/workflows/yaml")).toHaveLength(1);
+    expect(click).toHaveBeenCalledOnce();
+    view.unmount();
+  });
+});
