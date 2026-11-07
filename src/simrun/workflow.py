@@ -149,8 +149,11 @@ def load_workflow(path: Path) -> Workflow:
         WorkflowError: If the file is not a valid workflow.
     """
     try:
-        return Workflow(**yaml.safe_load(path.read_text()))
-    except ValidationError as error:
+        data = yaml.safe_load(path.read_text())
+        if not isinstance(data, dict):
+            raise WorkflowError(f"{path}: not a mapping")
+        return Workflow(**data)
+    except (ValidationError, yaml.YAMLError, UnicodeDecodeError, TypeError) as error:
         raise WorkflowError(f"{path}: {error}") from error
 
 

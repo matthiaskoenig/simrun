@@ -97,7 +97,7 @@ def test_file_changed_on_disk_is_sent(make):
     editor.step(0)
     now = session(web, opened.id)
     assert now["workflow"]["name"] == "edited"
-    assert now["file_sha256"] != ""
+    assert now["file_sha256"] == hashlib.sha256(path.read_bytes()).hexdigest()
 
 
 def test_tree_changes_are_sent(make, repo):
@@ -132,7 +132,7 @@ def test_run_refused_answers_422(make):
     out = []
     serve(editor, browser(web, opened.id, "run", {"workflow": body}, out))
     assert out[0].status_code == 422
-    assert out[0].json()["detail"]
+    assert "no.such" in out[0].json()["detail"]
 
 
 def test_close_on_stop(make):
@@ -152,3 +152,49 @@ def test_cli_edit_help():
     result = CliRunner().invoke(app, ["edit", "--help"])
     assert result.exit_code == 0
     assert "--source" in result.output and "--group" in result.output
+
+
+def test_invalid_file_does_not_kill_the_command(make):
+    web, _, path, editor = make()
+    opened = editor.open()
+    for text in ("", "a: [", "- 1\n"):
+        path.write_text(text)
+        editor.step(0)
+    out = []
+    body = {"workflow": workflow_body(), "base": hashlib.sha256(b"- 1\n").hexdigest()}
+    serve(editor, browser(web, opened.id, "save", body, out))
+    assert out[0].status_code == 200, out[0].text
+    assert load_workflow(path).tasks[0].id == "squares"
+
+
+def test_save_keeps_the_mode(make):
+    web, _, path, editor = make()
+    path.write_text("name: wf\ntasks: []\n")
+    path.chmod(0o640)
+    opened = editor.open()
+    body = {"workflow": workflow_body(), "base": opened.file_sha256}
+    serve(editor, browser(web, opened.id, "save", body, []))
+    assert path.stat().st_mode & 0o777 == 0o640
+
+
+def test_run_edit_retries_a_transport_error(make, monkeypatch):
+    import httpx
+
+    from simrun import edit
+
+    monkeypatch.setattr(edit, "BACKOFF_START_S", 0.01)
+    web, client, path, _ = make()
+    real = Editor.step
+    calls = []
+
+    def flaky(self, timeout):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise httpx.ConnectError("down")
+        real(self, timeout)
+
+    monkeypatch.setattr(Editor, "step", flaky)
+    run_edit(client, path, {}, None, should_stop=lambda: len(calls) >= 4)
+    (session_id,) = [p.name for p in (web.settings.store / "edits").iterdir()]
+    assert len(calls) == 4
+    assert session(web, session_id)["closed"] is True

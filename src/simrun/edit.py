@@ -7,18 +7,22 @@ sends the file and the trees to the session when they change.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
 import secrets
+import shutil
 import socket
 import subprocess
+import time
 from collections.abc import Callable
 from pathlib import Path
 
+import httpx
 import typer
 
-from simrun.client import Client, ClientError
+from simrun.client import BACKOFF_MAX_S, BACKOFF_START_S, Client, ClientError
 from simrun.service.edits import (
     EditRequest,
     EditResult,
@@ -28,11 +32,10 @@ from simrun.service.edits import (
     TreeState,
 )
 from simrun.snapshot import SourceProvenance, snapshot
-from simrun.workflow import Workflow, load_workflow, workflow_yaml
+from simrun.workflow import Workflow, WorkflowError, load_workflow, workflow_yaml
 
 logger = logging.getLogger(__name__)
 
-EDIT_POLL_S = 20.0
 EDIT_WATCH_S = 2.0
 CONFLICT = "the file changed on disk"
 
@@ -73,11 +76,25 @@ def tree_state(name: str, repo: Path) -> TreeState:
     )
 
 
+def file_hash(path: Path) -> str:
+    """The sha256 of the bytes of a file, empty for a file which does not exist."""
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except FileNotFoundError:
+        return ""
+
+
 def file_state(path: Path) -> tuple[Workflow, str]:
     """The workflow in a file and the sha256 of its bytes.
 
     A missing file is a new workflow named by the file stem, with no tasks, and
     the empty hash.
+
+    Args:
+        path: The workflow file.
+
+    Returns:
+        The workflow and the hash of the file bytes.
 
     Raises:
         WorkflowError: When the file is not a valid workflow.
@@ -113,6 +130,7 @@ class Editor:
         self.group = group
         self.session_id = ""
         self._sent: EditState | None = None
+        self._last: tuple[Workflow, str] | None = None
 
     def _trees(self) -> list[TreeState]:
         return [tree_state(name, repo) for name, repo in self.sources.items()]
@@ -137,6 +155,7 @@ class Editor:
         )
         self.session_id = session.id
         self._sent = EditState(workflow=workflow, file_sha256=digest, tree=trees)
+        self._last = (workflow, digest)
         return session
 
     def _send(
@@ -153,18 +172,24 @@ class Editor:
         )
         self.client.edit_state(self.session_id, state)
         self._sent = state.model_copy(update={"sources": None})
+        self._last = (workflow, digest)
 
     def step(self, timeout: float) -> None:
         """Poll once for requests and answer them, then watch the file and trees.
 
         Args:
-            timeout: Seconds to wait for a request, at most `EDIT_WATCH_S`.
+            timeout: Seconds to wait for a request, at most `EDIT_WATCH_S`: the
+                poll is the interval at which the file and trees are watched.
         """
         poll = min(timeout, EDIT_WATCH_S)
         for request in self.client.edit_requests(self.session_id, poll):
             result = self.handle(request)
             self.client.edit_result(self.session_id, request.id, result)
-        workflow, digest = file_state(self.path)
+        try:
+            workflow, digest = file_state(self.path)
+        except WorkflowError as error:
+            logger.warning("the workflow file cannot be read yet: %s", error)
+            return
         state = EditState(workflow=workflow, file_sha256=digest, tree=self._trees())
         if state != self._sent:
             self._send(workflow, digest)
@@ -176,27 +201,26 @@ class Editor:
         return self._run(request)
 
     def _save(self, request: EditRequest) -> EditResult:
-        _, current = file_state(self.path)
-        if not request.force and request.base != current:
+        if not request.force and request.base != file_hash(self.path):
             return EditResult(ok=False, status=409, detail=CONFLICT)
-        text = workflow_yaml(request.workflow)
+        data = workflow_yaml(request.workflow).encode()
         tmp = self.path.parent / f".{self.path.name}.{secrets.token_hex(4)}.tmp"
         try:
-            tmp.write_text(text)
+            tmp.write_bytes(data)
+            with contextlib.suppress(FileNotFoundError):
+                shutil.copymode(self.path, tmp)
             os.replace(tmp, self.path)
         except OSError as error:
             tmp.unlink(missing_ok=True)
             return EditResult(ok=False, status=422, detail=str(error))
-        return EditResult(
-            ok=True, file_sha256=hashlib.sha256(text.encode()).hexdigest()
-        )
+        return EditResult(ok=True, file_sha256=hashlib.sha256(data).hexdigest())
 
     def _run(self, request: EditRequest) -> EditResult:
         try:
             summary = self.client.submit(
                 request.workflow,
                 self.sources,
-                self.group or request.group,
+                request.group or self.group,
                 request.split,
                 request.reserve,
             )
@@ -206,9 +230,9 @@ class Editor:
             return EditResult(ok=False, status=422, detail=str(error))
         try:
             sources = self.client.status(summary.id).sources
-            workflow, digest = file_state(self.path)
-            self._send(workflow, digest, sources)
-        except ClientError, OSError:
+            if self._last is not None:
+                self._send(*self._last, sources)
+        except ClientError, OSError, httpx.TransportError, RuntimeError:
             logger.warning("the sources of run %s could not be sent", summary.id)
         return EditResult(ok=True, run=summary)
 
@@ -216,6 +240,13 @@ class Editor:
         """Close the session."""
         if self.session_id:
             self.client.close_edit(self.session_id)
+
+
+def _pause(seconds: float, should_stop: Callable[[], bool]) -> None:
+    """Sleep, in slices, so that a stop is noticed promptly."""
+    end = time.monotonic() + seconds
+    while not should_stop() and (left := end - time.monotonic()) > 0:
+        time.sleep(min(0.2, left))
 
 
 def run_edit(
@@ -239,8 +270,16 @@ def run_edit(
     session = editor.open()
     typer.echo(f"Editing {session.path} on {session.host}")
     typer.echo(f"Open {client.url}/ui/#/edit/{session.id}")
+    backoff = BACKOFF_START_S
     try:
         while not should_stop():
-            editor.step(EDIT_POLL_S)
+            try:
+                editor.step(EDIT_WATCH_S)
+                backoff = BACKOFF_START_S
+            except httpx.TransportError as error:
+                logger.warning("the service is not reachable: %s", error)
+                typer.echo(f"The service is not reachable, retrying in {backoff:.0f} s")
+                _pause(backoff, should_stop)
+                backoff = min(backoff * 2, BACKOFF_MAX_S)
     finally:
         editor.close()
