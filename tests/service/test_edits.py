@@ -4,9 +4,10 @@ import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
+import pytest
 
 from simrun.service import app as app_module
-from simrun.service.edits import EditResult
+from simrun.service.edits import EditResult, EditState
 from simrun.store import RunSummary
 
 
@@ -244,3 +245,32 @@ def test_edit_stream_sends_changes(live):
     assert web.http.get("/edits/nope").status_code == 404
     unknown = httpx.get(web.base + "/edits/nope/events", headers=web.http.headers)
     assert unknown.status_code == 404
+
+
+def test_save_without_a_hash_keeps_the_hash_the_command_put(service):
+    session = open_edit(service)
+    sid = session["id"]
+    edits = service.client.app.state.service.edits
+
+    def answer(request):
+        state = {"workflow": request.workflow, "file_sha256": "h2", "tree": []}
+        edits.update(sid, EditState.model_validate(state))
+        return EditResult(ok=True)
+
+    command = Command(service, sid, answer)
+    response = service.post(
+        f"/edits/{sid}/save", {"workflow": service.workflow(), "base": "h1"}
+    )
+    command.join()
+    assert response.status_code == 200, response.text
+    assert response.json()["file_sha256"] == "h2"
+
+
+def test_a_poll_which_lost_its_client_does_not_mark_the_session_seen(live):
+    web = live()
+    sid = web.http.post("/edits", json=open_body()).json()["id"]
+    with pytest.raises(httpx.ReadTimeout):
+        web.http.get(f"/edits/{sid}/requests", params={"timeout": 2}, timeout=0.5)
+    seen = web.http.get(f"/edits/{sid}").json()["seen"]
+    time.sleep(2.5)
+    assert web.http.get(f"/edits/{sid}").json()["seen"] == seen

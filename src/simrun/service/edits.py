@@ -291,12 +291,15 @@ class EditStore:
 
         return self._mutate(session_id, change)
 
-    def saved(self, session_id: str, workflow: Workflow, sha256: str) -> EditSession:
-        """Record a save: the workflow and the hash of the file written."""
+    def saved(
+        self, session_id: str, workflow: Workflow, sha256: str | None
+    ) -> EditSession:
+        """Record a save: the workflow, and the hash when the result carried one."""
 
         def change(session: EditSession) -> None:
             session.workflow = workflow
-            session.file_sha256 = sha256
+            if sha256 is not None:
+                session.file_sha256 = sha256
 
         return self._mutate(session_id, change)
 
