@@ -127,6 +127,8 @@ describe("EditorView bar", () => {
   it("offers Reload and Save anyway after a conflicting save, without overwriting", async () => {
     mockFetch(() => reply(summary), sse("edit", session));
     const { view } = await open("/edit/abc");
+    expect(view.get("[data-save]").attributes("disabled")).toBeDefined();
+    await view.get("[data-name]").setValue("mine");
     await view.get("[data-save]").trigger("click");
     await flushPromises();
     expect(view.get("[data-state]").text()).toBe("changed on disk");
@@ -136,18 +138,29 @@ describe("EditorView bar", () => {
   });
 
   it("downloads the YAML of a run's draft as <name>.yaml", async () => {
-    const mock = mockFetch(() => reply(summary));
-    const { view } = await open("/runs/r1/edit");
+    // the URL of the download is revoked by a timer: fake, so no timer outlives the test
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { createObjectURL, revokeObjectURL } = URL;
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (this: HTMLAnchorElement) {
       expect(this.download).toBe("squares.yaml");
     });
-    URL.createObjectURL = vi.fn(() => "blob:x");
-    URL.revokeObjectURL = vi.fn();
-    await view.get("[data-download]").trigger("click");
-    await flushPromises();
-    expect(post(mock, "/workflows/yaml")).toHaveLength(1);
-    expect(click).toHaveBeenCalledOnce();
-    view.unmount();
+    try {
+      const mock = mockFetch(() => reply(summary));
+      const { view } = await open("/runs/r1/edit");
+      URL.createObjectURL = vi.fn(() => "blob:x");
+      URL.revokeObjectURL = vi.fn();
+      await view.get("[data-download]").trigger("click");
+      await flushPromises();
+      expect(post(mock, "/workflows/yaml")).toHaveLength(1);
+      expect(click).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(30_000);
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:x");
+      view.unmount();
+    } finally {
+      click.mockRestore();
+      Object.assign(URL, { createObjectURL, revokeObjectURL });
+      vi.useRealTimers();
+    }
   });
 
   it("switches to Download YAML and runs from the browser when the session goes disconnected", async () => {
