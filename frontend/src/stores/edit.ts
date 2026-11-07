@@ -16,6 +16,9 @@ import { stream } from "../api/sse";
 /** How long after the last change the draft is validated. */
 export const VALIDATE_DEBOUNCE_MS = 400;
 
+/** How long the URL of a downloaded YAML stays valid after the click. */
+const REVOKE_AFTER_MS = 30_000;
+
 const TASK_ERROR = /^task '([^']+)': (.*)$/s;
 
 /** What `useEdit` gives. */
@@ -273,7 +276,8 @@ export function useEdit(): Edit {
     link.href = url;
     link.download = `${workflow.name}.yaml`;
     link.click();
-    URL.revokeObjectURL(url);
+    // a browser may begin the download after the click returns: the URL stays a while
+    setTimeout(() => URL.revokeObjectURL(url), REVOKE_AFTER_MS);
   }
 
   if (getCurrentScope()) onScopeDispose(() => clearTimeout(timer));

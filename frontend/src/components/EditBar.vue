@@ -36,11 +36,14 @@ const changed = computed(() => model.value?.changed_files ?? []);
 
 // what the state says, in the order of what matters most
 const state = computed(() => {
-  if (props.changedOnDisk) return { text: "changed on disk", tone: "text-amber-800" };
+  if (props.changedOnDisk && props.connected) return { text: "changed on disk", tone: "text-amber-800" };
   if (props.valid === false) return { text: `${props.errorCount} ${props.errorCount === 1 ? "error" : "errors"}`, tone: "text-red-700" };
   if (props.valid === null) return { text: "checking", tone: "text-gray-500" };
-  // without a connected machine there is no file to be saved
-  if (!props.connected) return { text: "valid", tone: "text-emerald-700" };
+  // without a connected machine there is no file to be saved: the edits live in the browser only
+  if (!props.connected) {
+    if (props.dirty) return { text: "unsaved changes, download to keep them", tone: "text-amber-800" };
+    return { text: "valid", tone: "text-emerald-700" };
+  }
   if (props.dirty) return { text: "unsaved changes", tone: "text-gray-600" };
   return { text: "valid, saved", tone: "text-emerald-700" };
 });
@@ -49,9 +52,13 @@ const button = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm 
 </script>
 
 <template>
-  <div class="border-b border-gray-200 bg-white">
-    <div data-edit-bar class="flex flex-wrap items-center justify-between gap-3 px-3 py-2 text-xs">
-      <div class="flex min-w-0 items-center gap-2">
+  <!-- floats over the top of the canvas, as the run bar of the Executions -->
+  <div class="pointer-events-none absolute inset-x-3 top-3 z-10 flex flex-col items-stretch gap-2">
+    <div class="flex items-start justify-between gap-3">
+      <div
+        data-edit-bar
+        class="pointer-events-auto flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-gray-200 bg-white/95 px-3 py-2 text-xs shadow-sm"
+      >
         <template v-if="model">
           <AppIcon name="git-branch" class="size-3.5 text-gray-500" />
           <span data-branch class="font-mono text-gray-700">{{ model.branch ?? "detached" }}</span>
@@ -59,21 +66,22 @@ const button = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm 
           <span
             v-if="changed.length"
             data-uncommitted
-            class="rounded bg-amber-50 px-1.5 py-0.5 text-amber-800"
+            class="rounded bg-amber-50 px-1.5 py-0.5 whitespace-nowrap text-amber-800"
             :title="changed.join('\n')"
             >{{ changed.length }} uncommitted {{ changed.length === 1 ? "file" : "files" }}</span
           >
           <span class="text-gray-300">|</span>
         </template>
-        <span class="inline-flex items-center gap-1.5" :class="connected ? 'text-gray-700' : 'text-gray-500'">
+        <span class="inline-flex items-center gap-1.5 whitespace-nowrap" :class="connected ? 'text-gray-700' : 'text-gray-500'">
           <span data-dot class="size-2 rounded-full" :class="connected ? 'bg-emerald-500' : 'bg-gray-300'"></span>
           <span data-machine>{{ connected ? host : "not connected" }}</span>
         </span>
         <span class="text-gray-300">|</span>
-        <span data-state class="inline-flex items-center gap-1" :class="state.tone">
+        <span data-state class="inline-flex items-center gap-1 whitespace-nowrap" :class="state.tone">
           <AppIcon v-if="state.text.startsWith('valid')" name="check" class="size-3.5" />{{ state.text }}
         </span>
-        <template v-if="changedOnDisk">
+        <!-- only the machine of the session can reload the file or save over it -->
+        <template v-if="changedOnDisk && connected">
           <button type="button" data-reload class="font-medium text-gray-700 underline hover:text-gray-900" @click="$emit('reload')">Reload</button>
           <button type="button" data-save-anyway class="font-medium text-gray-700 underline hover:text-gray-900" @click="$emit('save', true)">
             Save anyway
@@ -81,7 +89,7 @@ const button = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm 
         </template>
       </div>
 
-      <div class="flex items-center gap-2">
+      <div data-actions class="pointer-events-auto flex shrink-0 items-center gap-2">
         <button
           v-if="connected"
           type="button"
@@ -112,6 +120,8 @@ const button = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm 
         </button>
       </div>
     </div>
-    <p v-if="error" data-error class="mx-3 mb-2 rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 ring-1 ring-red-200">{{ error }}</p>
+    <p v-if="error" data-error class="pointer-events-auto self-start rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 shadow-sm ring-1 ring-red-200">{{ error }}</p>
+    <!-- the messages of the canvas, under the bar -->
+    <slot />
   </div>
 </template>

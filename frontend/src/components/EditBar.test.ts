@@ -101,4 +101,26 @@ describe("EditBar", () => {
   it("shows the error under the bar", () => {
     expect(mountBar({ error: "no such group" }).get("[data-error]").text()).toBe("no such group");
   });
+
+  it("is the floating card of the mockup, with Save and Run as a group on the right", () => {
+    const bar = mountBar();
+    expect(bar.get("[data-edit-bar]").classes()).toEqual(expect.arrayContaining(["rounded-lg", "border", "shadow-sm", "bg-white/95"]));
+    const actions = bar.get("[data-actions]");
+    expect(actions.find("[data-save]").exists()).toBe(true);
+    expect(actions.find("[data-run]").exists()).toBe(true);
+    expect(bar.get("[data-edit-bar]").find("[data-run]").exists()).toBe(false);
+  });
+
+  it("says a dirty draft without a connected machine must be downloaded", () => {
+    const bar = mountBar({ connected: false, dirty: true });
+    expect(bar.get("[data-state]").text()).toBe("unsaved changes, download to keep them");
+    expect(bar.get("[data-state]").classes()).toContain("text-amber-800");
+  });
+
+  it("offers neither Reload nor Save anyway without a connected machine", () => {
+    const bar = mountBar({ connected: false, dirty: true, changedOnDisk: true });
+    expect(bar.find("[data-reload]").exists()).toBe(false);
+    expect(bar.find("[data-save-anyway]").exists()).toBe(false);
+    expect(bar.get("[data-state]").text()).toBe("unsaved changes, download to keep them");
+  });
 });
