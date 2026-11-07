@@ -302,9 +302,10 @@ def node_from(
 
     Returns:
         The node with its allocatable cores and memory minus one executor container
-        and minus `used`, rounded down, and its reservation; None for a node which
-        is unschedulable or has a taint other than a reservation which keeps pods
-        off.
+        and minus `used`, rounded down, for the planner, the allocatable cores and
+        memory minus `used` as the scheduler counts the requests of the pods of the
+        runs, and its reservation; None for a node which is unschedulable or has a
+        taint other than a reservation which keeps pods off.
     """
     metadata = node.get("metadata") or {}
     spec = node.get("spec") or {}
@@ -330,6 +331,8 @@ def node_from(
         ),
         gpus=gpus,
         reserved_by=reserved,
+        allocatable_cores=max(0.0, cpu - used_cpu),
+        allocatable_memory_gb=max(0.0, memory - used_memory),
     )
 
 

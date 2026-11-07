@@ -1,4 +1,7 @@
-<!-- The servers below the canvas: per server the cores its pods request, those of the selected run in blue. -->
+<!--
+  The servers below the canvas: per server the cores and memory its pods request
+  against those the scheduler gives the pods of runs, those of the selected run in blue.
+-->
 <script setup lang="ts">
 import { computed } from "vue";
 import type { ServerUsage } from "../api/client";
@@ -55,7 +58,7 @@ const tiles = computed(() =>
             ><bdi>{{ tile.server.name }}</bdi></span
           >
           <span data-capacity class="shrink-0 text-[10px] text-gray-400"
-            >{{ tile.server.cores }} c · {{ formatGb(tile.server.memory_gb) }}</span
+            >{{ formatCores(tile.server.cores) }} c · {{ formatGb(tile.server.memory_gb) }}</span
           >
         </div>
         <div data-bar class="mt-1 flex h-2 overflow-hidden rounded-sm" :class="tile.server.reserved_by === null ? 'bg-gray-100' : 'stripes'">
@@ -70,7 +73,7 @@ const tiles = computed(() =>
           ></div>
         </div>
         <div class="mt-1 flex justify-between gap-1 text-[10px] whitespace-nowrap text-gray-500 tabular-nums">
-          <span data-used-cores>{{ formatCores(tile.cores) }}/{{ tile.server.cores }} cores</span
+          <span data-used-cores>{{ formatCores(tile.cores) }}/{{ formatCores(tile.server.cores) }} cores</span
           ><span data-used-memory>{{ formatGb(tile.memory) }}</span>
         </div>
       </div>

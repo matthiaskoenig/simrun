@@ -205,10 +205,21 @@ class PodUsage(BaseModel):
 
 
 class ServerUsage(BaseModel):
-    """A server of the cluster with the pods of runs on it."""
+    """A server of the cluster with the pods of runs on it.
+
+    Attributes:
+        name: The name of the server.
+        cores: The cores the scheduler gives the pods of the runs: the allocatable
+            ones less the requests of other pods, e.g. of DaemonSets.
+        memory_gb: The GiB of memory the scheduler gives the pods of the runs.
+        gpus: The GPUs of the server.
+        reserved_by: The run which reserved the server, None if free.
+        pods: The pods of runs on the server, with their requests, which count
+            against `cores` and `memory_gb`.
+    """
 
     name: str
-    cores: int
+    cores: float
     memory_gb: float
     gpus: int
     reserved_by: str | None
@@ -750,8 +761,10 @@ class _Service:
         return [
             ServerUsage(
                 name=n.name,
-                cores=n.cores,
-                memory_gb=n.memory_gb,
+                # what the scheduler counts the requests of the pods against, not
+                # the capacity of one worker pod the planner plans with
+                cores=n.allocatable_cores,
+                memory_gb=n.allocatable_memory_gb,
                 gpus=n.gpus,
                 reserved_by=n.reserved_by,
                 pods=pods.get(n.name, []),

@@ -807,11 +807,11 @@
         "type": "object"
       },
       "ServerUsage": {
-        "description": "A server of the cluster with the pods of runs on it.",
+        "description": "A server of the cluster with the pods of runs on it.\n\nAttributes:\n    name: The name of the server.\n    cores: The cores the scheduler gives the pods of the runs: the allocatable\n        ones less the requests of other pods, e.g. of DaemonSets.\n    memory_gb: The GiB of memory the scheduler gives the pods of the runs.\n    gpus: The GPUs of the server.\n    reserved_by: The run which reserved the server, None if free.\n    pods: The pods of runs on the server, with their requests, which count\n        against `cores` and `memory_gb`.",
         "properties": {
           "cores": {
             "title": "Cores",
-            "type": "integer"
+            "type": "number"
           },
           "gpus": {
             "title": "Gpus",

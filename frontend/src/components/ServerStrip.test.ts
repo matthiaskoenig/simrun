@@ -22,6 +22,14 @@ describe("ServerStrip", () => {
     expect(idle.get("[data-used-memory]").text()).toBe("0 GB");
   });
 
+  it("shows the capacity the scheduler counts, which may be fractional", () => {
+    // 20 cores and 6.14 GiB allocatable, less 0.65 cores and 1 GiB of DaemonSets
+    const fractional = [{ ...servers[1]!, cores: 19.35, memory_gb: 6442450 / 1024 ** 2 - 1 }];
+    const tile = mount(ServerStrip, { props: { servers: fractional, selected: null } }).get("[data-server]");
+    expect(tile.get("[data-capacity]").text()).toBe("19.4 c · 5.1 GB");
+    expect(tile.get("[data-used-cores]").text()).toBe("0/19.4 cores");
+  });
+
   it("shows the pods of the selected run in blue and those of other runs in gray, by their share of the cores", () => {
     const tile = mountStrip().get('[data-server="node-a"]');
     const segments = tile.findAll("[data-pod]");

@@ -689,6 +689,16 @@ export interface components {
         /**
          * ServerUsage
          * @description A server of the cluster with the pods of runs on it.
+         *
+         *     Attributes:
+         *         name: The name of the server.
+         *         cores: The cores the scheduler gives the pods of the runs: the allocatable
+         *             ones less the requests of other pods, e.g. of DaemonSets.
+         *         memory_gb: The GiB of memory the scheduler gives the pods of the runs.
+         *         gpus: The GPUs of the server.
+         *         reserved_by: The run which reserved the server, None if free.
+         *         pods: The pods of runs on the server, with their requests, which count
+         *             against `cores` and `memory_gb`.
          */
         ServerUsage: {
             /** Cores */
