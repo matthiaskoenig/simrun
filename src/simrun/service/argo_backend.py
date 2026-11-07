@@ -513,8 +513,12 @@ class ArgoBackend:
                 continue
             pod_name = pod["metadata"]["name"]
             try:
-                text = self.core.read_namespaced_pod_log(
-                    pod_name, self.config.namespace, **options
+                # a pod whose container has not started has no log yet: no body
+                text = (
+                    self.core.read_namespaced_pod_log(
+                        pod_name, self.config.namespace, **options
+                    )
+                    or ""
                 )
             except ApiException as error:
                 text = f"(no logs: {error.reason})\n"
@@ -782,6 +786,7 @@ class ArgoBackend:
                     self.core.read_namespaced_pod_log(
                         pod_name, self.config.namespace, tail_lines=50
                     )
+                    or ""
                 )
             except ApiException as error:
                 texts.append(f"(no logs of {pod_name}: {error.reason})")
