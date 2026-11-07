@@ -15,14 +15,21 @@ import secrets
 import shutil
 import socket
 import subprocess
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
 from pathlib import Path
 
 import httpx
 import typer
 
-from simrun.client import BACKOFF_MAX_S, BACKOFF_START_S, Client, ClientError
+from simrun.client import (
+    BACKOFF_MAX_S,
+    BACKOFF_START_S,
+    RETRY_STATUS,
+    Client,
+    ClientError,
+)
 from simrun.service.edits import (
     EditRequest,
     EditResult,
@@ -31,12 +38,14 @@ from simrun.service.edits import (
     OpenEdit,
     TreeState,
 )
-from simrun.snapshot import SourceProvenance, snapshot
+from simrun.snapshot import snapshot
 from simrun.workflow import Workflow, WorkflowError, load_workflow, workflow_yaml
 
 logger = logging.getLogger(__name__)
 
 EDIT_WATCH_S = 2.0
+# how long the close of a session may take when the command stops
+EDIT_CLOSE_TIMEOUT_S = 5.0
 CONFLICT = "the file changed on disk"
 
 
@@ -131,9 +140,16 @@ class Editor:
         self.session_id = ""
         self._sent: EditState | None = None
         self._last: tuple[Workflow, str] | None = None
+        # the results of handled requests which are not posted yet, by request id
+        self._results: dict[str, EditResult] = {}
 
     def _trees(self) -> list[TreeState]:
-        return [tree_state(name, repo) for name, repo in self.sources.items()]
+        """The state of the trees; the last one sent when git fails in one."""
+        try:
+            return [tree_state(name, repo) for name, repo in self.sources.items()]
+        except RuntimeError as error:
+            logger.warning("the state of the trees cannot be read: %s", error)
+            return self._sent.tree if self._sent is not None else []
 
     def open(self) -> EditSession:
         """Snapshot the sources and open the session."""
@@ -158,41 +174,104 @@ class Editor:
         self._last = (workflow, digest)
         return session
 
-    def _send(
-        self,
-        workflow: Workflow,
-        digest: str,
-        sources: list[SourceProvenance] | None = None,
-    ) -> None:
-        state = EditState(
-            workflow=workflow,
-            file_sha256=digest,
-            tree=self._trees(),
-            sources=sources,
-        )
+    def _send(self, state: EditState) -> None:
         self.client.edit_state(self.session_id, state)
         self._sent = state.model_copy(update={"sources": None})
-        self._last = (workflow, digest)
+        self._last = (state.workflow, state.file_sha256)
 
     def step(self, timeout: float) -> None:
         """Poll once for requests and answer them, then watch the file and trees.
 
+        A request is handled once: its result is kept until it is posted, so that
+        a post which failed is posted again by the next step instead of the request
+        being done twice.
+
         Args:
             timeout: Seconds to wait for a request, at most `EDIT_WATCH_S`: the
                 poll is the interval at which the file and trees are watched.
+
+        Raises:
+            httpx.TransportError: When the service is not reachable.
+            ClientError: When the service refuses the poll or a post of a result
+                with a status of `RETRY_STATUS`.
         """
+        self._post_results()
         poll = min(timeout, EDIT_WATCH_S)
         for request in self.client.edit_requests(self.session_id, poll):
-            result = self.handle(request)
-            self.client.edit_result(self.session_id, request.id, result)
+            if request.id in self._results:
+                continue
+            with self._heartbeat():
+                self._results[request.id] = self.handle(request)
+            self._post_results()
+        self._watch()
+
+    def _post_results(self) -> None:
+        """Post the results not posted yet; a request gone (404) is skipped."""
+        for request_id, result in list(self._results.items()):
+            try:
+                self.client.edit_result(self.session_id, request_id, result)
+            except ClientError as error:
+                if error.status in RETRY_STATUS:
+                    raise
+                if error.status == 404:
+                    logger.warning(
+                        "the request %s was no longer waited for: %s",
+                        request_id,
+                        error.detail,
+                    )
+                else:
+                    logger.warning(
+                        "the result of request %s was refused: %s", request_id, error
+                    )
+            del self._results[request_id]
+
+    @contextlib.contextmanager
+    def _heartbeat(self) -> Generator[None]:
+        """Poll without waiting every `EDIT_WATCH_S` while a request is handled.
+
+        The service takes a poll as the sign that the command is alive, and a run
+        (plans, snapshots, the submission) may take longer than `EDIT_CONNECTED_S`.
+        The polls of the heartbeat only keep the session connected: a request they
+        bring is answered by the next step.
+        """
+        done = threading.Event()
+
+        def beat() -> None:
+            while not done.wait(EDIT_WATCH_S):
+                try:
+                    self.client.edit_requests(self.session_id, 0)
+                except (httpx.TransportError, ClientError) as error:
+                    logger.warning("the heartbeat of the session failed: %s", error)
+
+        thread = threading.Thread(target=beat, name="edit-heartbeat", daemon=True)
+        thread.start()
+        try:
+            yield
+        finally:
+            done.set()
+            thread.join(EDIT_WATCH_S)
+
+    def _watch(self) -> None:
+        """Send the file and the trees when they changed since they were sent.
+
+        A file which is not a valid workflow keeps the workflow and the hash last
+        sent, the trees are sent still; a refusal of the service is a warning, the
+        next step sends again.
+        """
+        if self._last is None:
+            return
         try:
             workflow, digest = file_state(self.path)
         except WorkflowError as error:
             logger.warning("the workflow file cannot be read yet: %s", error)
-            return
+            workflow, digest = self._last
         state = EditState(workflow=workflow, file_sha256=digest, tree=self._trees())
-        if state != self._sent:
-            self._send(workflow, digest)
+        if state == self._sent:
+            return
+        try:
+            self._send(state)
+        except ClientError as error:
+            logger.warning("the state could not be sent: %s", error)
 
     def handle(self, request: EditRequest) -> EditResult:
         """Do one request of the browser: save the file or run the workflow."""
@@ -231,15 +310,31 @@ class Editor:
         try:
             sources = self.client.status(summary.id).sources
             if self._last is not None:
-                self._send(*self._last, sources)
+                workflow, digest = self._last
+                self._send(
+                    EditState(
+                        workflow=workflow,
+                        file_sha256=digest,
+                        tree=self._trees(),
+                        sources=sources,
+                    )
+                )
         except ClientError, OSError, httpx.TransportError, RuntimeError:
             logger.warning("the sources of run %s could not be sent", summary.id)
         return EditResult(ok=True, run=summary)
 
     def close(self) -> None:
-        """Close the session."""
-        if self.session_id:
-            self.client.close_edit(self.session_id)
+        """Close the session, best effort: a failure is logged.
+
+        The close waits at most `EDIT_CLOSE_TIMEOUT_S`; a session which was not
+        closed shows not connected once it was not polled for `EDIT_CONNECTED_S`.
+        """
+        if not self.session_id:
+            return
+        try:
+            self.client.close_edit(self.session_id, EDIT_CLOSE_TIMEOUT_S)
+        except (httpx.TransportError, ClientError) as error:
+            logger.warning("the session could not be closed: %s", error)
 
 
 def _pause(seconds: float, should_stop: Callable[[], bool]) -> None:
@@ -276,10 +371,16 @@ def run_edit(
             try:
                 editor.step(EDIT_WATCH_S)
                 backoff = BACKOFF_START_S
+                continue
             except httpx.TransportError as error:
                 logger.warning("the service is not reachable: %s", error)
-                typer.echo(f"The service is not reachable, retrying in {backoff:.0f} s")
-                _pause(backoff, should_stop)
-                backoff = min(backoff * 2, BACKOFF_MAX_S)
+            except ClientError as error:
+                # a proxy or a restarting service; any other refusal ends the command
+                if error.status not in RETRY_STATUS:
+                    raise
+                logger.warning("the service is not available: %s", error)
+            typer.echo(f"The service is not reachable, retrying in {backoff:.0f} s")
+            _pause(backoff, should_stop)
+            backoff = min(backoff * 2, BACKOFF_MAX_S)
     finally:
         editor.close()

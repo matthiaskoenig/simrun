@@ -311,12 +311,25 @@ def edit(workflow: WORKFLOW, source: SOURCE = None, group: GROUP = None) -> None
     """Serve the Editor of the web app for a workflow file until stopped.
 
     Saves of the browser are written into the file, a run snapshots the sources
-    again. A missing file is a new workflow.
+    again. A missing file is a new workflow. Ctrl-C closes the session and exits,
+    a second Ctrl-C exits without waiting for the close.
     """
     stop = threading.Event()
+
+    def first_signal(*_: object) -> None:
+        # the loop ends and closes the session; a second Ctrl-C interrupts at once
+        stop.set()
+        signal.signal(signal.SIGINT, signal.default_int_handler)
+        signal.signal(signal.SIGTERM, signal.SIG_DFL)
+
     for number in (signal.SIGINT, signal.SIGTERM):
-        signal.signal(number, lambda *_: stop.set())
-    run_edit(make_client(), workflow, _sources(source), group, should_stop=stop.is_set)
+        signal.signal(number, first_signal)
+    try:
+        run_edit(
+            make_client(), workflow, _sources(source), group, should_stop=stop.is_set
+        )
+    except KeyboardInterrupt:
+        console.print("Stopped, the session shows not connected within 30 s")
 
 
 @app.command()
