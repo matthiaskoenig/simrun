@@ -63,6 +63,8 @@ class Placement(BaseModel):
         memory_gb: The GiB of memory the pod requests.
         worker: The worker id of the pod (`SIMRUN_WORKER`, the id of its ledger claims
             and report names), `None` for a pod without one, e.g. a merge.
+        attempt: The attempt of the pod (`SIMRUN_ATTEMPT`, the number of its
+            retries, the attempt of its report name), `None` when unknown.
     """
 
     workflow: str
@@ -73,6 +75,7 @@ class Placement(BaseModel):
     cores: float
     memory_gb: float
     worker: str | None = None
+    attempt: int | None = None
 
 
 class BackendStatus(BaseModel):

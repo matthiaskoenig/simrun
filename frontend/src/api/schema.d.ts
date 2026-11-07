@@ -914,18 +914,21 @@ export interface components {
          *
          *     Attributes:
          *         worker: The worker id.
-         *         node: The server of the worker, None while its pod is not bound.
-         *         state: `running` while its pod lives and the last attempt has no final
-         *             report, `failed` when the last attempt was killed for memory, else
-         *             `done`.
-         *         attempts: The attempts of the worker (reports, and the running one).
+         *         node: The server of the attempt shown: of the live pod while it runs,
+         *             None while that pod is not bound, else of the last report.
+         *         state: `running` while a pod of an attempt without a report lives (a
+         *             retry after an eviction, a preemption, a lost node or a kill for
+         *             memory, as a worker reports also when it is stopped), else from the
+         *             last report: `failed` when it was killed for memory, else `done`.
+         *         attempts: The attempts of the worker: one more than the highest attempt
+         *             of its reports and of its live pod.
          *         processes: The processes of its pool, None before a report.
          *         units_done: The distinct units its `unit_done` lines in the progress
          *             file of the task name, live and over all its attempts.
          *         units_claimed: The units it holds claimed now.
          *         peak_memory_gb: The peak memory of the last report.
          *         memory_limit_gb: The memory limit of the last report.
-         *         oom_killed: Whether the last attempt was killed for memory.
+         *         oom_killed: Whether the attempt of the last report was killed for memory.
          */
         WorkerView: {
             /** Attempts */

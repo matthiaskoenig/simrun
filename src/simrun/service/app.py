@@ -231,18 +231,21 @@ class WorkerView(BaseModel):
 
     Attributes:
         worker: The worker id.
-        node: The server of the worker, None while its pod is not bound.
-        state: `running` while its pod lives and the last attempt has no final
-            report, `failed` when the last attempt was killed for memory, else
-            `done`.
-        attempts: The attempts of the worker (reports, and the running one).
+        node: The server of the attempt shown: of the live pod while it runs,
+            None while that pod is not bound, else of the last report.
+        state: `running` while a pod of an attempt without a report lives (a
+            retry after an eviction, a preemption, a lost node or a kill for
+            memory, as a worker reports also when it is stopped), else from the
+            last report: `failed` when it was killed for memory, else `done`.
+        attempts: The attempts of the worker: one more than the highest attempt
+            of its reports and of its live pod.
         processes: The processes of its pool, None before a report.
         units_done: The distinct units its `unit_done` lines in the progress
             file of the task name, live and over all its attempts.
         units_claimed: The units it holds claimed now.
         peak_memory_gb: The peak memory of the last report.
         memory_limit_gb: The memory limit of the last report.
-        oom_killed: Whether the last attempt was killed for memory.
+        oom_killed: Whether the attempt of the last report was killed for memory.
     """
 
     worker: str
@@ -800,23 +803,28 @@ class _Service:
         views = []
         for worker in sorted(reports.keys() | live.keys()):
             attempts = reports.get(worker, {})
-            last = attempts[max(attempts)] if attempts else None
-            oom = last is not None and is_oom(last, max(attempts), record.oom_kills)
+            reported = max(attempts, default=-1)
+            last = attempts.get(reported)
+            oom = last is not None and is_oom(last, reported, record.oom_kills)
             pod = live.get(worker)
+            # a worker reports in `finally`, also when it was evicted: a pod of an
+            # attempt without a report is a retry which waits or runs, and a pod of
+            # no known attempt counts as newer than every report
             state: Literal["running", "done", "failed"]
-            if pod is not None and (last is None or oom):
+            if pod is not None and pod.attempt not in attempts:
                 state = "running"
+                node = pod.node  # None while unbound, never an earlier node
+                current = reported + 1 if pod.attempt is None else pod.attempt
             else:
                 state = "failed" if oom else "done"
-            node = pod.node if state == "running" and pod else None
-            if node is None and last is not None and last.node:
-                node = last.node
+                node = last.node if last is not None and last.node else None
+                current = reported
             views.append(
                 WorkerView(
                     worker=worker,
                     node=node,
                     state=state,
-                    attempts=len(attempts) + (1 if state == "running" else 0),
+                    attempts=max(current, reported) + 1,
                     processes=last.processes if last else None,
                     units_done=len(done.get(worker, ())),
                     units_claimed=len(claims.get(worker, [])),

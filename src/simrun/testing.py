@@ -216,8 +216,12 @@ class FakeBackend:
             return list(self._nodes.values())
 
     def place(self, placement: Placement) -> None:
-        """Place a pod, listed by `placements` until its workflow has ended."""
+        """Place a pod, listed by `placements` until its workflow has ended.
+
+        A placement of a pod placed before replaces it, e.g. once the pod is bound.
+        """
         with self._lock:
+            self._placed = [p for p in self._placed if p.pod != placement.pod]
             self._placed.append(placement)
 
     def placements(self) -> list[Placement]:
