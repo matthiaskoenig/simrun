@@ -162,7 +162,14 @@ onBeforeUnmount(() => {
 
 const minimapColor = (node: GraphNode): string => kindOf(String(node.data?.type ?? "")).color;
 
-defineExpose({ onConnect });
+/** Moves the position of a node to the new id of a renamed task, so the node stays where it is. */
+function rename(from: string, to: string): void {
+  const known = positions.get(from);
+  if (known) positions.set(to, known);
+  positions.delete(from);
+}
+
+defineExpose({ onConnect, rename });
 </script>
 
 <template>

@@ -4,13 +4,14 @@
   plug into the three columns; this view owns the draft and the page chrome.
 -->
 <script setup lang="ts">
-import { onBeforeUnmount, ref, watch } from "vue";
+import { computed, onBeforeUnmount, ref, watch } from "vue";
 import { auth } from "../auth";
 import EditCanvas from "../components/EditCanvas.vue";
+import EditInspector from "../components/EditInspector.vue";
 import TaskPalette from "../components/TaskPalette.vue";
 import TopBar from "../components/TopBar.vue";
 import { addTask } from "../lib/edit-graph";
-import type { TaskTypeView } from "../api/client";
+import type { TaskTypeView, Workflow } from "../api/client";
 import { useEdit } from "../stores/edit";
 import { useLive } from "../stores/live";
 
@@ -23,6 +24,17 @@ const edit = useEdit();
 const selected = ref<string | null>(null);
 // why the last connection was refused, shown over the canvas until the next edit
 const refused = ref<string | null>(null);
+const canvas = ref<InstanceType<typeof EditCanvas> | null>(null);
+
+// the sources shown in the workflow panel: the trees of the session, else those of the run
+const tree = computed(() => edit.session.value?.tree ?? edit.runSources.value);
+
+function rename(from: string, to: string, workflow: Workflow): void {
+  canvas.value?.rename(from, to);
+  refused.value = null;
+  edit.change(workflow);
+  selected.value = to;
+}
 
 function add(type: TaskTypeView): void {
   if (edit.draft.value === null) return;
@@ -73,6 +85,7 @@ onBeforeUnmount(() => controller?.abort());
         <EditCanvas
           v-if="edit.draft.value"
           :key="id"
+          ref="canvas"
           v-model:selected="selected"
           :workflow="edit.draft.value"
           :types="edit.types.value"
@@ -89,7 +102,21 @@ onBeforeUnmount(() => controller?.abort());
           {{ refused }}
         </p>
       </main>
-      <aside data-inspector class="w-[352px] shrink-0 border-l border-gray-200 bg-white"></aside>
+      <aside data-inspector class="w-[352px] shrink-0 border-l border-gray-200 bg-white">
+        <EditInspector
+          v-if="edit.draft.value"
+          v-model:selected="selected"
+          v-model:group="edit.group.value"
+          :workflow="edit.draft.value"
+          :types="edit.types.value"
+          :estimate="edit.estimate.value"
+          :task-errors="edit.taskErrors.value"
+          :errors="edit.errors.value"
+          :tree="tree"
+          @change="(workflow) => ((refused = null), edit.change(workflow))"
+          @rename="rename"
+        />
+      </aside>
     </div>
   </div>
 </template>
