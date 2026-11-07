@@ -84,6 +84,7 @@ data:
     owner: mk
     simrun_wheel: /opt/simrun/simrun-0.1.0-py3-none-any.whl
     backend: simrun.service.argo_backend:backend
+    web: /opt/simrun/web
     cluster:
       registry: registry.cluster.internal:5000
 ---

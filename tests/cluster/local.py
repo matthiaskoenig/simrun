@@ -2,7 +2,8 @@
 
 `up` creates the cluster `simrun-test` exactly as the session of the cluster tests
 does (or reuses it), builds and pushes the image of the runs from the working tree
-and writes the settings and the tokens of a service on the host into `.tools/k3d/local`.
+and writes the settings and the tokens of a service on the host into `.tools/k3d/local`;
+the service serves the web app of `frontend/dist` at `/ui/` when it is built.
 `down` deletes the cluster, the registry, the store and the settings. The cluster is
 the one of `SIMRUN_K3D_KEEP=1`, so the cluster tests and manual runs share it.
 
@@ -18,6 +19,7 @@ from k3d_cluster import (
     KUBECONFIG,
     REGISTRY,
     REGISTRY_HOST,
+    REPO,
     STORE,
     TOOLS,
     apply_manifests,
@@ -33,6 +35,8 @@ from simrun.testing import TOKENS
 
 LOCAL = TOOLS / "k3d" / "local"
 SETTINGS = LOCAL / "settings.yaml"
+# the build of the web app, `npm ci && npm run build` in frontend/
+WEB = REPO / "frontend" / "dist"
 
 
 def up() -> None:
@@ -60,6 +64,14 @@ def up() -> None:
         "simrun_wheel": str(wheel),
         "backend": "simrun.service.argo_backend:backend",
     }
+    if (WEB / "index.html").is_file():
+        settings["web"] = str(WEB)
+    web = (
+        "The service serves the web app at http://localhost:8000/ui/ (token t-mk)."
+        if "web" in settings
+        else "The web app is not built: build it (cd frontend && npm ci && npm run build)\n"
+        "and run up again, then the service serves it at http://localhost:8000/ui/."
+    )
     SETTINGS.write_text(yaml.safe_dump(settings, sort_keys=False))
     print(f"""
 The cluster is up. Start the service on the host:
@@ -74,6 +86,12 @@ and use it from another shell:
   export SIMRUN_TOKEN=t-mk
   export SIMRUN_STORE={STORE}
   uv run simrun submit examples/squares.yaml
+
+{web}
+The dev server of the web app, which reloads on every change, runs against
+this service:
+
+  cd frontend && npm run dev                 # http://localhost:5173/ui/
 """)
 
 

@@ -18,6 +18,7 @@ nav = [
     { "Workflows" = "workflows.md" },
     { "Command line" = "command-line.md" },
     { "Agents and MCP" = "mcp.md" },
+    { "Web app" = "web-app.md" },
     { "Plugins" = "plugins.md" },
   ] },
   { "Operation" = [

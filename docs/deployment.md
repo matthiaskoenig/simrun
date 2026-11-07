@@ -48,7 +48,7 @@ The Service `simrun` (port 80) is reached by the clients, e.g. through an ingres
 
 ## The service image
 
-`deploy/service/Dockerfile` is the image `simrun-service` of `deploy/cluster/simrun.yaml`: uv (the service resolves the environments of the runs), simrun with the dependencies of its lock, its wheel at `/opt/simrun/` (the `simrun_wheel` of the settings) and the plugins. Build it from a context of the requirements of the lock, the wheel and the wheels of the plugins:
+`deploy/service/Dockerfile` is the image `simrun-service` of `deploy/cluster/simrun.yaml`: uv (the service resolves the environments of the runs), simrun with the dependencies of its lock, its wheel at `/opt/simrun/` (the `simrun_wheel` of the settings), the plugins and the [web app](web-app.md) at `/opt/simrun/web` (the `web` of the settings, served at `/ui/`). Build it from a context of the requirements of the lock, the wheel, the wheels of the plugins and the built web app (node 24):
 
 ```bash
 mkdir -p build/service/plugins
@@ -58,6 +58,8 @@ uv export --frozen --no-dev --no-emit-project --no-header --no-annotate \
 uv export --frozen --no-dev --no-emit-project --no-header --no-annotate --no-hashes \
     > build/service/constraints.txt
 cp ~/git/sbmlsim/dist/sbmlsim-*.whl build/service/plugins/   # the plugins
+(cd frontend && npm ci && npm run build)                     # the web app
+rm -rf build/service/web && cp -r frontend/dist build/service/web
 cp deploy/service/Dockerfile build/service/
 docker build -t registry.cluster.internal:5000/simrun-service:0.1.0 \
     --build-arg WHEEL=simrun-0.1.0-py3-none-any.whl build/service
