@@ -1057,7 +1057,7 @@
         "type": "object"
       },
       "TaskProgress": {
-        "description": "The progress of a task: its ledger and the last line of its progress file.",
+        "description": "The progress of a task: its ledger and the first and last lines of its progress file.\n\nThe first line is the first unit done, whose time is when the task began to\ndeliver units.",
         "properties": {
           "counts": {
             "anyOf": [
@@ -1068,6 +1068,18 @@
                 "type": "null"
               }
             ]
+          },
+          "first": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First"
           },
           "last": {
             "anyOf": [
@@ -1084,6 +1096,7 @@
         },
         "required": [
           "counts",
+          "first",
           "last"
         ],
         "title": "TaskProgress",

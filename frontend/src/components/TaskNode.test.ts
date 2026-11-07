@@ -34,6 +34,7 @@ function mountNode(props: {
 
 const counts = (done: number, total: number): TaskProgress => ({
   counts: { pending: total - done, claimed: 0, done, total },
+  first: null,
   last: null,
 });
 
@@ -57,7 +58,7 @@ describe("TaskNode", () => {
   });
 
   it("shows no progress bar for a task without a ledger", () => {
-    const wrapper = mountNode({ task: { id: "plot", type: "command" }, progress: { counts: null, last: null } });
+    const wrapper = mountNode({ task: { id: "plot", type: "command" }, progress: { counts: null, first: null, last: null } });
     expect(wrapper.find("[data-progress]").exists()).toBe(false);
     expect(wrapper.find("[data-units]").exists()).toBe(false);
     expect(wrapper.get("[data-status]").text()).toBe("running");

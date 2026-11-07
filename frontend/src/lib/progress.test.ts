@@ -4,13 +4,14 @@ import { runPercent, runProgress } from "./progress";
 
 const counts = (done: number, total: number): TaskProgress => ({
   counts: { pending: total - done, claimed: 0, done, total },
+  first: null,
   last: null,
 });
 
 describe("runProgress", () => {
   it("is the mean over the tasks of their share of units, a final task whole, a task without a ledger nothing", () => {
     const tasks = { a: "running", b: "queued", plot: "waiting", prep: "done" } as const;
-    const progress = { a: counts(390, 1000), b: counts(0, 250), plot: { counts: null, last: null } };
+    const progress = { a: counts(390, 1000), b: counts(0, 250), plot: { counts: null, first: null, last: null } };
     expect(runProgress(tasks, progress)).toBeCloseTo((0.39 + 0 + 0 + 1) / 4);
     expect(runPercent(tasks, progress)).toBe(34);
   });

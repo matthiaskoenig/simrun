@@ -21,7 +21,7 @@ or with an installed package, `-- simrun-mcp`. The token of an agent names its o
 | `submit_workflow` | `workflow_path`, `sources` (name to the path of a working tree, the model first), `group`, `single_server` | the summary of the run at once, in the state `submitting` |
 | `wait_for_run` | `run_id`, `timeout_s` (600) | the summary of the run once it ended or after the timeout |
 | `run_status` | `run_id` | the record: state, tasks, plans and the provenance of the sources |
-| `run_progress` | `run_id` | the progress of every task: the counts of its ledger and its last progress line |
+| `run_progress` | `run_id` | the progress of every task: the counts of its ledger and its first and last progress lines |
 | `list_runs` | `group`, `agent`, `state`, `owner` | the runs; the runs of an owner include the ones of their agents |
 | `compare_runs` | `run_ids` | the provenance and the summaries of the tasks side by side |
 | `cancel_run` | `run_id` | the summary of the cancelled run |

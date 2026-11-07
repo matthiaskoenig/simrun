@@ -27,7 +27,7 @@ The identity of the token is recorded with the run and decides its priority: the
 | `GET /runs` | the runs, filtered by `group`, `owner`, `agent` and `state` |
 | `GET /runs/{run}` | the record of a run |
 | `GET /runs/{run}/wait` | a long poll: the summary once the run ended or after `timeout` seconds (60, at most 300) |
-| `GET /runs/{run}/progress` | the progress of every task: the counts of its ledger and its last progress line |
+| `GET /runs/{run}/progress` | the progress of every task: the counts of its ledger and its first and last progress lines |
 | `GET /runs/{run}/logs/{task}` | the logs of the pods of a task as text, the last `tail_lines` of each (300, 0 for all) |
 | `GET /runs/{run}/outputs/{task}` | the output files of a task, paths relative to the store |
 | `POST /runs/{run}/cancel` | cancel a run |
