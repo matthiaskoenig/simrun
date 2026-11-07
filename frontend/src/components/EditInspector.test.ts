@@ -58,6 +58,25 @@ describe("EditInspector", () => {
     expect(workflow.tasks[1]!.resources).toBeUndefined();
   });
 
+  it("refuses a fractional workers count in place", async () => {
+    const wrapper = mount(EditInspector, { props: { ...base, selected: "b" } });
+    await wrapper.get("[data-workers]").setValue("2.5");
+    expect(wrapper.emitted("change")).toBeUndefined();
+    expect(wrapper.get("[data-workers-problem]").text()).toContain("whole number");
+  });
+
+  it("shows the own settings of the next task, not the pending text of the previous", async () => {
+    const wf = JSON.parse(JSON.stringify(workflow)) as Workflow;
+    const json = { ...type, settings_schema: { properties: { d: { additionalProperties: { type: "string" }, title: "D", type: "object" } }, type: "object" } };
+    wf.tasks[1]!.settings = { d: { k: "v" } };
+    const wrapper = mount(EditInspector, { props: { ...base, workflow: wf, types: [json], selected: "a" } });
+    await wrapper.get("[data-field='d'] textarea").setValue("{bad");
+    expect(wrapper.text()).toContain("not valid JSON");
+    await wrapper.setProps({ selected: "b" });
+    expect((wrapper.get("[data-field='d'] textarea").element as HTMLTextAreaElement).value).toContain('"k": "v"');
+    expect(wrapper.text()).not.toContain("not valid JSON");
+  });
+
   it("an emptied override becomes null", async () => {
     const wf = JSON.parse(JSON.stringify(workflow)) as Workflow;
     wf.tasks[1]!.resources = { workers: 4 };

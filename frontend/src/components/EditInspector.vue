@@ -32,6 +32,7 @@ const task = computed(() => props.workflow.tasks.find((t) => t.id === props.sele
   <div class="h-full overflow-y-auto">
     <EditTaskPanel
       v-if="task"
+      :key="task.id"
       :workflow="workflow"
       :task="task"
       :type="types.find((t) => t.name === task!.type) ?? null"
