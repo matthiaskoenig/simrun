@@ -64,6 +64,13 @@ uv run simrun wait <run>
 uv run simrun status <run>
 ```
 
+To edit a workflow in the [Editor](web-app.md#the-editor) of the web app, start the command which serves it in the same environment (on a copy, as a save writes the file):
+
+```bash
+cp examples/squares.yaml /tmp/squares.yaml
+uv run simrun edit /tmp/squares.yaml           # prints the link of the Editor, Ctrl-C ends the session
+```
+
 The service also serves the [web app](web-app.md) at `http://localhost:8000/ui/` (log in with `t-mk`): `up` points the setting `web` at `frontend/dist` when the app is built (`npm ci && npm run build` in `frontend/`, then `up` again). For the development of the app, run its dev server against this service, which reloads on every change of the code:
 
 ```bash
