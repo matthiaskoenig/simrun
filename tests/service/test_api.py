@@ -332,7 +332,20 @@ def test_record_and_progress(service):
         "done": 2,
         "total": 4,
     }
+    assert progress["squares"]["first"] == {"unit": 0}
     assert progress["squares"]["last"] == line
+
+
+def test_progress_without_lines(service):
+    run_id = service.submit()["id"]
+    progress = service.get(f"/runs/{run_id}/progress").json()
+    assert progress["squares"] == {"counts": None, "first": None, "last": None}
+    task_dir = service.run_dir(run_id) / "tasks/squares"
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "progress.jsonl").write_text("not json\n")
+    progress = service.get(f"/runs/{run_id}/progress").json()
+    assert progress["squares"]["first"] is None
+    assert progress["squares"]["last"] is None
 
 
 def test_outputs_relative_to_store(service):

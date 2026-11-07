@@ -6,9 +6,9 @@ import { runRecord } from "../test/fixtures";
 import RunBar from "./RunBar.vue";
 
 const progress: Record<string, TaskProgress> = {
-  a: { counts: { pending: 600, claimed: 10, done: 390, total: 1000 }, last: null },
-  b: { counts: { pending: 0, claimed: 0, done: 0, total: 250 }, last: null },
-  plot: { counts: null, last: null },
+  a: { counts: { pending: 600, claimed: 10, done: 390, total: 1000 }, first: null, last: null },
+  b: { counts: { pending: 0, claimed: 0, done: 0, total: 250 }, first: null, last: null },
+  plot: { counts: null, first: null, last: null },
 };
 const tasks: RunRecord["tasks"] = { a: "running", b: "running", plot: "waiting", prep: "done" };
 
@@ -30,7 +30,7 @@ describe("RunBar", () => {
   });
 
   it("shows no 100 % while a task is not over, even with every unit done", () => {
-    const done = { counts: { pending: 0, claimed: 0, done: 1000, total: 1000 }, last: null };
+    const done = { counts: { pending: 0, claimed: 0, done: 1000, total: 1000 }, first: null, last: null };
     const wrapper = mountBar({ tasks: { a: "running" } }, { a: done });
     expect(wrapper.get("[data-percent]").text()).toBe("99 %");
     wrapper.unmount();

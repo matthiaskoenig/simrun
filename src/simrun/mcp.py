@@ -92,7 +92,7 @@ def build_server(client: Client) -> FastMCP:
 
     @server.tool
     def run_progress(run_id: str) -> dict[str, Any]:
-        """The progress of every task of a run: ledger counts and last progress line."""
+        """The progress of every task of a run: ledger counts, first and last progress lines."""
         return answer(lambda: {"progress": client.progress(run_id)})
 
     @server.tool

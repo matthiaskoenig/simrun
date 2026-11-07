@@ -33,7 +33,7 @@ describe("useRun", () => {
   it("follows the record, the progress and the workers of the run, and restarts with the id", async () => {
     const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
       const id = String(input).split("/")[2] ?? "";
-      const progress = { squares: { counts: { pending: 1, claimed: 0, done: 2, total: 3 }, last: null } };
+      const progress = { squares: { counts: { pending: 1, claimed: 0, done: 2, total: 3 }, first: null, last: null } };
       return new Response(body(sse("run", record(id, "running")) + sse("progress", progress) + sse("workers", { squares: [] })));
     });
     vi.stubGlobal("fetch", fetchMock);

@@ -166,9 +166,14 @@ class TaskEstimate(BaseModel):
 
 
 class TaskProgress(BaseModel):
-    """The progress of a task: its ledger and the last line of its progress file."""
+    """The progress of a task: its ledger and the first and last lines of its progress file.
+
+    The first line is the first unit done, whose time is when the task began to
+    deliver units.
+    """
 
     counts: LedgerCounts | None
+    first: dict[str, Any] | None
     last: dict[str, Any] | None
 
 
@@ -430,6 +435,25 @@ def _units_by_worker(path: Path) -> dict[str, set[int]]:
     return units
 
 
+def _json_object(line: bytes) -> dict[str, Any] | None:
+    """A line of a JSON lines file as an object, None for anything else."""
+    try:
+        value = json.loads(line)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def _first_line(path: Path) -> dict[str, Any] | None:
+    """The first line of a JSON lines file, None without one."""
+    try:
+        with path.open("rb") as handle:
+            line = handle.readline(PROGRESS_TAIL_BYTES)
+    except FileNotFoundError:
+        return None
+    return _json_object(line) if line.strip() else None
+
+
 def _last_line(path: Path) -> dict[str, Any] | None:
     """The last line of a JSON lines file, None without one."""
     try:
@@ -441,11 +465,7 @@ def _last_line(path: Path) -> dict[str, Any] | None:
         return None
     for line in reversed(lines):
         if line.strip():
-            try:
-                value = json.loads(line)
-            except ValueError:
-                return None
-            return value if isinstance(value, dict) else None
+            return _json_object(line)
     return None
 
 
@@ -670,8 +690,9 @@ class _Service:
             counts = None
             if units is not None and (task_dir / UNITS_DIR).is_dir():
                 counts = Ledger(task_dir / UNITS_DIR, units).counts()
+            path = task_dir / PROGRESS_FILE
             result[task_id] = TaskProgress(
-                counts=counts, last=_last_line(task_dir / PROGRESS_FILE)
+                counts=counts, first=_first_line(path), last=_last_line(path)
             )
         return result
 

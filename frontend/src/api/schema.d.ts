@@ -808,10 +808,17 @@ export interface components {
         };
         /**
          * TaskProgress
-         * @description The progress of a task: its ledger and the last line of its progress file.
+         * @description The progress of a task: its ledger and the first and last lines of its progress file.
+         *
+         *     The first line is the first unit done, whose time is when the task began to
+         *     deliver units.
          */
         TaskProgress: {
             counts: components["schemas"]["LedgerCounts"] | null;
+            /** First */
+            first: {
+                [key: string]: unknown;
+            } | null;
             /** Last */
             last: {
                 [key: string]: unknown;
