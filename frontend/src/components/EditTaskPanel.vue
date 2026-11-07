@@ -79,11 +79,19 @@ function stage(port: string, on: boolean): void {
 }
 
 // resources
+const problems = ref<Partial<Record<keyof ResourceOverride, string>>>({});
 function override(key: keyof ResourceOverride, text: string): void {
   const n = Number(text);
+  const empty = text.trim() === "";
+  const whole = key === "workers";
+  if (!empty && (Number.isNaN(n) || n <= 0 || (whole && !Number.isInteger(n)))) {
+    problems.value[key] = whole ? "a positive whole number" : "a positive number";
+    return;
+  }
+  delete problems.value[key];
   update((task) => {
     const resources: ResourceOverride = { ...task.resources };
-    if (text.trim() === "" || Number.isNaN(n) || n <= 0) delete resources[key];
+    if (empty) delete resources[key];
     else resources[key] = n;
     task.resources = Object.keys(resources).length ? resources : null;
   });
@@ -162,6 +170,7 @@ function remove(): void {
         <label class="block">
           <span class="mb-1 block text-xs text-gray-600">Workers</span>
           <input data-workers type="number" min="1" step="1" placeholder="auto" :class="INPUT" :value="task.resources?.workers ?? ''" @input="(e) => override('workers', (e.target as HTMLInputElement).value)" />
+          <span v-if="problems.workers" data-workers-problem class="mt-0.5 block text-[11px] text-red-700">{{ problems.workers }}</span>
         </label>
         <label class="block">
           <span class="mb-1 block text-xs text-gray-600">Memory per worker (GB)</span>
@@ -175,6 +184,7 @@ function remove(): void {
             :value="task.resources?.memory_per_worker_gb ?? ''"
             @input="(e) => override('memory_per_worker_gb', (e.target as HTMLInputElement).value)"
           />
+          <span v-if="problems.memory_per_worker_gb" class="mt-0.5 block text-[11px] text-red-700">{{ problems.memory_per_worker_gb }}</span>
         </label>
         <label class="block">
           <span class="mb-1 block text-xs text-gray-600">Split</span>

@@ -78,9 +78,16 @@ function onText(field: Field, text: string): void {
 }
 
 function onNumber(field: Field, text: string): void {
-  if (text.trim() === "") return put(field.key, undefined);
+  if (text.trim() === "") {
+    delete problems[field.key];
+    return put(field.key, undefined);
+  }
   const n = Number(text);
-  if (Number.isNaN(n) || (field.kind === "integer" && !Number.isInteger(n))) return;
+  if (Number.isNaN(n) || (field.kind === "integer" && !Number.isInteger(n))) {
+    problems[field.key] = field.kind === "integer" ? "a whole number" : "a number";
+    return;
+  }
+  delete problems[field.key];
   put(field.key, n);
 }
 
@@ -153,6 +160,7 @@ const label = (field: Field): string => (field.required ? `${field.title} *` : f
           :placeholder="placeholder(field)"
           @input="(e) => onNumber(field, (e.target as HTMLInputElement).value)"
         />
+        <span v-if="problems[field.key]" class="mt-0.5 block text-[11px] text-red-700">{{ problems[field.key] }}</span>
       </label>
       <p v-if="field.description && field.kind !== 'object'" class="mt-0.5 text-[11px] text-gray-500">{{ field.description }}</p>
     </div>

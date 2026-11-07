@@ -39,4 +39,15 @@ describe("SchemaForm", () => {
     await area.setValue('{"a": "b"}');
     expect(wrapper.emitted("update:value")!.at(-1)).toEqual([{ extra: { a: "b" } }]);
   });
+
+  it("says what an integer field refuses and emits nothing until it parses", async () => {
+    const wrapper = mount(SchemaForm, { props: { schema, value: {} } });
+    const input = wrapper.get("[data-field='n'] input");
+    await input.setValue("2.5");
+    expect(wrapper.emitted("update:value")).toBeUndefined();
+    expect(wrapper.get("[data-field='n']").text()).toContain("a whole number");
+    await input.setValue("3");
+    expect(wrapper.emitted("update:value")!.at(-1)).toEqual([{ n: 3 }]);
+    expect(wrapper.get("[data-field='n']").text()).not.toContain("a whole number");
+  });
 });
