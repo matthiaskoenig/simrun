@@ -46,7 +46,7 @@ POLL_S = 30.0
 REQUEST_TIMEOUT_S = 60.0
 BACKOFF_START_S = 1.0
 BACKOFF_MAX_S = 10.0
-# answers of a proxy or a restarting service, retried by `wait`
+# answers of a proxy or a restarting service, retried by `wait` and `simrun edit`
 RETRY_STATUS = (502, 503, 504)
 
 
@@ -280,9 +280,9 @@ class Client:
             json=result.model_dump(mode="json"),
         )
 
-    def close_edit(self, session_id: str) -> None:
-        """Close an edit session, the command stopped."""
-        self._call("POST", f"/edits/{session_id}/close")
+    def close_edit(self, session_id: str, timeout: float = REQUEST_TIMEOUT_S) -> None:
+        """Close an edit session, the command stopped, waiting up to `timeout` s."""
+        self._call("POST", f"/edits/{session_id}/close", timeout=timeout)
 
     def wait(self, run_id: str, timeout_s: float | None = None) -> RunSummary:
         """Wait for a run to end, or for `timeout_s` seconds (None: forever).

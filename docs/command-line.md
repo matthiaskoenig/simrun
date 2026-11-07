@@ -58,7 +58,7 @@ simrun edit fit.yaml --source model=~/git/pkdb_models --source sbmlsim=~/git/sbm
 | `--source NAME=PATH` | a source, as for `submit`; snapshotted when the session opens and at every run |
 | `--group GROUP` | the group of the runs started from the Editor which name none |
 
-The command opens an edit session in the service, prints the link of the [Editor](web-app.md#the-editor) and runs until Ctrl-C: it writes the saves of the browser into the file, runs the workflow of the browser as `submit` does, and sends a change of the file or of the working trees to the browser. A file which does not exist is a new workflow.
+The command opens an edit session in the service, prints the link of the [Editor](web-app.md#the-editor) and runs until Ctrl-C, which closes the session and exits 0 (a second Ctrl-C exits without waiting for the close): it writes the saves of the browser into the file, runs the workflow of the browser as `submit` does, and sends a change of the file or of the working trees to the browser. A file which does not exist is a new workflow.
 
 ### wait
 
