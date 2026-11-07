@@ -607,7 +607,7 @@ export interface components {
          *
          *     Attributes:
          *         ok: Whether the request was done.
-         *         status: The status of a refusal: 409 conflict, 422 refused.
+         *         status: The status of a refusal, 4xx or 5xx: 409 conflict, 422 refused.
          *         detail: The reason of a refusal.
          *         file_sha256: For a save, the hash of the written file.
          *         run: For a run, the submitted run.

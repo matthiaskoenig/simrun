@@ -60,6 +60,7 @@ from simrun.service.controller import (
     is_oom,
 )
 from simrun.service.edits import (
+    EDIT_WAIT_S,
     EditRequest,
     EditResult,
     EditSession,
@@ -90,10 +91,9 @@ logger = logging.getLogger(__name__)
 CONFIG_ENV = "SIMRUN_CONFIG"
 WAIT_POLL_S = 0.2
 WAIT_MAX_S = 300.0
-# the longest long poll of the command of an edit session, and how long a save or
-# a run of the browser waits for its answer
+# the longest long poll of the command of an edit session
 EDIT_POLL_MAX_S = 30.0
-EDIT_WAIT_S = 60.0
+NOT_CONNECTED = "the machine of the session is not connected"
 # a snapshot younger than this is kept by a cleanup: a client may be submitting it
 SNAPSHOT_GRACE_S = 3600.0
 LATEST_LINK = "latest"
@@ -1355,18 +1355,34 @@ def create_app(
             raise HTTPException(403, "only the owner of the session may do this")
         return session
 
+    def answer_or_session(
+        session_id: str, request_id: str
+    ) -> tuple[EditResult | None, EditSession]:
+        """The answer to a request, none while there is none, and its session."""
+        result = service.edits.result(session_id, request_id)
+        try:
+            return result, service.edits.read(session_id)
+        except KeyError:
+            raise HTTPException(404, "the edit session is gone") from None
+
     async def ask(session_id: str, request_id: str) -> EditResult:
-        """Wait for the answer of the command to a request, then drop the request."""
+        """Wait for the answer of the command to a request, then drop the request.
+
+        A 503 when the command does not answer within `EDIT_WAIT_S`, and as soon as
+        the session is no longer connected (the command closed it or went away).
+        """
         loop = asyncio.get_running_loop()
         deadline = loop.time() + EDIT_WAIT_S
         try:
             while True:
-                result = await asyncio.to_thread(
-                    service.edits.result, session_id, request_id
+                result, session = await asyncio.to_thread(
+                    answer_or_session, session_id, request_id
                 )
                 remaining = deadline - loop.time()
                 if result is not None:
                     return result
+                if not session.connected:
+                    raise HTTPException(503, NOT_CONNECTED)
                 if remaining <= 0:
                     raise HTTPException(
                         503, "the machine of the session did not answer"
@@ -1374,6 +1390,16 @@ def create_app(
                 await asyncio.sleep(min(WAIT_POLL_S, remaining))
         finally:
             await asyncio.to_thread(service.edits.drop_request, session_id, request_id)
+
+    def refused(result: EditResult) -> HTTPException:
+        """The error of a refusal of the command.
+
+        A conflict (409) and a refusal of the workflow (422) go to the browser as
+        they are; any other status is the command's trouble with the service, a
+        502 with its detail.
+        """
+        status = result.status if result.status in (409, 422) else 502
+        return HTTPException(status, result.detail)
 
     @app.post("/edits", status_code=201)
     def open_edit(body: OpenEdit, caller: Caller) -> EditSession:
@@ -1434,7 +1460,7 @@ def create_app(
     async def save_edit(session_id: str, body: SaveBody, caller: Caller) -> EditSession:
         session = await asyncio.to_thread(own_edit, session_id, caller)
         if not session.connected:
-            raise HTTPException(503, "the machine of the session is not connected")
+            raise HTTPException(503, NOT_CONNECTED)
         request = await asyncio.to_thread(
             lambda: service.edits.add_request(
                 session_id,
@@ -1446,7 +1472,7 @@ def create_app(
         )
         result = await ask(session_id, request.id)
         if not result.ok:
-            raise HTTPException(result.status, result.detail)
+            raise refused(result)
         return await asyncio.to_thread(
             service.edits.saved,
             session_id,
@@ -1458,7 +1484,7 @@ def create_app(
     async def run_edit(session_id: str, body: RunBody, caller: Caller) -> RunSummary:
         session = await asyncio.to_thread(own_edit, session_id, caller)
         if not session.connected:
-            raise HTTPException(503, "the machine of the session is not connected")
+            raise HTTPException(503, NOT_CONNECTED)
         request = await asyncio.to_thread(
             lambda: service.edits.add_request(
                 session_id,
@@ -1471,7 +1497,7 @@ def create_app(
         )
         result = await ask(session_id, request.id)
         if not result.ok:
-            raise HTTPException(result.status, result.detail)
+            raise refused(result)
         if result.run is None:
             raise HTTPException(502, "the machine of the session sent no run")
         return result.run

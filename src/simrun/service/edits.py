@@ -18,9 +18,9 @@ from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from simrun.service.auth import Identity
 from simrun.snapshot import SourceProvenance
@@ -30,6 +30,9 @@ from simrun.workflow import SplitMode, Workflow
 logger = logging.getLogger(__name__)
 
 EDIT_CONNECTED_S = 30.0
+# how long a save or a run of the browser waits for the answer of the command; a
+# request older than this is no longer waited for
+EDIT_WAIT_S = 60.0
 SESSION_FILE = "session.json"
 LOCK_FILE = ".lock"
 REQUESTS_DIR = "requests"
@@ -135,7 +138,7 @@ class EditResult(BaseModel):
 
     Attributes:
         ok: Whether the request was done.
-        status: The status of a refusal: 409 conflict, 422 refused.
+        status: The status of a refusal, 4xx or 5xx: 409 conflict, 422 refused.
         detail: The reason of a refusal.
         file_sha256: For a save, the hash of the written file.
         run: For a run, the submitted run.
@@ -146,6 +149,12 @@ class EditResult(BaseModel):
     detail: str = ""
     file_sha256: str | None = None
     run: RunSummary | None = None
+
+    @model_validator(mode="after")
+    def _refusal_has_an_error_status(self) -> Self:
+        if not self.ok and not 400 <= self.status <= 599:
+            raise ValueError(f"a refusal needs a 4xx or 5xx status, not {self.status}")
+        return self
 
 
 class SaveBody(BaseModel):
@@ -334,8 +343,14 @@ class EditStore:
         return request
 
     def requests(self, session_id: str) -> builtins.list[EditRequest]:
-        """The requests without an answer, oldest first."""
+        """The requests without an answer, oldest first.
+
+        A request older than `EDIT_WAIT_S` by the clock of the service is no longer
+        waited for, e.g. one left by a service which stopped while it waited: it is
+        dropped instead of returned, so that the command does not do it late.
+        """
         directory = self._dir(session_id) / REQUESTS_DIR
+        stale = _now() - timedelta(seconds=EDIT_WAIT_S)
         found: list[EditRequest] = []
         for path in directory.glob("*.json"):
             if path.name.endswith(RESULT_SUFFIX):
@@ -343,9 +358,14 @@ class EditStore:
             if (directory / f"{path.stem}{RESULT_SUFFIX}").exists():
                 continue
             try:
-                found.append(EditRequest.model_validate_json(path.read_text()))
+                request = EditRequest.model_validate_json(path.read_text())
             except FileNotFoundError, ValueError:
                 continue  # dropped or half gone meanwhile
+            if request.created < stale:
+                logger.info("the stale edit request %s is dropped", request.id)
+                self.drop_request(session_id, request.id)
+                continue
+            found.append(request)
         found.sort(key=lambda r: r.created)
         return found
 
@@ -373,6 +393,7 @@ class EditStore:
 
 __all__ = [
     "EDIT_CONNECTED_S",
+    "EDIT_WAIT_S",
     "EditRequest",
     "EditResult",
     "EditSession",
