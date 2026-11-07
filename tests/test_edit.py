@@ -379,3 +379,83 @@ def test_cli_edit_second_ctrl_c_interrupts_and_exits_0(monkeypatch, tmp_path):
             signal.signal(number, handler)
     assert checked == [1]
     assert result.exit_code == 0, result.output
+
+
+def test_a_result_refused_with_500_is_not_run_again(make, monkeypatch):
+    monkeypatch.setattr(app_module, "EDIT_WAIT_S", 2.0)
+    web, client, _, editor = make()
+    opened = editor.open()
+    submits = []
+    real_submit = client.submit
+
+    def submit(*args):
+        submits.append(1)
+        return real_submit(*args)
+
+    real_result = client.edit_result
+    refusals = [ClientError(500, "the store could not be written")]
+
+    def edit_result(*args):
+        if refusals:
+            raise refusals.pop()
+        real_result(*args)
+
+    monkeypatch.setattr(client, "submit", submit)
+    monkeypatch.setattr(client, "edit_result", edit_result)
+    out = []
+    thread = browser(web, opened.id, "run", {"workflow": workflow_body()}, out)
+    for _ in range(5):
+        editor.step(0.2)
+    assert len(submits) == 1
+    assert not refusals
+    thread.join(10)  # the browser waits until `ask` gives up
+    assert out[0].status_code == 503
+
+
+def test_a_second_ctrl_c_skips_the_close_and_the_heartbeat(make, monkeypatch):
+    monkeypatch.setattr(app_module, "EDIT_WAIT_S", 1.0)
+    web, client, path, _ = make()
+    closed = []
+    monkeypatch.setattr(Editor, "close", lambda self: closed.append(1))
+    joins = []
+    real_join = threading.Thread.join
+
+    def join(self, timeout=None):
+        if self.name == "edit-heartbeat":
+            joins.append(1)
+        real_join(self, timeout)
+
+    monkeypatch.setattr(threading.Thread, "join", join)
+
+    def interrupted(self, request):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(Editor, "handle", interrupted)
+    out = []
+
+    def stop_after_request():
+        return bool(out)
+
+    thread = None
+
+    def start_browser():
+        nonlocal thread
+        sid = next((web.settings.store / "edits").iterdir()).name
+        thread = browser(
+            web, sid, "save", {"workflow": workflow_body(), "base": ""}, out
+        )
+
+    real_open = Editor.open
+
+    def open_then_ask(self):
+        opened = real_open(self)
+        start_browser()
+        return opened
+
+    monkeypatch.setattr(Editor, "open", open_then_ask)
+    with pytest.raises(KeyboardInterrupt):
+        run_edit(client, path, {}, None, should_stop=stop_after_request)
+    assert closed == []
+    assert joins == []
+    assert thread is not None
+    thread.join(10)
