@@ -8,9 +8,8 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { TaskProgress, TaskSpec, TaskState, WorkerView } from "../api/client";
-import type { IconName } from "../lib/icons";
 import { kindOf } from "../lib/kinds";
-import { spins, STATUS } from "../lib/status";
+import { rankWorkers, workerLook } from "../lib/workers";
 import AppIcon from "./AppIcon.vue";
 import StatusPill from "./StatusPill.vue";
 
@@ -34,20 +33,14 @@ const BORDER: Partial<Record<TaskState, string>> = {
 };
 const border = computed(() => BORDER[props.state] ?? "border-gray-200 border-dashed");
 
-const BAR: Partial<Record<TaskState | WorkerView["state"], string>> = {
+const BAR: Partial<Record<TaskState, string>> = {
   running: "bg-blue-500",
   done: "bg-emerald-500",
   failed: "bg-red-500",
   preempted: "bg-amber-400",
   retrying: "bg-amber-400",
 };
-const barColor = (state: TaskState | WorkerView["state"]): string => BAR[state] ?? "bg-gray-300";
-
-const WORKER_ICON: Record<WorkerView["state"], string> = {
-  running: "text-blue-600",
-  done: "text-emerald-600",
-  failed: "text-red-600",
-};
+const barColor = (state: TaskState): string => BAR[state] ?? "bg-gray-300";
 
 /** A setting on one line: a scalar as it is, a list of scalars joined by spaces; anything else is left out. */
 function setting(value: unknown): string | null {
@@ -74,9 +67,8 @@ const split = computed(() => props.workers.length > 1);
 /** The worker rows a node shows; the inspector lists every worker. */
 const MAX_ROWS = 3;
 
-// at work first (those with a server before those waiting for one), then the failed, then the done
-const rank = (w: WorkerView): number => ({ running: w.node === null ? 1 : 0, failed: 2, done: 3 })[w.state];
-const shown = computed(() => [...props.workers].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_ROWS));
+const shown = computed(() => rankWorkers(props.workers).slice(0, MAX_ROWS));
+const look = (w: WorkerView) => workerLook(w, props.state);
 const more = computed(() => props.workers.length - shown.value.length);
 
 /** The share of the units of the task a worker has done, from the `unit_done` lines it wrote. */
@@ -92,19 +84,6 @@ function workerTitle(worker: WorkerView): string {
   if (worker.attempts > 1) parts.push(`attempt ${worker.attempts}`);
   if (worker.oom_killed) parts.push("killed for memory");
   return parts.join(", ");
-}
-
-// a task which is over has no worker at work, whatever the last view of its
-// workers says (the stream of a cancelled run ends before its pods are gone)
-const OVER: ReadonlySet<TaskState> = new Set<TaskState>(["done", "failed", "skipped"]);
-
-/** How a worker is drawn: the color of its bar, its icon; an hourglass while it waits for a server. */
-function workerLook(worker: WorkerView): { bar: string; icon: IconName; spin: boolean; color: string } {
-  if (worker.state === "running" && (OVER.has(props.state) || worker.node === null)) {
-    return { bar: "bg-gray-300", icon: OVER.has(props.state) ? "square" : "hourglass", spin: false, color: "text-gray-400" };
-  }
-  const style = STATUS[worker.state];
-  return { bar: barColor(worker.state), icon: style.icon, spin: spins(style), color: WORKER_ICON[worker.state] };
 }
 </script>
 
@@ -163,12 +142,12 @@ function workerLook(worker: WorkerView): { bar: string; icon: IconName; spin: bo
               ><bdi>{{ w.node }}</bdi></span
             >
             <div class="h-1 flex-1 overflow-hidden rounded-full bg-gray-100">
-              <div data-bar class="h-full rounded-full" :class="workerLook(w).bar" :style="{ width: percent(workerFrac(w)) }"></div>
+              <div data-bar class="h-full rounded-full" :class="look(w).bar" :style="{ width: percent(workerFrac(w)) }"></div>
             </div>
             <AppIcon
-              :name="workerLook(w).icon"
+              :name="look(w).icon"
               class="size-3"
-              :class="[workerLook(w).color, workerLook(w).spin ? 'animate-spin' : '']"
+              :class="[look(w).color, look(w).spin ? 'animate-spin' : '']"
             />
           </div>
           <div v-if="more > 0" data-more class="text-[11px] text-gray-400">+{{ more }} more {{ more === 1 ? "worker" : "workers" }}</div>

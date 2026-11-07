@@ -25,7 +25,7 @@ const tiles = computed(() =>
 </script>
 
 <template>
-  <section class="shrink-0 border-t border-gray-200 bg-white px-3 pt-2 pb-3">
+  <section class="@container shrink-0 border-t border-gray-200 bg-white px-3 pt-2 pb-3">
     <div class="mb-2 flex items-center justify-between">
       <div class="flex items-center gap-2 text-xs font-semibold text-gray-700">
         <AppIcon name="server" class="size-3.5" />Servers
@@ -38,7 +38,8 @@ const tiles = computed(() =>
         <span class="inline-flex items-center gap-1"><span class="stripes size-2.5 rounded-sm"></span>reserved</span>
       </div>
     </div>
-    <div v-if="tiles.length > 0" class="grid grid-cols-6 gap-2">
+    <!-- six tiles in a row as in the mockup while a tile keeps 120 px, else four or three (the inspector narrows the canvas) -->
+    <div v-if="tiles.length > 0" data-tiles class="grid grid-cols-3 gap-2 @[32rem]:grid-cols-4 @[48rem]:grid-cols-6">
       <div
         v-for="tile in tiles"
         :key="tile.server.name"
@@ -68,7 +69,7 @@ const tiles = computed(() =>
             :style="{ width: segment.width + '%' }"
           ></div>
         </div>
-        <div class="mt-1 flex justify-between text-[10px] text-gray-500 tabular-nums">
+        <div class="mt-1 flex justify-between gap-1 text-[10px] whitespace-nowrap text-gray-500 tabular-nums">
           <span data-used-cores>{{ formatCores(tile.cores) }}/{{ tile.server.cores }} cores</span
           ><span data-used-memory>{{ formatGb(tile.memory) }}</span>
         </div>
