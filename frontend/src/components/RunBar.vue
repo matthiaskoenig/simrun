@@ -97,8 +97,16 @@ watch(stoppable, (value) => {
       >
     </div>
 
-    <div v-if="stoppable" class="pointer-events-auto relative flex shrink-0 items-center gap-2">
+    <div class="pointer-events-auto relative flex shrink-0 items-center gap-2">
+      <a
+        data-rerun
+        :href="`#/runs/${encodeURIComponent(record.id)}/edit`"
+        class="inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-2.5 py-1.5 text-xs font-medium whitespace-nowrap text-gray-700 shadow-sm hover:bg-gray-50"
+      >
+        <AppIcon name="settings-2" class="size-3.5" />Rerun with changes
+      </a>
       <button
+        v-if="stoppable"
         type="button"
         data-stop
         class="inline-flex items-center gap-1.5 rounded-lg border border-red-200 bg-white px-2.5 py-1.5 text-xs font-medium whitespace-nowrap text-red-700 shadow-sm hover:bg-red-50"
@@ -108,7 +116,7 @@ watch(stoppable, (value) => {
         <AppIcon name="square" class="size-3.5" />Stop
       </button>
 
-      <template v-if="confirming">
+      <template v-if="stoppable && confirming">
         <!-- a click beside the confirmation dismisses it -->
         <div class="fixed inset-0 z-10" aria-hidden="true" @click="dismiss"></div>
         <div

@@ -26,6 +26,8 @@ export interface Edit {
   base: Ref<string>;
   /** The group of the run opened (`#/runs/:id/edit`), null for a session. */
   group: Ref<string | null>;
+  /** Counts the times the draft took a workflow from disk or from a run; the canvas lays out again on a change. */
+  loaded: Ref<number>;
   dirty: ComputedRef<boolean>;
   /** Whether the command of the session polls; false for a run. */
   connected: ComputedRef<boolean>;
@@ -51,6 +53,8 @@ export interface Edit {
   save(force?: boolean): Promise<void>;
   /** Runs the draft: through the session when it is connected, else with `POST /runs`. */
   run(options: { group?: string | null }): Promise<RunSummary>;
+  /** Downloads the YAML of the draft as `<workflow name>.yaml`. */
+  download(): Promise<void>;
 }
 
 function clone(workflow: Workflow): Workflow {
@@ -63,6 +67,7 @@ export function useEdit(): Edit {
   const draft = shallowRef<Workflow | null>(null);
   const base = ref("");
   const group = ref<string | null>(null);
+  const loaded = ref(0);
   const isDirty = ref(false);
   const changedOnDisk = ref(false);
   const messages = ref<string[]>([]);
@@ -134,6 +139,7 @@ export function useEdit(): Edit {
   function take(from: EditSession): void {
     draft.value = clone(from.workflow);
     base.value = from.file_sha256;
+    loaded.value += 1;
     isDirty.value = false;
     changedOnDisk.value = false;
     schedule();
@@ -206,6 +212,7 @@ export function useEdit(): Edit {
     draft.value = clone(record.workflow);
     group.value = record.group ?? null;
     runSources.value = record.sources;
+    loaded.value += 1;
     schedule();
   }
 
@@ -257,7 +264,19 @@ export function useEdit(): Edit {
     return api.submit(workflow, sources(), chosen);
   }
 
+  async function download(): Promise<void> {
+    const workflow = draft.value;
+    if (workflow === null) throw new Error("there is no workflow to download");
+    const text = await api.workflowYaml(workflow);
+    const url = URL.createObjectURL(new Blob([text], { type: "application/yaml" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `${workflow.name}.yaml`;
+    link.click();
+    URL.revokeObjectURL(url);
+  }
+
   if (getCurrentScope()) onScopeDispose(() => clearTimeout(timer));
 
-  return { session, draft, base, group, dirty, connected, changedOnDisk, errors, taskErrors, estimate, valid, loadError, types, runSources, openSession, openRun, change, reload, save, run };
+  return { session, draft, base, group, loaded, dirty, connected, changedOnDisk, errors, taskErrors, estimate, valid, loadError, types, runSources, openSession, openRun, change, reload, save, run, download };
 }

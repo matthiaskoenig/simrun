@@ -30,6 +30,15 @@ describe("RunBar", () => {
     wrapper.unmount();
   });
 
+  it("links Rerun with changes to the Editor of the run, also for a finished run", () => {
+    for (const state of ["running", "succeeded"] as const) {
+      const wrapper = mountBar({ id: "r1", state });
+      expect(wrapper.get("[data-rerun]").attributes("href")).toBe("#/runs/r1/edit");
+      expect(wrapper.get("[data-rerun]").text()).toBe("Rerun with changes");
+      wrapper.unmount();
+    }
+  });
+
   it("starts a run when its image is ready, else when it was submitted", () => {
     const created = "2026-11-07T13:02:00Z";
     const built = "2026-11-07T13:09:00Z";
