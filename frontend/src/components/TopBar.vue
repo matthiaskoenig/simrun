@@ -17,7 +17,9 @@ const props = withDefaults(defineProps<{
   mode?: "editor" | "exec";
   /** The edit session open, which the Editor switch returns to. */
   session?: string | null;
-}>(), { mode: "exec", session: null });
+  /** The title (tooltip) of the last part of the breadcrumb, e.g. the path of a file. */
+  crumbTitle?: string | null;
+}>(), { mode: "exec", session: null, crumbTitle: null });
 
 const cluster = computed(() => ({
   used: props.servers.reduce((sum, s) => sum + s.pods.reduce((cores, pod) => cores + pod.cores, 0), 0),
@@ -35,7 +37,7 @@ const cluster = computed(() => ({
       <span class="text-sm" :class="workflow === null ? 'font-medium' : 'text-gray-500'">{{ mode === "editor" ? "Editor" : "Executions" }}</span>
       <template v-if="workflow !== null">
         <AppIcon name="chevron-right" class="size-3.5 text-gray-300" />
-        <span class="truncate text-sm font-medium">{{ workflow }}</span>
+        <span data-crumb class="truncate text-sm font-medium" :title="crumbTitle ?? undefined">{{ workflow }}</span>
       </template>
     </nav>
     <nav class="mx-auto flex rounded-lg bg-gray-100 p-0.5 text-sm" aria-label="Mode">

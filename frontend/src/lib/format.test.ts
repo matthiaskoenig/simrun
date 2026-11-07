@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { formatBytes, formatCores, formatDuration, formatGb, formatPlacement, formatTime, initials } from "./format";
+import { fileOf, formatAgo, formatBytes, formatCores, formatDuration, formatGb, formatPlacement, formatTime, initials, shortRun } from "./format";
 
 describe("formatDuration", () => {
   it("names seconds, minutes and hours with minutes", () => {
@@ -78,5 +78,29 @@ describe("formatPlacement", () => {
     expect(formatPlacement(1, 1, 6)).toBe("1 pod of 1 worker, 6 GB");
     expect(formatPlacement(1, 8, 12)).toBe("1 pod of 8 workers, 12 GB");
     expect(formatPlacement(4, 36, 180)).toBe("4 pods of 36 workers, 180 GB each");
+  });
+});
+
+describe("shortRun", () => {
+  it("is the last part of the id of a run", () => {
+    expect(shortRun("20261107-111319-5f81f7")).toBe("5f81f7");
+    expect(shortRun("r9")).toBe("r9");
+  });
+});
+
+describe("formatAgo", () => {
+  const now = new Date("2026-11-07T13:00:00Z");
+  it("names how long ago in the largest whole unit", () => {
+    expect(formatAgo("2026-11-07T12:59:30Z", now)).toBe("just now");
+    expect(formatAgo("2026-11-07T12:55:00Z", now)).toBe("5 min ago");
+    expect(formatAgo("2026-11-07T10:00:00Z", now)).toBe("3 h ago");
+    expect(formatAgo("2026-11-05T12:00:00Z", now)).toBe("2 d ago");
+  });
+});
+
+describe("fileOf", () => {
+  it("splits a path into its directory and its file name", () => {
+    expect(fileOf("/home/mk/git/model/squares.yaml")).toEqual({ dir: "/home/mk/git/model/", name: "squares.yaml" });
+    expect(fileOf("squares.yaml")).toEqual({ dir: "", name: "squares.yaml" });
   });
 });

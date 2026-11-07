@@ -81,7 +81,7 @@ const CHIP = "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]";
         <span
           v-if="errors.length"
           data-errors
-          class="shrink-0 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium text-red-700"
+          class="shrink-0 rounded-full bg-red-50 px-2 py-0.5 text-[11px] font-medium whitespace-nowrap text-red-700"
           :title="errors.join('\n')"
           >{{ errors.length }} {{ errors.length === 1 ? "error" : "errors" }}</span
         >

@@ -16,7 +16,7 @@ import { MarkerType, VueFlow, useVueFlow, type Connection, type Edge, type Graph
 import { MiniMap } from "@vue-flow/minimap";
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import type { TaskEstimate, TaskTypeView, Workflow } from "../api/client";
-import { DRAG_TYPE, addTask, connect, disconnect, removeTask } from "../lib/edit-graph";
+import { DRAG_TYPE, addTask, connect, disconnect, panInto, removeTask } from "../lib/edit-graph";
 import { COLUMN_PX, layout } from "../lib/graph";
 import { kindOf } from "../lib/kinds";
 import EditNode from "./EditNode.vue";
@@ -39,9 +39,11 @@ const emit = defineEmits<{
   refused: [message: string];
 }>();
 
-const { fitView, onNodesInitialized, screenToFlowCoordinate } = useVueFlow("editor");
+const { dimensions, findNode, fitView, onNodesInitialized, screenToFlowCoordinate, setViewport, viewport } = useVueFlow("editor");
 
 const FIT = { padding: 0.14, maxZoom: 1 };
+// the room an added task keeps from the sides of the canvas; the bar floats over the top
+const MARGIN = { top: 64, right: 24, bottom: 24, left: 24 };
 
 // the places of the nodes, the layered layout of the workflow when the canvas opens
 const positions = new Map<string, { x: number; y: number }>(layout(props.workflow).nodes.map((n) => [n.id, n.position]));
@@ -141,13 +143,39 @@ watch(
   },
 );
 
+// the task added last, which is panned into the view once Vue Flow measured it
+let known = new Set(props.workflow.tasks.map((task) => task.id));
+let reveal: string | null = null;
+watch(
+  () => props.workflow.tasks.map((task) => task.id),
+  (ids) => {
+    const added = ids.find((id) => !known.has(id));
+    known = new Set(ids);
+    if (added !== undefined) reveal = added;
+  },
+);
+
+function show(id: string): void {
+  const node = findNode(id);
+  if (!node) return;
+  const next = panInto(viewport.value, dimensions.value, { ...node.position, ...node.dimensions }, MARGIN);
+  if (next) void setViewport(next, { duration: 200 });
+}
+
 // the view fits the first layout; Vue Flow initializes the nodes again on every added task,
-// which must not move the view away from where the person works
+// which must not move the view away from where the person works, only show the new task whole
 let fitted = false;
 onNodesInitialized(() => {
-  if (fitted) return;
-  fitted = true;
-  void fitView(FIT);
+  if (!fitted) {
+    fitted = true;
+    reveal = null;
+    void fitView(FIT);
+    return;
+  }
+  if (reveal === null) return;
+  const id = reveal;
+  reveal = null;
+  show(id);
 });
 
 // a changed size of the canvas fits the view again, once per frame

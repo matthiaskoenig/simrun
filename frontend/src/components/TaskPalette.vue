@@ -1,7 +1,8 @@
 <!--
   The palette of the Editor, the left column of the mockup's Editor mode: a
-  search and the task types of the service in groups. A click adds a task of
-  the type, a drag carries its name to the canvas.
+  search and the task types of the service in groups, and a footer of where
+  the workflow comes from. A click adds a task of the type, a drag carries its
+  name to the canvas.
 -->
 <script setup lang="ts">
 import { computed, ref } from "vue";
@@ -16,10 +17,10 @@ const emit = defineEmits<{ add: [type: TaskTypeView] }>();
 const query = ref("");
 const groups = computed(() => paletteGroups(props.types, query.value));
 
+/** The subtitle of a type: its description, else whether it splits. */
 function description(type: TaskTypeView): string {
-  const { description: text, title } = type.settings_schema as { description?: unknown; title?: unknown };
-  if (typeof text === "string") return text;
-  return typeof title === "string" ? title : "";
+  if (type.description) return type.description;
+  return type.splittable ? "Split over servers" : "One process";
 }
 
 function onDragStart(event: DragEvent, type: TaskTypeView): void {
@@ -61,11 +62,14 @@ function onDragStart(event: DragEvent, type: TaskTypeView): void {
           </span>
           <div class="min-w-0 flex-1">
             <div class="truncate text-sm font-medium text-gray-900">{{ type.name }}</div>
-            <div v-if="description(type)" class="truncate text-[11px] text-gray-500">{{ description(type) }}</div>
+            <div data-description class="truncate text-[11px] text-gray-500">{{ description(type) }}</div>
           </div>
           <AppIcon name="grip-vertical" class="size-3.5 text-gray-300" />
         </div>
       </div>
+    </div>
+    <div v-if="$slots.footer" data-palette-footer class="border-t border-gray-200 p-3 text-[11px] leading-relaxed text-gray-500">
+      <slot name="footer" />
     </div>
   </div>
 </template>

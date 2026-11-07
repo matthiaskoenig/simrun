@@ -156,7 +156,7 @@ describe("EditorView bar", () => {
     expect(view.find("[data-save]").exists()).toBe(true);
     push(sse("edit", { ...session, connected: false }));
     await flushPromises();
-    expect(view.get("[data-machine]").text()).toBe("not connected");
+    expect(view.get("[data-machine]").text()).toBe("laptop not connected");
     expect(view.find("[data-save]").exists()).toBe(false);
     expect(view.find("[data-download]").exists()).toBe(true);
     await view.get("[data-run]").trigger("click");
@@ -165,6 +165,25 @@ describe("EditorView bar", () => {
     const [call] = post(mock, "/runs");
     expect(JSON.parse(String(call![1]!.body)).sources).toEqual([source]);
     await vi.waitFor(() => expect(router.currentRoute.value.fullPath).toBe("/runs/r9"));
+    view.unmount();
+  });
+
+  it("names the file of a session in the breadcrumb and the palette", async () => {
+    mockFetch(() => reply(summary), sse("edit", session));
+    const { view } = await open("/edit/abc");
+    const crumb = view.get("[data-crumb]");
+    expect(crumb.text()).toBe("squares.yaml");
+    expect(crumb.attributes("title")).toBe("/home/mk/squares.yaml");
+    expect(view.get("[data-palette-footer]").text()).toBe("Saves to squares.yaml on laptop");
+    view.unmount();
+  });
+
+  it("names the run of a rerun in the breadcrumb, the bar and the palette", async () => {
+    mockFetch(() => reply(summary));
+    const { view } = await open("/runs/r1/edit");
+    expect(view.get("[data-crumb]").text()).toBe("rerun of #r1");
+    expect(view.get("[data-machine]").text()).toBe("from run #r1");
+    expect(view.get("[data-palette-footer]").text()).toBe("The workflow of run #r1");
     view.unmount();
   });
 });

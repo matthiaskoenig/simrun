@@ -8,6 +8,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { TreeState } from "../api/client";
+import { shortRun } from "../lib/format";
 import AppIcon from "./AppIcon.vue";
 
 const props = defineProps<{
@@ -22,6 +23,8 @@ const props = defineProps<{
   saving: boolean;
   running: boolean;
   error: string | null;
+  /** The run a rerun comes from, null for a session. */
+  run?: string | null;
 }>();
 
 defineEmits<{
@@ -32,6 +35,13 @@ defineEmits<{
 }>();
 
 const model = computed(() => props.tree[0] ?? null);
+
+// where the draft lives: the machine of the session, or the run a rerun comes from
+const machine = computed(() => {
+  if (props.run) return `from run #${shortRun(props.run)}`;
+  if (props.connected) return props.host ?? "";
+  return props.host ? `${props.host} not connected` : "not connected";
+});
 const changed = computed(() => model.value?.changed_files ?? []);
 
 // what the state says, in the order of what matters most
@@ -72,9 +82,10 @@ const button = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm 
           >
           <span class="text-gray-300">|</span>
         </template>
-        <span class="inline-flex items-center gap-1.5 whitespace-nowrap" :class="connected ? 'text-gray-700' : 'text-gray-500'">
-          <span data-dot class="size-2 rounded-full" :class="connected ? 'bg-emerald-500' : 'bg-gray-300'"></span>
-          <span data-machine>{{ connected ? host : "not connected" }}</span>
+        <span class="inline-flex items-center gap-1.5 whitespace-nowrap" :class="connected || run ? 'text-gray-700' : 'text-gray-500'">
+          <span v-if="!run" data-dot class="size-2 rounded-full" :class="connected ? 'bg-emerald-500' : 'bg-gray-300'"></span>
+          <AppIcon v-else name="rotate-ccw" class="size-3.5 text-gray-500" />
+          <span data-machine>{{ machine }}</span>
         </span>
         <span class="text-gray-300">|</span>
         <span data-state class="inline-flex items-center gap-1 whitespace-nowrap" :class="state.tone">
@@ -116,7 +127,7 @@ const button = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm 
           :disabled="valid === false || running"
           @click="$emit('run')"
         >
-          <AppIcon name="play" class="size-4" />{{ running ? "Running..." : "Run" }}
+          <AppIcon name="play" class="size-4" />{{ running ? "Running..." : "Run workflow" }}
         </button>
       </div>
     </div>

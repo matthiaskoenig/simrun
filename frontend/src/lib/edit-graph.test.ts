@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskTypeView, Workflow } from "../api/client";
-import { addTask, connect, disconnect, newTaskId, paletteGroups, removeTask, renameTask } from "./edit-graph";
+import { addTask, connect, disconnect, newTaskId, paletteGroups, panInto, removeTask, renameTask } from "./edit-graph";
 
 function type(name: string, extra: Partial<TaskTypeView> = {}): TaskTypeView {
   return {
@@ -116,5 +116,25 @@ describe("removeTask and renameTask", () => {
     expect(typeof renameTask(chain(), "a", "B x")).toBe("string");
     expect(renameTask(chain(), "a", "c")).toBe("the id c is taken");
     expect(renameTask(chain(), "a", "a")).toEqual(chain());
+  });
+});
+
+describe("panInto", () => {
+  const pane = { width: 800, height: 600 };
+  const margin = { top: 64, right: 24, bottom: 24, left: 24 };
+
+  it("keeps the view when the node is inside it", () => {
+    expect(panInto({ x: 0, y: 0, zoom: 1 }, pane, { x: 100, y: 100, width: 256, height: 80 }, margin)).toBeNull();
+  });
+
+  it("pans left to show a node beyond the right edge, keeping the zoom", () => {
+    // at zoom 0.5 the node spans 850..978 on a pane 800 wide, whose right margin starts at 776
+    const next = panInto({ x: 100, y: 0, zoom: 0.5 }, pane, { x: 1500, y: 200, width: 256, height: 80 }, margin);
+    expect(next).toEqual({ x: -102, y: 0, zoom: 0.5 });
+  });
+
+  it("pans down to clear the bar above a node at the top", () => {
+    const next = panInto({ x: 0, y: 0, zoom: 1 }, pane, { x: 100, y: 10, width: 256, height: 80 }, margin);
+    expect(next).toEqual({ x: 0, y: 54, zoom: 1 });
   });
 });
