@@ -1273,6 +1273,8 @@ export interface components {
         TaskTypeView: {
             /** Cost Setting */
             cost_setting: string | null;
+            /** Description */
+            description: string;
             /** Has Plan */
             has_plan: boolean;
             hint: components["schemas"]["HintView"];

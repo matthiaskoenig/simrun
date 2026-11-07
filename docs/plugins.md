@@ -22,6 +22,7 @@ SCAN = TaskType(
     merge="sbmlsim.simrun:merge",  # settings, paths; after all units
     plan="sbmlsim.simrun:plan",  # settings -> settings; in the client
     cost_setting="subset",  # resources learned per subset
+    description="Parameter scans of a model",  # the subtitle in the Editor
 )
 ```
 
@@ -36,6 +37,7 @@ The functions are `"module:function"` strings, so a worker process resolves them
 - **`plan`** completes the settings of a task before it is submitted, e.g. with values derived from its model: `plan(settings) -> settings` gets the settings validated with the settings model and returns the planned ones. The client (`simrun submit`, `simrun estimate`, the MCP server) calls it for every task whose type is installed where the client runs, before it takes the snapshots, and submits the planned settings, the fields which were given or which the plan set (`model_dump(mode="json", exclude_unset=True)`), so the defaults stay with the plugin of the snapshot which validates them in the pods; `simrun validate` plans the same way, so it validates what `simrun submit` submits. A task of a type which is not installed locally is submitted as written.
 - **Provenance.** Every task gets `tasks/<task>/provenance.json`, the JSON list of the sources of its run (name, branch, commit, dirty, changed files, diff hash, snapshot), which the service writes next to `settings.json`; its path is `SIMRUN_PROVENANCE` in every pod of the task, so a command or a merge can record where its results come from.
 - **`cost_setting`** names the setting which changes the cost of a task, e.g. the subset of the data of a fit: the resources are learned per value of it.
+- **`description`** says in a few words what a task of the type does; the palette of the [Editor](web-app.md#the-editor) shows it under the name of the type ("Split over servers" or "One process" without one).
 - **`hint`** is the `ResourceHint` of a type without observations: the base memory, the memory per process, the scratch and the GPUs.
 - **Images need simrun.** A type with an `image` of its own runs its pods in that image, which must have simrun installed (`simrun-worker`, `simrun-merge` and `simrun-exec`, which every plugin command runs through); the image of an environment has it.
 

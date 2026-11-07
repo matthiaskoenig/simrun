@@ -1578,6 +1578,10 @@
             ],
             "title": "Cost Setting"
           },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
           "has_plan": {
             "title": "Has Plan",
             "type": "boolean"
@@ -1626,7 +1630,8 @@
           "uses_cores",
           "has_plan",
           "cost_setting",
-          "hint"
+          "hint",
+          "description"
         ],
         "title": "TaskTypeView",
         "type": "object"
