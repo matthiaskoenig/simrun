@@ -1,6 +1,6 @@
 # Command line
 
-`simrun` is the command line of people and scripts: it submits, follows, compares, cancels and cleans up runs. It runs on the machine of the working trees, e.g. the development server, which mounts the run store, and reads three environment variables, which the [MCP server](mcp.md) reads alike:
+`simrun` is the command line of people and scripts: it submits, follows, compares, cancels and cleans up runs, and `simrun edit` opens a workflow file in the [Editor](web-app.md#the-editor) of the web app. It runs on the machine of the working trees, e.g. the development server, which mounts the run store, and reads three environment variables, which the [MCP server](mcp.md) reads alike:
 
 | variable | meaning |
 | --- | --- |
@@ -14,7 +14,7 @@ export SIMRUN_TOKEN=...
 export SIMRUN_STORE=/mnt/cluster
 ```
 
-Every command takes `--json` (except `logs`, which prints the logs as text) and prints machine-readable JSON instead of tables. A refusal of the service is printed to stderr with exit code 1.
+Every command takes `--json` (except `logs`, which prints the logs as text, and `edit`, which runs until it is stopped) and prints machine-readable JSON instead of tables. A refusal of the service is printed to stderr with exit code 1.
 
 ## Commands
 
