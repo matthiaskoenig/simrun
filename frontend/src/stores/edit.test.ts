@@ -300,6 +300,43 @@ describe("useEdit", () => {
     controller.abort();
   });
 
+  it("does not take the hash of its own save for a change on disk, also when edited meanwhile", async () => {
+    let push: (text: string) => void = () => {};
+    let answer: (r: Response) => void = () => {};
+    const mock = vi.fn<typeof fetch>().mockImplementation(async (input) => {
+      const path = String(input);
+      if (path.endsWith("/events"))
+        return new Response(
+          new ReadableStream({
+            start: (c) => {
+              push = (text) => c.enqueue(new TextEncoder().encode(text));
+              push(sse("edit", session()));
+            },
+          }),
+        );
+      if (path === "/task-types") return reply([]);
+      if (path === "/edits/abc/save") return new Promise<Response>((resolve) => (answer = resolve));
+      return reply({ ok: true, errors: [] });
+    });
+    vi.stubGlobal("fetch", mock);
+    const { edit, controller } = open();
+    await vi.advanceTimersByTimeAsync(0);
+    edit.change(workflow("mine"));
+    const saving = edit.save();
+    await vi.advanceTimersByTimeAsync(0);
+    // the command sends the hash of its write before the save answers
+    push(sse("edit", session({ file_sha256: "h2", workflow: workflow("mine") })));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(edit.session.value?.file_sha256).toBe("h2");
+    edit.change(workflow("more"));
+    answer(reply(session({ file_sha256: "h2", workflow: workflow("mine") })));
+    await saving;
+    expect(edit.base.value).toBe("h2");
+    expect(edit.dirty.value).toBe(true);
+    expect(edit.changedOnDisk.value).toBe(false);
+    controller.abort();
+  });
+
   it("runs through the connected session", async () => {
     const mock = mockFetch(sse("edit", session()), (path) =>
       path === "/edits/abc/run" ? reply({ id: "r9", state: "queued" }) : reply({ ok: true, errors: [] }),
@@ -335,6 +372,24 @@ describe("useEdit", () => {
     });
   });
 
+  it("reruns a run with its reservation and the split of its workflow", async () => {
+    const record = runRecord({ id: "r1", workflow: workflow("ran"), sources, reserve: "node-a" });
+    const mock = mockFetch("", (path) => {
+      if (path === "/runs/r1") return reply(record);
+      if (path === "/runs") return reply({ id: "r2", state: "queued" });
+      return reply({ ok: true, errors: [] });
+    });
+    const edit = effectScope().run(() => useEdit())!;
+    await edit.openRun("r1");
+    // the reservation shows in the inspector of the workflow and can be changed there
+    expect(edit.draft.value?.reserve).toBe("node-a");
+    await edit.run({});
+    const body = sent(calls(mock, "/runs").find(([, i]) => i?.method === "POST")!) as Record<string, unknown>;
+    expect((body.workflow as Workflow).reserve).toBe("node-a");
+    expect((body.workflow as Workflow).split).toBe("fastest");
+    expect(body).not.toHaveProperty("split");
+  });
+
   it("downloads the YAML and revokes its URL only after the download began", async () => {
     const record = runRecord({ id: "r1", workflow: workflow("ran"), sources });
     mockFetch("", (path) => {
@@ -345,13 +400,19 @@ describe("useEdit", () => {
     const edit = effectScope().run(() => useEdit())!;
     await edit.openRun("r1");
     const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    const { createObjectURL, revokeObjectURL } = URL;
     URL.createObjectURL = vi.fn(() => "blob:x");
     URL.revokeObjectURL = vi.fn();
-    await edit.download();
-    expect(click).toHaveBeenCalledOnce();
-    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(60_000);
-    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:x");
-    click.mockRestore();
+    try {
+      await edit.download();
+      expect(click).toHaveBeenCalledOnce();
+      expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:x");
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      click.mockRestore();
+      Object.assign(URL, { createObjectURL, revokeObjectURL });
+    }
   });
 });
