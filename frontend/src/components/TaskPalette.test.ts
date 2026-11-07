@@ -13,6 +13,7 @@ const type = (name: string): TaskTypeView => ({
   has_plan: false,
   cost_setting: null,
   hint: { gpus: 0, memory_base_gb: 0, memory_per_worker_gb: 0, scratch_gb: 0 },
+  description: "",
 });
 const types = [type("command"), type("demo.squares"), type("sbmlsim.fit")];
 

@@ -91,6 +91,8 @@ class TaskType:
         cost_setting: Name of the setting which changes the cost of a task, e.g. the
             subset of the data of a fit; the resources are learned per value of it
             (`simrun.resources.resource_key`).
+        description: What a task of the type does in a few words, the subtitle of
+            the type in the palette of the Editor.
     """
 
     name: str
@@ -108,6 +110,7 @@ class TaskType:
     plan: str | None = None
     image: str | None = None
     cost_setting: str | None = None
+    description: str = ""
 
     @property
     def splittable(self) -> bool:

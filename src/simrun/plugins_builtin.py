@@ -26,4 +26,8 @@ class CommandSettings(BaseModel):
 
 
 # `command` is None: the settings carry the image and the args.
-COMMAND = TaskType(name="command", settings=CommandSettings)
+COMMAND = TaskType(
+    name="command",
+    settings=CommandSettings,
+    description="A command in the image of the run",
+)

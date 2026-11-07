@@ -13,6 +13,7 @@ const type = (name: string, inputs: string[], outputs: string[]): TaskTypeView =
   has_plan: false,
   cost_setting: null,
   hint: { gpus: 0, memory_base_gb: 0, memory_per_worker_gb: 0, scratch_gb: 0 },
+  description: "",
 });
 const types = [type("gen", [], ["out"]), type("use", ["x", "y"], ["res"])];
 const workflow: Workflow = {
