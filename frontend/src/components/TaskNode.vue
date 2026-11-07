@@ -71,36 +71,23 @@ const percent = (frac: number): string => (Math.min(1, Math.max(0, frac)) * 100)
 
 const split = computed(() => props.workers.length > 1);
 
-/**
- * The units a worker has done: those its reports count, and for a worker at
- * work an even share of the units done which no report counts yet (a report
- * counts the units of an attempt when the attempt ends).
- */
-const unitsOf = computed(() => {
-  const workers = props.workers;
-  const reported = workers.reduce((sum, w) => sum + w.units_done, 0);
-  const working = workers.filter((w) => w.state === "running" && w.node !== null);
-  const unreported = Math.max(0, (counts.value?.done ?? 0) - reported);
-  return new Map(workers.map((w) => [w.worker, w.units_done + (working.includes(w) ? unreported / working.length : 0)]));
-});
+/** The worker rows a node shows; the inspector lists every worker. */
+const MAX_ROWS = 3;
 
-/**
- * How far a worker is through its piece: the workers claim the units of one
- * ledger, so a piece is an even share of the units among the workers which
- * got a server; a worker which ended has finished its piece.
- */
+// at work first (those with a server before those waiting for one), then the failed, then the done
+const rank = (w: WorkerView): number => ({ running: w.node === null ? 1 : 0, failed: 2, done: 3 })[w.state];
+const shown = computed(() => [...props.workers].sort((a, b) => rank(a) - rank(b)).slice(0, MAX_ROWS));
+const more = computed(() => props.workers.length - shown.value.length);
+
+/** The share of the units of the task a worker has done, from the `unit_done` lines it wrote. */
 function workerFrac(worker: WorkerView): number {
-  if (worker.state === "done") return 1;
   const total = counts.value?.total ?? 0;
-  const pieces = props.workers.filter((w) => w.node !== null).length;
-  if (total === 0 || pieces === 0) return 0;
-  return (unitsOf.value.get(worker.worker) ?? 0) / (total / pieces);
+  return total === 0 ? 0 : worker.units_done / total;
 }
 
 function workerTitle(worker: WorkerView): string {
   if (worker.node === null) return `${worker.worker} waits for a server`;
-  const done = Math.round(unitsOf.value.get(worker.worker) ?? 0);
-  const parts = [`${worker.worker} on ${worker.node}`, `${worker.units_done === done ? "" : "about "}${number(done)} units done`];
+  const parts = [`${worker.worker} on ${worker.node}`, `${number(worker.units_done)} units done`];
   if (worker.units_claimed > 0) parts.push(`${number(worker.units_claimed)} claimed`);
   if (worker.attempts > 1) parts.push(`attempt ${worker.attempts}`);
   if (worker.oom_killed) parts.push("killed for memory");
@@ -164,7 +151,7 @@ function workerLook(worker: WorkerView): { bar: string; icon: IconName; spin: bo
 
         <div v-if="split" class="mt-2 space-y-1">
           <div
-            v-for="w in workers"
+            v-for="w in shown"
             :key="w.worker"
             :data-worker="w.worker"
             class="flex items-center gap-2 text-[11px]"
@@ -184,6 +171,7 @@ function workerLook(worker: WorkerView): { bar: string; icon: IconName; spin: bo
               :class="[workerLook(w).color, workerLook(w).spin ? 'animate-spin' : '']"
             />
           </div>
+          <div v-if="more > 0" data-more class="text-[11px] text-gray-400">+{{ more }} more {{ more === 1 ? "worker" : "workers" }}</div>
         </div>
         <div v-else-if="workers.length === 1" class="mt-2 flex items-center gap-1.5 text-[11px] text-gray-500" :title="workerTitle(workers[0]!)">
           <AppIcon name="server" class="size-3 shrink-0" />

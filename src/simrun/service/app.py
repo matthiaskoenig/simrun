@@ -221,7 +221,8 @@ class WorkerView(BaseModel):
             `done`.
         attempts: The attempts of the worker (reports, and the running one).
         processes: The processes of its pool, None before a report.
-        units_done: The units its reports count as done.
+        units_done: The distinct units its `unit_done` lines in the progress
+            file of the task name, live and over all its attempts.
         units_claimed: The units it holds claimed now.
         peak_memory_gb: The peak memory of the last report.
         memory_limit_gb: The memory limit of the last report.
@@ -399,6 +400,34 @@ def _gb(value: int | None) -> float | None:
 def _pending(record: RunRecord) -> bool:
     """Whether a run still has to release its node or cancel its workflow."""
     return record.pending_release is not None or record.pending_cancel
+
+
+def _units_by_worker(path: Path) -> dict[str, set[int]]:
+    """The distinct units of the `unit_done` lines of a progress file, per worker.
+
+    A worker appends a line per unit it completes, as it completes it, so the
+    count is live; a unit done twice (a lost claim, a retried attempt) counts
+    once. Other lines, and lines which are no JSON (a line being written),
+    are skipped.
+    """
+    units: dict[str, set[int]] = {}
+    try:
+        with path.open("rb") as handle:
+            for line in handle:
+                try:
+                    value = json.loads(line)
+                except ValueError:
+                    continue
+                if (
+                    isinstance(value, dict)
+                    and value.get("event") == "unit_done"
+                    and isinstance(value.get("worker"), str)
+                    and isinstance(value.get("unit"), int)
+                ):
+                    units.setdefault(value["worker"], set()).add(value["unit"])
+    except FileNotFoundError:
+        pass
+    return units
 
 
 def _last_line(path: Path) -> dict[str, Any] | None:
@@ -733,6 +762,7 @@ class _Service:
         claims: dict[str, list[int]] = {}
         if units is not None and (task_dir / UNITS_DIR).is_dir():
             claims = Ledger(task_dir / UNITS_DIR, units).claims()
+        done = _units_by_worker(task_dir / PROGRESS_FILE)
         views = []
         for worker in sorted(reports.keys() | live.keys()):
             attempts = reports.get(worker, {})
@@ -754,7 +784,7 @@ class _Service:
                     state=state,
                     attempts=len(attempts) + (1 if state == "running" else 0),
                     processes=last.processes if last else None,
-                    units_done=sum(len(r.units_done) for r in attempts.values()),
+                    units_done=len(done.get(worker, ())),
                     units_claimed=len(claims.get(worker, [])),
                     peak_memory_gb=_gb(last.peak_memory_bytes if last else None),
                     memory_limit_gb=_gb(last.memory_limit_bytes if last else None),

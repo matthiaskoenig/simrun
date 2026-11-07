@@ -1,7 +1,7 @@
 <!--
   The bar of a run above its canvas, the canvas header of the mockup in its
   execution mode: the run, who submitted it, when it started, its state and
-  the share of its units done; "Stop" cancels a run which is not over, after a
+  its progress (`lib/progress.ts`); "Stop" cancels a run which is not over, after a
   confirmation in the bar itself.
 -->
 <script setup lang="ts">
@@ -9,6 +9,7 @@ import { computed, nextTick, ref, watch } from "vue";
 import { api, ApiError, type RunRecord, type TaskProgress } from "../api/client";
 import { ACTIVE_STATES } from "../lib/filters";
 import { formatTime } from "../lib/format";
+import { FINISHED_TASK_STATES, runPercent } from "../lib/progress";
 import AppIcon from "./AppIcon.vue";
 import StatusPill from "./StatusPill.vue";
 
@@ -17,17 +18,20 @@ const props = defineProps<{ record: RunRecord; progress: Record<string, TaskProg
 const agent = computed(() => props.record.agent !== null);
 const who = computed(() => props.record.agent ?? props.record.submitted_by);
 
-// the units of every task with a ledger; a task without one has no units to count
-const units = computed(() => {
+// the progress of the run as its card in the list counts it, with the ledgers of its tasks
+const percent = computed(() => runPercent(props.record.tasks, props.progress));
+const detail = computed(() => {
+  const states = Object.values(props.record.tasks);
+  const parts = [`${states.filter((s) => FINISHED_TASK_STATES.has(s)).length} of ${states.length} tasks done`];
   let done = 0;
   let total = 0;
   for (const progress of Object.values(props.progress)) {
     done += progress.counts?.done ?? 0;
     total += progress.counts?.total ?? 0;
   }
-  return { done, total };
+  if (total > 0) parts.push(`${done.toLocaleString("en-US")} of ${total.toLocaleString("en-US")} units`);
+  return parts.join(", ");
 });
-const percent = computed(() => Math.floor((units.value.done / units.value.total) * 100));
 
 const stoppable = computed(() => ACTIVE_STATES.has(props.record.state));
 const confirming = ref(false);
@@ -83,10 +87,10 @@ watch(stoppable, (value) => {
       <span data-started class="shrink-0 text-gray-500">started {{ formatTime(record.created) }}</span>
       <StatusPill :status="record.state" small />
       <span
-        v-if="record.state === 'running' && units.total > 0"
+        v-if="record.state === 'running'"
         data-percent
         class="shrink-0 text-gray-600 tabular-nums"
-        :title="`${units.done.toLocaleString('en-US')} of ${units.total.toLocaleString('en-US')} units done`"
+        :title="detail"
         >{{ percent }} %</span
       >
     </div>

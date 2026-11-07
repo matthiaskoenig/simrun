@@ -23,6 +23,16 @@ describe("RunList", () => {
     expect(wrapper.get('[data-run="r4"] [data-status]').text()).toBe("succeeded");
   });
 
+  it("shows the progress of a running run of several tasks as its run bar counts it, without ledgers", () => {
+    const bar = mountList().get('[data-run="r6"] [data-progress]');
+    expect(bar.attributes("title")).toBe("0 of 2 tasks done");
+    expect(bar.get("div").attributes("style")).toContain("width: 0%");
+    const run = { ...runs[0]!, tasks: { fit: "done", sobol: "running", report: "waiting", plot: "skipped" } as const };
+    const two = mount(RunList, { props: { runs: [run], selected: null, identity: mk } });
+    expect(two.get("[data-progress] div").attributes("style")).toContain("width: 50%");
+    expect(mountList().find('[data-run="r5"] [data-progress]').exists()).toBe(false);
+  });
+
   it("shows the message of a failed run in red", () => {
     const note = mountList().get('[data-run="r1"] [data-note]');
     expect(note.text()).toBe("task squares: out of memory, 8 of 8 GiB");
