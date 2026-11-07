@@ -379,3 +379,19 @@ def test_openapi_document_has_the_schemas_of_the_frontend():
         "Identity",
         "OutputFile",
     } <= names
+
+
+def test_run_list_survives_a_ledger_which_vanishes(service):
+    run_id = service.submit(workflow=service.workflow(n=40))["id"]
+    units = service.run_dir(run_id) / "tasks" / "squares" / "units"
+    Ledger.create(units, 40)
+    service.backend.start(service.name(run_id))
+    service.controller.reconcile()
+    # a run cleaned up while the list is read: the units directory is still
+    # there, the directories of the ledger are gone
+    for state in ("pending", "claimed", "done"):
+        (units / state).rename(units.parent / f"gone-{state}")
+    web = service.client.app.state.service
+    items = {i.id: i for i in web.run_items(None, None, None, None, 200)}
+    assert items[run_id].state == "running"
+    assert items[run_id].progress == 0.0  # a task without a ledger counts nothing

@@ -748,12 +748,21 @@ class _Service:
         return self.store.run_dir(record.id) / "tasks" / task_id
 
     def counts(self, record: RunRecord, task_id: str) -> LedgerCounts | None:
-        """The ledger counts of a task, None for a task without a ledger."""
+        """The ledger counts of a task, None for a task without a ledger.
+
+        A ledger which vanishes while it is read (a run cleaned up, the store
+        unreachable for a moment) counts as none, so one run does not break the
+        list of runs or a stream.
+        """
         task_dir = self.task_dir(record, task_id)
         units = record.plans.get(task_id, {}).get("units")
         if units is None or not (task_dir / UNITS_DIR).is_dir():
             return None
-        return Ledger(task_dir / UNITS_DIR, units).counts()
+        try:
+            return Ledger(task_dir / UNITS_DIR, units).counts()
+        except OSError as e:
+            logger.warning("the ledger of %s/%s: %s", record.id, task_id, e)
+            return None
 
     def progress(self, record: RunRecord) -> dict[str, TaskProgress]:
         """The ledger counts and the first and the last progress line of every task."""
