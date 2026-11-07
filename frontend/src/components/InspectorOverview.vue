@@ -46,7 +46,7 @@ const tiles = computed(() => {
   const result: { label: string; value: string }[] = [];
   const counts = props.progress?.counts;
   if (counts) result.push({ label: "Units", value: `${number(counts.done)} / ${number(counts.total)}` });
-  const times = taskTimes(props.record, props.state, props.progress, now.value);
+  const times = taskTimes(props.record, props.task, props.state, props.progress, now.value);
   result.push({ label: "Elapsed", value: times.elapsed === null ? "-" : formatDuration(times.elapsed) });
   if (counts) result.push({ label: "Remaining", value: times.remaining === null ? "-" : `≈ ${formatDuration(times.remaining)}` });
   return [...result, ...metrics(props.progress?.last)];

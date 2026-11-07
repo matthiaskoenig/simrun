@@ -2,16 +2,18 @@
  * The numbers of the inspector of a task: its elapsed and remaining time, the
  * metrics of its last progress line and the resources of its plan.
  *
- * The start of a task is the time of the first line of its progress file (the
- * first unit done) and, before its first unit or for a task without progress
- * lines, the time the environment of its run was built. The time to the first
- * unit is thus left out once a task has one, which keeps the units per second
- * those of the work itself. A task which is over stops its clock at its last
- * progress line; one without lines shows no elapsed time, since its end is not
- * known (the end of its run is not its own). The remaining time is the units
- * left at the units per second since the start, unknown before the first unit.
+ * The start of a task without inputs is the time the environment of its run
+ * was built, when its pods are created; the start of a task with inputs, which
+ * waits for the tasks before it, is the time of the first line of its progress
+ * file (its first unit done), unknown before it: neither start changes once
+ * known, so the clock never runs backwards, and the age of the run is never
+ * taken for the time of a task. A task which is over stops its clock at its
+ * last progress line; one without lines shows no elapsed time, since its end
+ * is not known (the end of its run is not its own). The remaining time is the
+ * units left at the units per second since the start, unknown before the
+ * first unit.
  */
-import type { RunRecord, TaskProgress, TaskState, WorkerView } from "../api/client";
+import type { RunRecord, TaskProgress, TaskSpec, TaskState, WorkerView } from "../api/client";
 import { formatCores, formatGb } from "./format";
 import { OVER_TASK_STATES } from "./workers";
 
@@ -38,15 +40,24 @@ export interface TaskTimes {
   remaining: number | null;
 }
 
-/** The times of a task in the state `state` at `now` (ms). */
-export function taskTimes(record: RunRecord, state: TaskState, progress: TaskProgress | undefined, now: number): TaskTimes {
+const UNKNOWN: TaskTimes = { elapsed: null, remaining: null };
+
+/** The times of the task `task` of `record` in the state `state` at `now` (ms). */
+export function taskTimes(
+  record: RunRecord,
+  task: TaskSpec,
+  state: TaskState,
+  progress: TaskProgress | undefined,
+  now: number,
+): TaskTimes {
   const first = lineTime(progress?.first);
-  if (first === null && NOT_STARTED.has(state)) return { elapsed: null, remaining: null };
-  const start = first ?? parse(record.built);
-  if (start === null) return { elapsed: null, remaining: null };
+  if (first === null && NOT_STARTED.has(state)) return UNKNOWN;
+  const root = Object.keys(task.inputs ?? {}).length === 0;
+  const start = root ? parse(record.built) : first;
+  if (start === null) return UNKNOWN;
   if (OVER_TASK_STATES.has(state)) {
     const end = lineTime(progress?.last);
-    return { elapsed: end === null ? null : Math.max(0, (end - start) / 1000), remaining: null };
+    return end === null ? UNKNOWN : { elapsed: Math.max(0, (end - start) / 1000), remaining: null };
   }
   const elapsed = Math.max(0, (now - start) / 1000);
   const counts = progress?.counts;

@@ -25,7 +25,7 @@ function worker(fields: Partial<WorkerView> & Pick<WorkerView, "worker">): Worke
 const record = (fields: Partial<RunRecord> = {}): RunRecord =>
   runRecord({
     id: "r7",
-    built: "2026-11-07T13:40:00Z",
+    built: "2026-11-07T13:50:00Z",
     workflow: {
       name: "squares",
       split: "fastest",
@@ -46,10 +46,11 @@ const record = (fields: Partial<RunRecord> = {}): RunRecord =>
     ...fields,
   });
 
-// 750 of 3000 units in the 10 min since the first unit: 1.25 units/s, 1800 s to go
+// 750 of 3000 units in the 10 min since the build of the run, the start of
+// this task without inputs: 1.25 units/s, 1800 s to go
 const running: TaskProgress = {
   counts: { pending: 2200, claimed: 50, done: 750, total: 3000 },
-  first: { time: "2026-11-07T13:50:00+00:00", worker: "squares-w0", event: "unit_done", unit: 0 },
+  first: { time: "2026-11-07T13:50:30+00:00", worker: "squares-w0", event: "unit_done", unit: 0 },
   last: { time: "2026-11-07T13:59:58+00:00", worker: "squares-w1", event: "unit_done", unit: 812, index: 812, cost: 1.09312, evaluations: 4200 },
 };
 
@@ -115,13 +116,27 @@ describe("Inspector of a task", () => {
     ]);
   });
 
-  it("counts the time from the build of the run before the first unit, with no remaining time", () => {
+  it("counts the time of a task without inputs from the build of the run, also before its first unit", () => {
     const wrapper = mountInspector({
       progress: { squares: { counts: { pending: 3000, claimed: 9, done: 0, total: 3000 }, first: null, last: null } },
     });
     expect(tile(wrapper, "Units")).toBe("0 / 3,000");
-    expect(tile(wrapper, "Elapsed")).toBe("20 min");
+    expect(tile(wrapper, "Elapsed")).toBe("10 min");
     expect(tile(wrapper, "Remaining")).toBe("-");
+  });
+
+  it("counts the time of a task with inputs from its first progress line, unknown before it", () => {
+    const tasks = { squares: "done", plot: "running" } as const;
+    const before = mountInspector({ record: record({ tasks }), task: "plot", progress: { plot: { counts: null, first: null, last: null } } });
+    expect(tile(before, "Elapsed")).toBe("-");
+    const first = { time: "2026-11-07T13:55:00+00:00", event: "unit_done", unit: 0 };
+    const after = mountInspector({
+      record: record({ tasks }),
+      task: "plot",
+      progress: { plot: { counts: { pending: 10, claimed: 0, done: 10, total: 20 }, first, last: first } },
+    });
+    expect(tile(after, "Elapsed")).toBe("5 min");
+    expect(tile(after, "Remaining")).toBe("≈ 5 min");
   });
 
   it("stops the clock of a task which is over at its last unit", () => {
@@ -226,6 +241,25 @@ describe("Inspector of a task", () => {
     wrapper.unmount();
     await vi.advanceTimersByTimeAsync(10_000);
     expect(logs).toHaveBeenCalledTimes(2);
+  });
+
+  it("reads the logs one request at a time, so that slow logs still show", async () => {
+    const logs = vi
+      .spyOn(api, "logs")
+      .mockImplementation(() => new Promise((resolve) => setTimeout(() => resolve("slow\n"), 6000)));
+    const wrapper = mountInspector({});
+    await wrapper.get('[data-tab="logs"]').trigger("click");
+    await vi.advanceTimersByTimeAsync(5000);
+    // no second request while the first one is open
+    expect(logs).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(wrapper.get("[data-logs]").text()).toBe("slow");
+    // the next one 5 s after the answer
+    await vi.advanceTimersByTimeAsync(4999);
+    expect(logs).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(logs).toHaveBeenCalledTimes(2);
+    wrapper.unmount();
   });
 
   it("keeps the logs at their bottom as lines come, unless the user scrolled up", async () => {
