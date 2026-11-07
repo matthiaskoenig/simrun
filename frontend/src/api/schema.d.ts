@@ -267,6 +267,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/task-types": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Task Types */
+        get: operations["task_types_task_types_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/usage": {
         parameters: {
             query?: never;
@@ -295,6 +312,23 @@ export interface paths {
         put?: never;
         /** Validate */
         post: operations["validate_validate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflows/yaml": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Workflow To Yaml */
+        post: operations["workflow_to_yaml_workflows_yaml_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -375,6 +409,20 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * HintView
+         * @description The default resources of a task type.
+         */
+        HintView: {
+            /** Gpus */
+            gpus: number;
+            /** Memory Base Gb */
+            memory_base_gb: number;
+            /** Memory Per Worker Gb */
+            memory_per_worker_gb: number;
+            /** Scratch Gb */
+            scratch_gb: number;
         };
         /**
          * Identity
@@ -883,6 +931,31 @@ export interface components {
          * @enum {string}
          */
         TaskState: "waiting" | "queued" | "running" | "preempted" | "retrying" | "done" | "failed" | "skipped";
+        /**
+         * TaskTypeView
+         * @description A task type with the JSON Schema of its settings, for the editor.
+         */
+        TaskTypeView: {
+            /** Cost Setting */
+            cost_setting: string | null;
+            /** Has Plan */
+            has_plan: boolean;
+            hint: components["schemas"]["HintView"];
+            /** Inputs */
+            inputs: string[];
+            /** Name */
+            name: string;
+            /** Outputs */
+            outputs: string[];
+            /** Settings Schema */
+            settings_schema: {
+                [key: string]: unknown;
+            };
+            /** Splittable */
+            splittable: boolean;
+            /** Uses Cores */
+            uses_cores: boolean;
+        };
         /**
          * Usage
          * @description Bytes of the run store per run and per group (`""` without a group).
@@ -1520,6 +1593,26 @@ export interface operations {
             };
         };
     };
+    task_types_task_types_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TaskTypeView"][];
+                };
+            };
+        };
+    };
     usage_usage_get: {
         parameters: {
             query?: never;
@@ -1562,6 +1655,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ValidationResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    workflow_to_yaml_workflows_yaml_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["Workflow"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/plain": string;
                 };
             };
             /** @description Validation Error */
