@@ -25,6 +25,7 @@ Every command takes `--json` (except `logs`, which prints the logs as text) and 
 | `simrun status RUN` | the state of a run and its tasks with their progress |
 | `simrun list` | the runs, filtered by group, agent, state and owner |
 | `simrun logs RUN TASK` | the logs of the pods of a task |
+| `simrun edit WORKFLOW` | serve the Editor of the web app for a workflow file: saves go into the file, runs use the working trees |
 | `simrun estimate WORKFLOW` | the plan and the expected duration of every task of a submission |
 | `simrun compare RUN RUN...` | the provenance and the summaries of the tasks of runs side by side |
 | `simrun cancel RUN` | cancel a run |
@@ -45,6 +46,19 @@ simrun submit fit.yaml --source model=~/git/pkdb_models --source sbmlsim=~/git/s
 | `--reserve NODE` | reserve a node for the run |
 
 The client copies every working tree with its uncommitted changes into `snapshots/<name>/` of the store and sends its provenance, see [Snapshots and environments](concepts.md#snapshots-and-environments).
+
+### edit
+
+```bash
+simrun edit fit.yaml --source model=~/git/pkdb_models --source sbmlsim=~/git/sbmlsim
+```
+
+| option | meaning |
+| --- | --- |
+| `--source NAME=PATH` | a source, as for `submit`; snapshotted when the session opens and at every run |
+| `--group GROUP` | the group of the runs started from the Editor which name none |
+
+The command opens an edit session in the service, prints the link of the [Editor](web-app.md#the-editor) and runs until Ctrl-C: it writes the saves of the browser into the file, runs the workflow of the browser as `submit` does, and sends a change of the file or of the working trees to the browser. A file which does not exist is a new workflow.
 
 ### wait
 
