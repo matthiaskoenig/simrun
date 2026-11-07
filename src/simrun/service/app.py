@@ -1358,12 +1358,16 @@ def create_app(
     def answer_or_session(
         session_id: str, request_id: str
     ) -> tuple[EditResult | None, EditSession]:
-        """The answer to a request, none while there is none, and its session."""
-        result = service.edits.result(session_id, request_id)
+        """The answer to a request, none while there is none, and its session.
+
+        The session is read first: the command posts a result before it closes, so
+        a session read as closed and no result means no answer will come.
+        """
         try:
-            return result, service.edits.read(session_id)
+            session = service.edits.read(session_id)
         except KeyError:
             raise HTTPException(404, "the edit session is gone") from None
+        return service.edits.result(session_id, request_id), session
 
     async def ask(session_id: str, request_id: str) -> EditResult:
         """Wait for the answer of the command to a request, then drop the request.

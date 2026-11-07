@@ -337,3 +337,38 @@ def test_a_refusal_needs_an_error_status(service):
         f"/edits/{sid}/requests/{request.id}/result", {"ok": False, "status": 200}
     )
     assert answer.status_code == 422
+
+
+def test_a_result_posted_just_before_the_close_is_the_answer(service, monkeypatch):
+    session = open_edit(service)
+    sid = session["id"]
+    edits = service.client.app.state.service.edits
+    acted = []
+
+    def command_answers_and_closes():
+        found = edits.requests(sid)
+        if found and not acted:
+            acted.append(1)
+            edits.answer(sid, found[0].id, EditResult(ok=True, file_sha256="h2"))
+            edits.close(sid)
+
+    real_read, real_result = edits.read, edits.result
+
+    def read(session_id):
+        value = real_read(session_id)
+        command_answers_and_closes()  # between the two reads of `ask`
+        return value
+
+    def result(session_id, request_id):
+        value = real_result(session_id, request_id)
+        command_answers_and_closes()
+        return value
+
+    monkeypatch.setattr(edits, "read", read)
+    monkeypatch.setattr(edits, "result", result)
+    response = service.post(
+        f"/edits/{sid}/save", {"workflow": service.workflow(), "base": "h1"}
+    )
+    assert acted == [1]
+    assert response.status_code == 200, response.text
+    assert response.json()["file_sha256"] == "h2"
