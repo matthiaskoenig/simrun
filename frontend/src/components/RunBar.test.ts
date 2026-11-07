@@ -10,9 +10,10 @@ const progress: Record<string, TaskProgress> = {
   b: { counts: { pending: 0, claimed: 0, done: 0, total: 250 }, last: null },
   plot: { counts: null, last: null },
 };
+const tasks: RunRecord["tasks"] = { a: "running", b: "running", plot: "waiting", prep: "done" };
 
-function mountBar(fields: Partial<RunRecord> = {}) {
-  return mount(RunBar, { props: { record: runRecord(fields), progress }, attachTo: document.body });
+function mountBar(fields: Partial<RunRecord> = {}, events: Record<string, TaskProgress> = progress) {
+  return mount(RunBar, { props: { record: runRecord({ tasks, ...fields }), progress: events }, attachTo: document.body });
 }
 
 describe("RunBar", () => {
@@ -22,8 +23,16 @@ describe("RunBar", () => {
     expect(wrapper.get("[data-who]").text()).toBe("mk");
     expect(wrapper.get("[data-started]").text()).toMatch(/^started /);
     expect(wrapper.get("[data-status]").text()).toBe("running");
-    expect(wrapper.get("[data-percent]").text()).toBe("31 %");
-    expect(wrapper.get("[data-percent]").attributes("title")).toBe("390 of 1,250 units done");
+    // the mean of 0.39, 0, 0 and 1 over the four tasks, as the run card counts
+    expect(wrapper.get("[data-percent]").text()).toBe("34 %");
+    expect(wrapper.get("[data-percent]").attributes("title")).toBe("1 of 4 tasks done, 390 of 1,250 units");
+    wrapper.unmount();
+  });
+
+  it("shows no 100 % while a task is not over, even with every unit done", () => {
+    const done = { counts: { pending: 0, claimed: 0, done: 1000, total: 1000 }, last: null };
+    const wrapper = mountBar({ tasks: { a: "running" } }, { a: done });
+    expect(wrapper.get("[data-percent]").text()).toBe("99 %");
     wrapper.unmount();
   });
 

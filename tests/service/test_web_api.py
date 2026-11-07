@@ -75,6 +75,23 @@ def test_servers(service):
     assert by_name["srv-03"]["pods"] == []  # the workflow is not started
 
 
+def _progress(task_dir: Path, *units: tuple[str, int]) -> None:
+    lines = [
+        json.dumps(
+            {
+                "time": "2026-11-07T00:00:00+00:00",
+                "worker": w,
+                "event": "unit_done",
+                "unit": u,
+            }
+        )
+        for w, u in units
+    ]
+    task_dir.mkdir(parents=True, exist_ok=True)
+    with (task_dir / "progress.jsonl").open("a") as handle:
+        handle.write("".join(f"{line}\n" for line in lines))
+
+
 def test_workers_running_and_done(service):
     workflow = service.workflow(n=40)
     record = service.submit(workflow=workflow)
@@ -92,6 +109,7 @@ def test_workers_running_and_done(service):
         ),
         task_dir,
     )
+    _progress(task_dir, ("squares-w0", 0), ("squares-w0", 1), ("squares-w0", 2))
     ledger = Ledger.create(task_dir / "units", 40)
     assert ledger.claim("squares-w1") == 0
     service.backend.place(
@@ -121,6 +139,22 @@ def test_workers_running_and_done(service):
     assert running["units_claimed"] == 1
     assert running["processes"] is None
     assert running["attempts"] == 1
+
+
+def test_workers_count_their_units_from_the_progress_of_the_task(service):
+    run_id = service.submit(workflow=service.workflow(n=40))["id"]
+    task_dir = service.run_dir(run_id) / "tasks" / "squares"
+    # a running worker without a report: its lines count, a unit done twice once
+    _progress(task_dir, ("squares-w0", 4), ("squares-w0", 5), ("squares-w0", 4))
+    _progress(task_dir, ("squares-w0", 6), ("squares-w1", 7))
+    with (task_dir / "progress.jsonl").open("a") as handle:
+        handle.write('{"time": "t", "loss": 0.5}\n{"worker": "squares-w0", "ev')
+    service.backend.place(_placement(service, run_id))
+    service.backend.start(service.name(run_id))
+    (view,) = service.get(f"/runs/{run_id}/tasks/squares/workers").json()
+    assert view["worker"] == "squares-w0"
+    assert view["state"] == "running"
+    assert view["units_done"] == 3
 
 
 def test_workers_failed_by_oom(service):

@@ -64,7 +64,7 @@ describe("TaskNode", () => {
     expect(mountNode({ progress: null }).find("[data-progress]").exists()).toBe(false);
   });
 
-  it("shows a mini bar per worker of a split task with its server", () => {
+  it("shows a mini bar per worker of a split task with its server, the running first", () => {
     const wrapper = mountNode({
       progress: counts(1500, 3000),
       workers: [
@@ -74,29 +74,48 @@ describe("TaskNode", () => {
       ],
     });
     const rows = wrapper.findAll("[data-worker]");
-    expect(rows.map((r) => r.attributes("data-worker"))).toEqual(["w0", "w1", "w2"]);
-    expect(rows.map((r) => r.get("[data-node]").text())).toEqual(["node-a", "node-b", "pending"]);
-    expect(rows[1]?.get("[data-bar]").classes()).toContain("bg-emerald-500");
+    expect(rows.map((r) => r.attributes("data-worker"))).toEqual(["w0", "w2", "w1"]);
+    expect(rows.map((r) => r.get("[data-node]").text())).toEqual(["node-a", "pending", "node-b"]);
+    expect(rows[2]?.get("[data-bar]").classes()).toContain("bg-emerald-500");
     expect(wrapper.find("[data-stack]").exists()).toBe(true);
+    expect(wrapper.find("[data-more]").exists()).toBe(false);
   });
 
-  it("gives the running workers the units their reports do not count yet, and none to a worker without a server", () => {
-    // reports count the units of an attempt when it ends: the 600 done units are those of the running workers
+  it("draws the share of the units of the task each worker has done", () => {
     const wrapper = mountNode({
-      progress: counts(600, 3000),
+      progress: counts(900, 3000),
       workers: [
-        worker({ worker: "w0", node: "node-a" }),
-        worker({ worker: "w1", node: "node-b" }),
-        worker({ worker: "w2", node: null }),
+        worker({ worker: "w0", node: "node-a", units_done: 600 }),
+        worker({ worker: "w1", node: "node-b", units_done: 300 }),
+        worker({ worker: "w2", node: "node-c", state: "done" }),
       ],
     });
-    const width = (i: number) => wrapper.findAll("[data-worker]")[i]?.get("[data-bar]").attributes("style");
-    expect(width(0)).toContain("width: 20%");
-    expect(width(1)).toContain("width: 20%");
-    expect(width(2)).toContain("width: 0%");
-    const pending = wrapper.findAll("[data-worker]")[2]!;
+    const width = (id: string) => wrapper.get(`[data-worker="${id}"] [data-bar]`).attributes("style");
+    expect(width("w0")).toContain("width: 20%");
+    expect(width("w1")).toContain("width: 10%");
+    // a worker which ended without a unit (an extra which found nothing pending) has done nothing
+    expect(width("w2")).toContain("width: 0%");
+    expect(wrapper.get('[data-worker="w0"]').attributes("title")).toBe("w0 on node-a, 600 units done");
+  });
+
+  it("marks a worker which waits for a server", () => {
+    const wrapper = mountNode({
+      progress: counts(0, 3000),
+      workers: [worker({ worker: "w0", node: "node-a" }), worker({ worker: "w1", node: null })],
+    });
+    const pending = wrapper.get('[data-worker="w1"]');
     expect(pending.get("svg").classes()).not.toContain("animate-spin");
-    expect(pending.attributes("title")).toBe("w2 waits for a server");
+    expect(pending.attributes("title")).toBe("w1 waits for a server");
+  });
+
+  it("shows at most three workers, the running, then the failed, then the done, and how many more there are", () => {
+    const states: WorkerView["state"][] = ["done", "done", "running", "failed", "done", "running", "done", "done"];
+    const wrapper = mountNode({
+      progress: counts(2000, 3000),
+      workers: states.map((state, i) => worker({ worker: `w${i}`, node: `node-${i}`, state, units_done: 250 })),
+    });
+    expect(wrapper.findAll("[data-worker]").map((r) => r.attributes("data-worker"))).toEqual(["w2", "w5", "w3"]);
+    expect(wrapper.get("[data-more]").text()).toBe("+5 more workers");
   });
 
   it("shows the workers of a task which is over as stopped, whatever their last state", () => {

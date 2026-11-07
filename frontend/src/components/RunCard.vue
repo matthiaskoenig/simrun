@@ -1,27 +1,27 @@
 <!-- A run of the list: who submitted it, its workflow, its id, group and time, its state and its message. -->
 <script setup lang="ts">
 import { computed } from "vue";
-import type { RunItem, TaskState } from "../api/client";
+import type { RunItem } from "../api/client";
 import { formatDuration, formatTime, initials } from "../lib/format";
+import { FINISHED_TASK_STATES, runProgress } from "../lib/progress";
 import AppIcon from "./AppIcon.vue";
 import StatusPill from "./StatusPill.vue";
 
 const props = defineProps<{ run: RunItem; selected: boolean }>();
 defineEmits<{ select: [id: string] }>();
 
-const FINISHED: ReadonlySet<TaskState> = new Set<TaskState>(["done", "skipped"]);
-
 const who = computed(() => props.run.agent ?? props.run.submitted_by);
 
 // the ids of simrun are long (`20261107-002755-17eb1c`): they get a line of their own
 const meta = computed(() => [props.run.group, who.value, formatTime(props.run.created)].filter((part) => part !== null).join(" · "));
 
-// a run of several tasks shows the share of its tasks which are over; the
-// progress within a task comes with the stream of the run (the canvas)
+// a run of several tasks shows its progress as its run bar counts it, from
+// the states of its tasks alone: the ledgers come with the stream of the run
 const tasks = computed(() => {
   const states = Object.values(props.run.tasks);
-  return { total: states.length, finished: states.filter((s) => FINISHED.has(s)).length };
+  return { total: states.length, finished: states.filter((s) => FINISHED_TASK_STATES.has(s)).length };
 });
+const progress = computed(() => runProgress(props.run.tasks));
 
 const note = computed(() => {
   if (props.run.message) return props.run.message;
@@ -64,12 +64,13 @@ const note = computed(() => {
     </div>
     <div
       v-if="run.state === 'running' && tasks.total > 1"
+      data-progress
       class="mt-1.5 h-1 overflow-hidden rounded-full bg-gray-200"
       :title="`${tasks.finished} of ${tasks.total} tasks done`"
     >
       <div
         class="h-full rounded-full bg-blue-500 transition-all duration-300"
-        :style="{ width: ((tasks.finished / tasks.total) * 100).toFixed(1) + '%' }"
+        :style="{ width: (progress * 100).toFixed(1) + '%' }"
       ></div>
     </div>
     <div

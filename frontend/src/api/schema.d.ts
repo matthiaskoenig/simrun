@@ -903,7 +903,8 @@ export interface components {
          *             `done`.
          *         attempts: The attempts of the worker (reports, and the running one).
          *         processes: The processes of its pool, None before a report.
-         *         units_done: The units its reports count as done.
+         *         units_done: The distinct units its `unit_done` lines in the progress
+         *             file of the task name, live and over all its attempts.
          *         units_claimed: The units it holds claimed now.
          *         peak_memory_gb: The peak memory of the last report.
          *         memory_limit_gb: The memory limit of the last report.
