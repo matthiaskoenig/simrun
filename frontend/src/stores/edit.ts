@@ -81,6 +81,8 @@ export function useEdit(): Edit {
   // the sources a run was made with, used while there is no session
   const runSources = shallowRef<SourceProvenance[]>([]);
   let sessionId: string | null = null;
+  // the hash on disk which set `changedOnDisk`: the command sends the hash of a save before the save answers
+  let diskHash: string | null = null;
   let timer: ReturnType<typeof setTimeout> | undefined;
   // a later validation makes the answer of an earlier one stale
   let generation = 0;
@@ -145,6 +147,7 @@ export function useEdit(): Edit {
     loaded.value += 1;
     isDirty.value = false;
     changedOnDisk.value = false;
+    diskHash = null;
     schedule();
   }
 
@@ -152,8 +155,10 @@ export function useEdit(): Edit {
     session.value = next;
     if (draft.value === null) take(next);
     else if (next.file_sha256 !== base.value) {
-      if (isDirty.value) changedOnDisk.value = true;
-      else take(next);
+      if (isDirty.value) {
+        changedOnDisk.value = true;
+        diskHash = next.file_sha256;
+      } else take(next);
     }
   }
 
@@ -171,6 +176,7 @@ export function useEdit(): Edit {
     group.value = null;
     isDirty.value = false;
     changedOnDisk.value = false;
+    diskHash = null;
     messages.value = [];
     valid.value = null;
     estimate.value = {};
@@ -212,7 +218,10 @@ export function useEdit(): Edit {
       return;
     }
     if (mine !== opening) return;
-    draft.value = clone(record.workflow);
+    const workflow = clone(record.workflow);
+    // a reservation given at the submission and not in the workflow: the rerun keeps it, editable in the inspector
+    if (record.reserve && !workflow.reserve) workflow.reserve = record.reserve;
+    draft.value = workflow;
     group.value = record.group ?? null;
     runSources.value = record.sources;
     loaded.value += 1;
@@ -245,9 +254,11 @@ export function useEdit(): Edit {
       session.value = saved;
       base.value = saved.file_sha256;
       // an edit made while the save was in flight is not on disk: the draft stays dirty
-      if (draft.value === workflow) {
-        isDirty.value = false;
+      if (draft.value === workflow) isDirty.value = false;
+      // the file holds this save: a change on disk flagged by its own hash, or overwritten by force, is gone
+      if (draft.value === workflow || force || diskHash === saved.file_sha256) {
         changedOnDisk.value = false;
+        diskHash = null;
       }
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
