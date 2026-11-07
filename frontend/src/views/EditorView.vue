@@ -46,7 +46,11 @@ onBeforeUnmount(() => controller?.abort());
     />
     <div class="flex min-h-0 flex-1">
       <aside data-palette class="w-[260px] shrink-0 border-r border-gray-200 bg-white"></aside>
-      <main data-canvas class="relative flex min-w-0 flex-1 flex-col bg-gray-50"></main>
+      <main data-canvas class="relative flex min-w-0 flex-1 flex-col bg-gray-50">
+        <p v-if="edit.loadError.value" data-load-error class="m-4 rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 ring-1 ring-red-200">
+          {{ edit.loadError.value }}
+        </p>
+      </main>
       <aside data-inspector class="w-[352px] shrink-0 border-l border-gray-200 bg-white"></aside>
     </div>
   </div>

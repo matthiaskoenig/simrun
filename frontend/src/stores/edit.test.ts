@@ -199,16 +199,92 @@ describe("useEdit", () => {
     controller.abort();
   });
 
-  it("saves anyway with the base of the disk and force", async () => {
-    const mock = mockFetch(sse("edit", session({ file_sha256: "h2" })), (path) =>
-      path === "/edits/abc/save" ? reply(session({ file_sha256: "h4" })) : reply({ ok: true, errors: [] }),
-    );
+  it("saves anyway with the hash the service has now, not the one of the last event", async () => {
+    const mock = mockFetch(sse("edit", session()), (path) => {
+      if (path === "/edits/abc/save") return reply(session({ file_sha256: "h4" }));
+      if (path === "/edits/abc") return reply(session({ file_sha256: "h2" }));
+      return reply({ ok: true, errors: [] });
+    });
     const { edit, controller } = open();
     await vi.advanceTimersByTimeAsync(0);
     await edit.save(true);
     expect(sent(calls(mock, "/edits/abc/save")[0]!)).toMatchObject({ base: "h2", force: true });
     expect(edit.base.value).toBe("h4");
     controller.abort();
+  });
+
+  it("stays dirty when the draft changed while the save was in flight", async () => {
+    let release: (r: Response) => void = () => undefined;
+    mockFetch(sse("edit", session()), (path) =>
+      path === "/edits/abc/save" ? new Promise<Response>((resolve) => (release = resolve)) : reply({ ok: true, errors: [] }),
+    );
+    const { edit, controller } = open();
+    await vi.advanceTimersByTimeAsync(0);
+    edit.change(workflow("first"));
+    const saving = edit.save();
+    await vi.advanceTimersByTimeAsync(0);
+    edit.change(workflow("second"));
+    release(reply(session({ file_sha256: "h3", workflow: workflow("first") })));
+    await saving;
+    expect(edit.base.value).toBe("h3");
+    expect(edit.dirty.value).toBe(true);
+    expect(edit.draft.value?.name).toBe("second");
+    controller.abort();
+  });
+
+  it("tells valid, invalid and not validated apart", async () => {
+    let answer: () => Response = () => reply({ ok: true, errors: [] });
+    mockFetch(sse("edit", session()), (path) => (path === "/validate" ? answer() : reply({})));
+    const { edit, controller } = open();
+    expect(edit.valid.value).toBeNull();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(edit.valid.value).toBe(true);
+    answer = () => reply({ ok: false, errors: ["duplicate name"] });
+    edit.change(workflow("a"));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(edit.valid.value).toBe(false);
+    answer = () => reply({ detail: "boom" }, 500);
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    edit.change(workflow("b"));
+    await vi.advanceTimersByTimeAsync(500);
+    expect(edit.valid.value).toBeNull();
+    expect(edit.errors.value).toEqual(["validation failed: boom"]);
+    controller.abort();
+  });
+
+  it("exposes a run which cannot be opened and ignores a slow earlier run", async () => {
+    let slow: (r: Response) => void = () => undefined;
+    mockFetch("", (path) => {
+      if (path === "/runs/slow") return new Promise<Response>((resolve) => (slow = resolve));
+      if (path === "/runs/r2") return reply(runRecord({ id: "r2", workflow: workflow("second") }));
+      if (path === "/runs/gone") return reply({ detail: "no run" }, 404);
+      return reply({ ok: true, errors: [] });
+    });
+    const edit = effectScope().run(() => useEdit())!;
+    vi.spyOn(console, "error").mockImplementation(() => undefined);
+    await edit.openRun("gone");
+    expect(edit.loadError.value).toBe("no run");
+    expect(edit.draft.value).toBeNull();
+    const first = edit.openRun("slow");
+    await edit.openRun("r2");
+    expect(edit.loadError.value).toBeNull();
+    slow(reply(runRecord({ id: "slow", workflow: workflow("first") })));
+    await first;
+    expect(edit.draft.value?.name).toBe("second");
+  });
+
+  it("forgets the messages and the estimate of the previous workflow when a run opens", async () => {
+    mockFetch(sse("edit", session()), (path) =>
+      path === "/validate" ? reply({ ok: false, errors: ["bad"] }) : reply(runRecord({ id: "r1", workflow: workflow("ran") })),
+    );
+    const { edit, controller } = open();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(edit.errors.value).toEqual(["bad"]);
+    controller.abort();
+    await edit.openRun("r1");
+    expect(edit.errors.value).toEqual([]);
+    expect(edit.valid.value).toBeNull();
+    expect(edit.estimate.value).toEqual({});
   });
 
   it("marks a conflict (409) as changed on disk and keeps the draft dirty", async () => {
