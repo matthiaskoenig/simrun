@@ -163,10 +163,19 @@ def dump_workflow(workflow: Workflow, path: Path) -> None:
     path.write_text(yaml.safe_dump(data, sort_keys=False))
 
 
+class _IndentedDumper(yaml.SafeDumper):
+    """The safe dumper which indents a sequence below its key, as `- id:` below `tasks:`."""
+
+    def increase_indent(self, flow: bool = False, indentless: bool = False) -> None:
+        """Indent every block, also a sequence which PyYAML would leave indentless."""
+        super().increase_indent(flow, False)
+
+
 def workflow_yaml(workflow: Workflow) -> str:
     """The compact YAML of a workflow: the fields which differ from the defaults.
 
-    `name` and `tasks` are always written, also when they are the defaults.
+    `name` and `tasks` are always written, also when they are the defaults. A
+    sequence is indented below its key, as the workflows of the docs are written.
 
     Args:
         workflow: The workflow.
@@ -176,4 +185,4 @@ def workflow_yaml(workflow: Workflow) -> str:
     """
     data = workflow.model_dump(mode="json", exclude_defaults=True)
     data = {"name": workflow.name, "tasks": data.get("tasks", [])} | data
-    return yaml.safe_dump(data, sort_keys=False)
+    return yaml.dump(data, Dumper=_IndentedDumper, sort_keys=False)
