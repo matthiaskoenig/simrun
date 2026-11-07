@@ -26,6 +26,11 @@ The identity of the token is recorded with the run and decides its priority: the
 | `POST /runs` | submit a workflow with the provenance of its sources; returns the run in the state `submitting` (201) |
 | `GET /runs` | the runs, filtered by `group`, `owner`, `agent` and `state` |
 | `GET /runs/{run}` | the record of a run |
+| `GET /me` | the identity of the token |
+| `GET /servers` | the servers of the cluster with their cores, memory and reservation and the cores and memory the pods on them request |
+| `GET /events` | server-sent events: `runs` (the runs, filtered as `GET /runs`, with owner and workflow) and `servers`, each when it changed |
+| `GET /runs/{run}/events` | server-sent events: `run` (the record), `progress` and `workers` of a run, each when it changed; it ends after a run ended |
+| `GET /runs/{run}/tasks/{task}/workers` | the workers of a task: server, state, attempts, processes, memory and units |
 | `GET /runs/{run}/wait` | a long poll: the summary once the run ended or after `timeout` seconds (60, at most 300) |
 | `GET /runs/{run}/progress` | the progress of every task: the counts of its ledger and its first and last progress lines |
 | `GET /runs/{run}/logs/{task}` | the logs of the pods of a task as text, the last `tail_lines` of each (300, 0 for all) |
@@ -49,12 +54,14 @@ The service reads a YAML file named by `SIMRUN_CONFIG`, a `simrun.service.app.Se
 | `tokens` | the YAML file of the tokens, see above |
 | `owner` | the person who owns the cluster: their runs and their agents' get the top priority |
 | `cluster` | the cluster, a `ClusterConfig`, see below |
-| `poll_s` | seconds between two reconciliations of the controller (5) |
+| `poll_s` | seconds between two reconciliations of the controller and between two checks of an event stream (5) |
+| `events_max_s` | seconds after which an event stream ends and the client connects again (300) |
 | `default_image` | the image of a run whose model has no `pyproject.toml` |
 | `simrun_wheel` | the simrun wheel the images of the environments install |
 | `python` | the python of the images of the environments (3.14) |
 | `build_constraints` | the pinned versions of the build backends, `src/simrun/build_constraints.txt` by default |
 | `backend` | `module:callable` of the backend, `simrun.service.argo_backend:backend` |
+| `web` | the directory of the built [web app](web-app.md), served at `/ui/` without a token; no `/ui/` without it |
 
 `cluster`, a `simrun.config.ClusterConfig`:
 

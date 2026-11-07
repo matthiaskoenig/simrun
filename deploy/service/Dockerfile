@@ -2,13 +2,15 @@
 # The image of the service (`deploy/cluster/simrun.yaml`): uv, which resolves the
 # environments of the runs, simrun with the dependencies of its lock, its wheel at
 # the path of `simrun_wheel` of the settings (the images of the environments install
-# it), and the plugins whose task types the service validates and splits.
+# it), the plugins whose task types the service validates and splits, and the built
+# web app at the path of `web` of the settings, which the service serves at /ui/.
 #
 # The build context, see "The service image" in docs/deployment.md:
 #   requirements.txt  `uv export --frozen --no-dev --no-emit-project` of simrun
 #   constraints.txt   the same without hashes, the constraints of the plugins
 #   simrun-<version>-py3-none-any.whl
 #   plugins/          the wheels of the plugins (may be empty)
+#   web/              the web app, `npm ci && npm run build` in frontend/ (its dist/)
 ARG BASE=registry.cluster.internal:5000/astral-sh/uv:0.13.7-python3.14-trixie-slim@sha256:e80c05a310400cfc90af00b5b7271ef9ad24816e3265e1162af8a678e1aad099
 FROM ${BASE}
 # the cache of uv at runtime (the service resolves environments with it) is a
@@ -32,5 +34,6 @@ RUN if ls /tmp/plugins/*.whl > /dev/null 2>&1; then \
         uv pip install --no-cache --constraint /tmp/constraints.txt /tmp/plugins/*.whl; \
     fi \
     && rm -rf /tmp/plugins /tmp/constraints.txt
+COPY web/ /opt/simrun/web/
 EXPOSE 8000
 CMD ["uvicorn", "--factory", "simrun.service.app:serve", "--host", "0.0.0.0", "--port", "8000", "--timeout-graceful-shutdown", "5"]

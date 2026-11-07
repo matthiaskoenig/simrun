@@ -53,6 +53,14 @@ jobs:
       with:
         python-version: "3.14"
         sync: --extra dev
+    - name: Set up node
+      # the image of the service has the web app, built in frontend/
+      # (`build_service_image` of tests/cluster/k3d_cluster.py)
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
     - name: Test on the k3d cluster
       # the session downloads k3d and kubectl into .tools/bin and creates the
       # cluster; the cluster is kept (`SIMRUN_K3D_KEEP=1`), the runner is

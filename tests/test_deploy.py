@@ -20,9 +20,20 @@ def _env() -> dict[str, str]:
     return env
 
 
-def _deployment() -> dict:
+def _manifest(kind: str, name: str) -> dict:
     docs = yaml.safe_load_all((ROOT / "deploy/cluster/simrun.yaml").read_text())
-    return next(d for d in docs if d and d["kind"] == "Deployment")
+    return next(
+        d for d in docs if d and d["kind"] == kind and d["metadata"]["name"] == name
+    )
+
+
+def _deployment() -> dict:
+    return _manifest("Deployment", "simrun")
+
+
+def _settings() -> dict:
+    config = _manifest("ConfigMap", "simrun-config")
+    return yaml.safe_load(config["data"]["settings.yaml"])
 
 
 def test_the_service_keeps_the_cache_of_uv() -> None:
@@ -43,3 +54,8 @@ def test_plugins_are_installed_with_the_lock_of_simrun_as_constraints() -> None:
     (line,) = [line for line in text.splitlines() if "/tmp/plugins/*.whl;" in line]
     assert "--constraint /tmp/constraints.txt" in line
     assert "COPY constraints.txt /tmp/constraints.txt" in DOCKERFILE
+
+
+def test_the_service_serves_the_web_app_of_the_image() -> None:
+    # the built app of the context (`web/`) is the directory `web` of the settings
+    assert f"COPY web/ {_settings()['web']}/" in DOCKERFILE

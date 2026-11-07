@@ -1,12 +1,13 @@
 """The image of the service from `deploy/service/Dockerfile`, built once.
 
 The image serves the API with the settings of a file (`SIMRUN_CONFIG`), has uv, the
-simrun wheel at the path the settings name and the task types of a plugin installed
-from its wheel.
+simrun wheel at the path the settings name, the task types of a plugin installed
+from its wheel and the built web app, which it serves at `/ui/`.
 """
 
 import json
 import os
+import re
 import socket
 import subprocess
 import time
@@ -16,7 +17,7 @@ from pathlib import Path
 import httpx
 import pytest
 import yaml
-from k3d_cluster import Cluster, build_service_image
+from k3d_cluster import REPO, Cluster, build_service_image
 
 from simrun.testing import TOKENS
 
@@ -93,6 +94,8 @@ def container(service_image: str, cluster: Cluster, tmp_path: Path) -> Iterator[
         "backend": "simrun.testing:FakeBackend",
         "default_image": cluster.image,
         "cluster": {"registry": "localhost:5000"},
+        # the web app of the image, as deploy/cluster/simrun.yaml names it
+        "web": "/opt/simrun/web",
     }
     (config / "settings.yaml").write_text(yaml.safe_dump(settings))
     config.chmod(0o755)
@@ -178,3 +181,19 @@ def test_the_image_serves_the_api(container: str) -> None:
     workflow["tasks"][0]["settings"] = {"txt": "hi"}
     result = httpx.post(f"{container}/validate", json=workflow, headers=headers)
     assert "unknown setting 'txt'" in result.json()["errors"][0]
+
+
+def test_the_image_serves_the_web_app(container: str) -> None:
+    # the app of frontend/dist, which the build of the image built, without a token
+    page = httpx.get(f"{container}/ui/")
+    assert page.status_code == 200
+    assert page.text == (REPO / "frontend" / "dist" / "index.html").read_text()
+    assets = re.findall(r'(?:src|href)="(/ui/assets/[^"]+)"', page.text)
+    assert {Path(a).suffix for a in assets} == {".js", ".css"}
+    for asset in assets:
+        assert httpx.get(f"{container}{asset}").status_code == 200
+    # the API still needs the token
+    assert httpx.get(f"{container}/runs").status_code == 401
+    assert httpx.get(f"{container}/me").status_code == 401
+    me = httpx.get(f"{container}/me", headers={"Authorization": "Bearer t-mk"})
+    assert me.json()["name"] == "mk"

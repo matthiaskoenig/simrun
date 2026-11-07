@@ -52,7 +52,9 @@ def enabled() -> bool:
     return os.environ.get("SIMRUN_K3D") == "1"
 
 
-def _run(*args: str | Path, check: bool = True, timeout: float = 600) -> str:
+def _run(
+    *args: str | Path, check: bool = True, timeout: float = 600, cwd: Path | None = None
+) -> str:
     env = {**os.environ, "KUBECONFIG": str(KUBECONFIG)}
     result = subprocess.run(
         [str(a) for a in args],
@@ -61,6 +63,7 @@ def _run(*args: str | Path, check: bool = True, timeout: float = 600) -> str:
         env=env,
         timeout=timeout,
         check=False,
+        cwd=cwd,
     )
     if check and result.returncode != 0:
         raise RuntimeError(
@@ -217,9 +220,9 @@ def build_service_image(wheel: Path, plugins: list[Path]) -> str:
     """Build the image of the service from `deploy/service/Dockerfile` with docker.
 
     The context as docs/deployment.md describes it: the requirements of the lock of
-    simrun (with hashes, and without as the constraints of the plugins), its wheel and
-    the wheels of the plugins; the base is the mirror of the base image of the
-    environments.
+    simrun (with hashes, and without as the constraints of the plugins), its wheel,
+    the wheels of the plugins and the web app, built in `frontend/` with the versions
+    of its lock; the base is the mirror of the base image of the environments.
 
     Returns:
         The image, as the host names it.
@@ -243,6 +246,7 @@ def build_service_image(wheel: Path, plugins: list[Path]) -> str:
         (context / "plugins").mkdir()
         for plugin in plugins:
             shutil.copy2(plugin, context / "plugins" / plugin.name)
+        shutil.copytree(build_web_app(), context / "web")
         dockerfile = REPO / "deploy" / "service" / "Dockerfile"
         shutil.copy2(dockerfile, context / "Dockerfile")
         digest = hashlib.sha256(
@@ -262,6 +266,18 @@ def build_service_image(wheel: Path, plugins: list[Path]) -> str:
             context,
         )
     return tag
+
+
+def build_web_app() -> Path:
+    """Build the web app in `frontend/` with the versions of its lock.
+
+    Returns:
+        The built app, `frontend/dist`.
+    """
+    frontend = REPO / "frontend"
+    _run("npm", "ci", cwd=frontend)
+    _run("npm", "run", "build", cwd=frontend)
+    return frontend / "dist"
 
 
 def mirror_uv_image() -> None:
