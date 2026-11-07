@@ -53,6 +53,10 @@ describe("TaskPalette", () => {
     expect(subtitle("demo.squares")).toBe("Squares of numbers, split over servers");
     expect(subtitle("sbmlsim.fit")).toBe("Split over servers");
     expect(subtitle("command")).toBe("One process");
+    // a description of a few words wraps to a second line instead of being cut
+    const classes = wrapper.get('[data-type="demo.squares"] [data-description]').classes();
+    expect(classes).toContain("line-clamp-2");
+    expect(classes).not.toContain("truncate");
   });
 
   it("shows its footer under the types", () => {
