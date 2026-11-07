@@ -5,7 +5,10 @@
 -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, ref, watch } from "vue";
+import { useRouter } from "vue-router";
+import { ApiError } from "../api/client";
 import { auth } from "../auth";
+import EditBar from "../components/EditBar.vue";
 import EditCanvas from "../components/EditCanvas.vue";
 import EditInspector from "../components/EditInspector.vue";
 import TaskPalette from "../components/TaskPalette.vue";
@@ -44,12 +47,60 @@ function add(type: TaskTypeView): void {
   selected.value = added.id;
 }
 
+const router = useRouter();
+// the request of the bar which waits, and why the last one failed
+const saving = ref(false);
+const running = ref(false);
+const failure = ref<string | null>(null);
+
+const errorCount = computed(() => edit.errors.value.length + Object.values(edit.taskErrors.value).reduce((n, list) => n + list.length, 0));
+
+function describe(cause: unknown): string {
+  if (cause instanceof ApiError) return cause.message;
+  return cause instanceof Error ? cause.message : String(cause);
+}
+
+async function save(force: boolean): Promise<void> {
+  saving.value = true;
+  failure.value = null;
+  try {
+    await edit.save(force);
+  } catch (cause) {
+    failure.value = describe(cause);
+  } finally {
+    saving.value = false;
+  }
+}
+
+async function runDraft(): Promise<void> {
+  running.value = true;
+  failure.value = null;
+  try {
+    const summary = await edit.run({});
+    await router.push({ name: "run", params: { id: summary.id } });
+  } catch (cause) {
+    failure.value = describe(cause);
+  } finally {
+    running.value = false;
+  }
+}
+
+async function download(): Promise<void> {
+  failure.value = null;
+  try {
+    await edit.download();
+  } catch (cause) {
+    failure.value = describe(cause);
+  }
+}
+
 let controller: AbortController | null = null;
 
 watch(
   () => [props.id, props.run] as const,
   ([id, run]) => {
     selected.value = null;
+    failure.value = null;
     controller?.abort();
     controller = null;
     if (run) void edit.openRun(id);
@@ -79,12 +130,29 @@ onBeforeUnmount(() => controller?.abort());
         <TaskPalette :types="edit.types.value" @add="add" />
       </aside>
       <main data-canvas class="relative flex min-w-0 flex-1 flex-col bg-gray-50">
+        <EditBar
+          v-if="edit.draft.value"
+          :tree="tree"
+          :host="edit.session.value?.host ?? null"
+          :connected="edit.connected.value"
+          :valid="edit.valid.value"
+          :error-count="errorCount"
+          :dirty="edit.dirty.value"
+          :changed-on-disk="edit.changedOnDisk.value"
+          :saving="saving"
+          :running="running"
+          :error="failure"
+          @save="save"
+          @reload="edit.reload()"
+          @run="runDraft"
+          @download="download"
+        />
         <p v-if="edit.loadError.value" data-load-error class="m-4 rounded-md bg-red-50 px-3 py-2 text-xs text-red-800 ring-1 ring-red-200">
           {{ edit.loadError.value }}
         </p>
         <EditCanvas
           v-if="edit.draft.value"
-          :key="id"
+          :key="`${id}:${edit.loaded.value}`"
           ref="canvas"
           v-model:selected="selected"
           :workflow="edit.draft.value"
