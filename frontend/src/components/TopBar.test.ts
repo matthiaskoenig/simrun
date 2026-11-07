@@ -37,4 +37,15 @@ describe("TopBar", () => {
     expect(mountBar(true, "caffeine_fit").get("nav").text()).toBe("simrunExecutionscaffeine_fit");
     expect(mountBar().get("nav").text()).toBe("simrunExecutions");
   });
+
+  it("switches between the Editor and the Executions", () => {
+    const bar = mountBar();
+    expect(bar.get("[data-mode=editor]").attributes("href")).toBe("#/edit");
+    expect(bar.get("[data-mode=exec]").attributes("href")).toBe("#/");
+    expect(bar.get("[data-mode=exec]").classes()).toContain("bg-white");
+    const editor = mount(TopBar, { props: { identity: mk, runs, servers, connected: true, workflow: "w", mode: "editor", session: "abc" } });
+    expect(editor.get("[data-mode=editor]").attributes("href")).toBe("#/edit/abc");
+    expect(editor.get("[data-mode=editor]").classes()).toContain("bg-white");
+    expect(editor.get("nav").text()).toBe("simrunEditorw");
+  });
 });

@@ -1,0 +1,219 @@
+/**
+ * The draft of the Editor: the workflow being edited, from an edit session
+ * (`/edits/{id}/events`) or from a run (`#/runs/:id/edit`), with its
+ * validation and estimate.
+ *
+ * The draft is the browser's; the session brings the file on disk. A new hash
+ * of the file replaces a clean draft and only flags a dirty one
+ * (`changedOnDisk`). Every change validates (debounced) and, when valid,
+ * estimates with the last snapshots of the sources.
+ */
+import { computed, getCurrentScope, onScopeDispose, ref, shallowRef, type ComputedRef, type Ref } from "vue";
+import { ApiError, api } from "../api/client";
+import type { EditSession, RunSummary, SourceProvenance, TaskEstimate, TaskTypeView, Workflow } from "../api/client";
+import { stream } from "../api/sse";
+
+/** How long after the last change the draft is validated. */
+export const VALIDATE_DEBOUNCE_MS = 400;
+
+const TASK_ERROR = /^task '([^']+)': (.*)$/s;
+
+/** What `useEdit` gives. */
+export interface Edit {
+  session: Ref<EditSession | null>;
+  draft: Ref<Workflow | null>;
+  /** The hash of the file the draft started from. */
+  base: Ref<string>;
+  /** The group of the run opened (`#/runs/:id/edit`), null for a session. */
+  group: Ref<string | null>;
+  dirty: ComputedRef<boolean>;
+  /** Whether the command of the session polls; false for a run. */
+  connected: ComputedRef<boolean>;
+  changedOnDisk: Ref<boolean>;
+  /** The errors of the workflow which belong to no task. */
+  errors: ComputedRef<string[]>;
+  /** The errors per task, without the `task '<id>':` prefix. */
+  taskErrors: ComputedRef<Record<string, string[]>>;
+  estimate: Ref<Record<string, TaskEstimate>>;
+  types: Ref<TaskTypeView[]>;
+  openSession(id: string, signal: AbortSignal): void;
+  openRun(id: string): Promise<void>;
+  change(workflow: Workflow): void;
+  /** Drops the draft for the version on disk. */
+  reload(): void;
+  /** Saves through the command; `force` takes the hash on disk as the base. */
+  save(force?: boolean): Promise<void>;
+  /** Runs the draft: through the session when it is connected, else with `POST /runs`. */
+  run(options: { group?: string | null }): Promise<RunSummary>;
+}
+
+function clone(workflow: Workflow): Workflow {
+  return structuredClone(workflow);
+}
+
+/** The draft of the workflow being edited; its timer and stream end with the scope of the caller. */
+export function useEdit(): Edit {
+  const session = shallowRef<EditSession | null>(null);
+  const draft = shallowRef<Workflow | null>(null);
+  const base = ref("");
+  const group = ref<string | null>(null);
+  const isDirty = ref(false);
+  const changedOnDisk = ref(false);
+  const messages = ref<string[]>([]);
+  const estimate = shallowRef<Record<string, TaskEstimate>>({});
+  const types = shallowRef<TaskTypeView[]>([]);
+  // the sources a run was made with, used while there is no session
+  const runSources = shallowRef<SourceProvenance[]>([]);
+  let sessionId: string | null = null;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // a later validation makes the answer of an earlier one stale
+  let generation = 0;
+
+  const dirty = computed(() => isDirty.value);
+  const connected = computed(() => session.value?.connected ?? false);
+  const errors = computed(() => messages.value.filter((m) => !TASK_ERROR.test(m)));
+  const taskErrors = computed(() => {
+    const result: Record<string, string[]> = {};
+    for (const message of messages.value) {
+      const match = TASK_ERROR.exec(message);
+      if (match) (result[match[1]!] ??= []).push(match[2]!);
+    }
+    return result;
+  });
+
+  const sources = (): SourceProvenance[] => session.value?.sources ?? runSources.value;
+
+  async function validate(): Promise<void> {
+    const workflow = draft.value;
+    if (workflow === null) return;
+    const mine = ++generation;
+    try {
+      const result = await api.validate(workflow);
+      if (mine !== generation) return;
+      messages.value = result.errors;
+      if (!result.ok) {
+        estimate.value = {};
+        return;
+      }
+      const planned = await api.estimate(workflow, sources());
+      if (mine === generation) estimate.value = planned;
+    } catch (error) {
+      if (mine !== generation) return;
+      // an estimate which fails (no snapshots yet) leaves the draft valid
+      console.error("validate or estimate failed: %o", error);
+      estimate.value = {};
+    }
+  }
+
+  function schedule(): void {
+    clearTimeout(timer);
+    generation += 1;
+    timer = setTimeout(() => void validate(), VALIDATE_DEBOUNCE_MS);
+  }
+
+  function take(from: EditSession): void {
+    draft.value = clone(from.workflow);
+    base.value = from.file_sha256;
+    isDirty.value = false;
+    changedOnDisk.value = false;
+    schedule();
+  }
+
+  function onSession(next: EditSession): void {
+    session.value = next;
+    if (draft.value === null) take(next);
+    else if (next.file_sha256 !== base.value) {
+      if (isDirty.value) changedOnDisk.value = true;
+      else take(next);
+    }
+  }
+
+  function loadTypes(): void {
+    api.taskTypes().then(
+      (loaded) => (types.value = loaded),
+      (error: unknown) => console.error("the task types could not be loaded: %o", error),
+    );
+  }
+
+  function openSession(id: string, signal: AbortSignal): void {
+    if (sessionId !== id) {
+      clearTimeout(timer);
+      session.value = null;
+      draft.value = null;
+      base.value = "";
+      group.value = null;
+      isDirty.value = false;
+      changedOnDisk.value = false;
+      messages.value = [];
+      estimate.value = {};
+      runSources.value = [];
+      sessionId = id;
+    }
+    loadTypes();
+    stream(
+      `/edits/${encodeURIComponent(id)}/events`,
+      (event, data) => {
+        if (event === "edit" && !signal.aborted) onSession(data as EditSession);
+      },
+      signal,
+    );
+    signal.addEventListener("abort", () => clearTimeout(timer), { once: true });
+  }
+
+  async function openRun(id: string): Promise<void> {
+    clearTimeout(timer);
+    sessionId = null;
+    session.value = null;
+    loadTypes();
+    const record = await api.run(id);
+    draft.value = clone(record.workflow);
+    group.value = record.group ?? null;
+    runSources.value = record.sources;
+    base.value = "";
+    isDirty.value = false;
+    changedOnDisk.value = false;
+    schedule();
+  }
+
+  function change(workflow: Workflow): void {
+    draft.value = workflow;
+    isDirty.value = true;
+    schedule();
+  }
+
+  function reload(): void {
+    if (session.value) take(session.value);
+  }
+
+  async function save(force = false): Promise<void> {
+    const current = session.value;
+    const workflow = draft.value;
+    if (current === null || workflow === null) throw new Error("there is no session to save to");
+    try {
+      const saved = await api.save(current.id, workflow, force ? current.file_sha256 : base.value, force);
+      session.value = saved;
+      base.value = saved.file_sha256;
+      isDirty.value = false;
+      changedOnDisk.value = false;
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 409) {
+        changedOnDisk.value = true;
+        return;
+      }
+      throw error;
+    }
+  }
+
+  async function run(options: { group?: string | null }): Promise<RunSummary> {
+    const workflow = draft.value;
+    if (workflow === null) throw new Error("there is no workflow to run");
+    const chosen = options.group === undefined ? group.value : options.group;
+    const current = session.value;
+    if (current?.connected) return api.runEdit(current.id, workflow, chosen);
+    return api.submit(workflow, sources(), chosen);
+  }
+
+  if (getCurrentScope()) onScopeDispose(() => clearTimeout(timer));
+
+  return { session, draft, base, group, dirty, connected, changedOnDisk, errors, taskErrors, estimate, types, openSession, openRun, change, reload, save, run };
+}

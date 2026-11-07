@@ -45,4 +45,20 @@ describe("router", () => {
     expect(router.currentRoute.value.name).toBe("executions");
     expect(auth.token.value).toBe("secret");
   });
+
+  it.each([
+    ["/edit", "edit", {}],
+    ["/edit/abc", "edit-session", { id: "abc" }],
+    ["/runs/r1/edit", "run-edit", { id: "r1" }],
+  ])("resolves %s to the Editor and needs the token", async (path, name, params) => {
+    const router = createAppRouter(createMemoryHistory());
+    await router.push(path);
+    expect(router.currentRoute.value.name).toBe("login");
+    expect(router.currentRoute.value.query.next).toBe(path);
+    auth.token.value = "secret";
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response(JSON.stringify(identity))));
+    await router.push(path);
+    expect(router.currentRoute.value.name).toBe(name);
+    expect(router.currentRoute.value.params).toMatchObject(params);
+  });
 });

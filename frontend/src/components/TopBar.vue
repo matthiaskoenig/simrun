@@ -6,14 +6,18 @@ import { formatCores, initials } from "../lib/format";
 import AppIcon from "./AppIcon.vue";
 import LogoMark from "./LogoMark.vue";
 
-const props = defineProps<{
+const props = withDefaults(defineProps<{
   identity: Identity | null;
   runs: RunItem[];
   servers: ServerUsage[];
   connected: boolean;
   /** The workflow of the selected run, null without one. */
   workflow: string | null;
-}>();
+  /** The mode of the app the page is in. */
+  mode?: "editor" | "exec";
+  /** The edit session open, which the Editor switch returns to. */
+  session?: string | null;
+}>(), { mode: "exec", session: null });
 
 const cluster = computed(() => ({
   used: props.servers.reduce((sum, s) => sum + s.pods.reduce((cores, pod) => cores + pod.cores, 0), 0),
@@ -28,13 +32,29 @@ const cluster = computed(() => ({
       <LogoMark />
       <span class="text-sm font-semibold">simrun</span>
       <AppIcon name="chevron-right" class="size-3.5 text-gray-300" />
-      <span class="text-sm" :class="workflow === null ? 'font-medium' : 'text-gray-500'">Executions</span>
+      <span class="text-sm" :class="workflow === null ? 'font-medium' : 'text-gray-500'">{{ mode === "editor" ? "Editor" : "Executions" }}</span>
       <template v-if="workflow !== null">
         <AppIcon name="chevron-right" class="size-3.5 text-gray-300" />
         <span class="truncate text-sm font-medium">{{ workflow }}</span>
       </template>
     </nav>
-    <div class="ml-auto flex shrink-0 items-center gap-3">
+    <nav class="mx-auto flex rounded-lg bg-gray-100 p-0.5 text-sm" aria-label="Mode">
+      <a
+        data-mode="editor"
+        :href="session ? `#/edit/${session}` : '#/edit'"
+        class="rounded-md px-3.5 py-1 font-medium"
+        :class="mode === 'editor' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'"
+        >Editor</a
+      >
+      <a
+        data-mode="exec"
+        href="#/"
+        class="rounded-md px-3.5 py-1 font-medium"
+        :class="mode === 'exec' ? 'bg-white text-gray-900 shadow-sm' : 'text-gray-500 hover:text-gray-800'"
+        >Executions</a
+      >
+    </nav>
+    <div class="flex shrink-0 items-center gap-3">
       <span
         v-if="!connected"
         data-reconnecting

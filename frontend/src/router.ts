@@ -17,6 +17,8 @@ declare module "vue-router" {
   }
 }
 
+const EditorView = () => import("./views/EditorView.vue");
+const EditSessions = () => import("./views/EditSessions.vue");
 const ExecutionsView = () => import("./views/ExecutionsView.vue");
 
 /** The login, with the page to return to. */
@@ -50,6 +52,9 @@ export function createAppRouter(history: RouterHistory = createWebHashHistory())
       { path: "/login", name: "login", component: LoginView, meta: { public: true } },
       { path: "/", name: "executions", component: ExecutionsView },
       { path: "/runs/:id", name: "run", component: ExecutionsView, props: true },
+      { path: "/edit", name: "edit", component: EditSessions },
+      { path: "/edit/:id", name: "edit-session", component: EditorView, props: (route) => ({ id: route.params.id, run: false }) },
+      { path: "/runs/:id/edit", name: "run-edit", component: EditorView, props: (route) => ({ id: route.params.id, run: true }) },
       { path: "/:unknown(.*)*", redirect: "/" },
     ],
   });
