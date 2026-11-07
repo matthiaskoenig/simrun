@@ -5,7 +5,9 @@ Every command prints the detail of a refusal of the service to stderr and exits 
 """
 
 import json
+import signal
 import sys
+import threading
 from collections.abc import Callable, Sequence
 from functools import wraps
 from pathlib import Path
@@ -19,6 +21,7 @@ from rich.console import Console
 from rich.table import Column, Table
 
 from simrun.client import Client, ClientError
+from simrun.edit import run_edit
 from simrun.service.app import RunSummary
 from simrun.service.logs import DEFAULT_TAIL_LINES
 from simrun.store import RunState
@@ -300,6 +303,20 @@ def cleanup(
     )
     for run in result.runs:
         console.print(f"  {run}")
+
+
+@app.command()
+@_guarded
+def edit(workflow: WORKFLOW, source: SOURCE = None, group: GROUP = None) -> None:
+    """Serve the Editor of the web app for a workflow file until stopped.
+
+    Saves of the browser are written into the file, a run snapshots the sources
+    again. A missing file is a new workflow.
+    """
+    stop = threading.Event()
+    for number in (signal.SIGINT, signal.SIGTERM):
+        signal.signal(number, lambda *_: stop.set())
+    run_edit(make_client(), workflow, _sources(source), group, should_stop=stop.is_set)
 
 
 @app.command()
