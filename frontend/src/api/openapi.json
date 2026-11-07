@@ -191,7 +191,7 @@
         "type": "object"
       },
       "EditResult": {
-        "description": "The answer of the command to a request.\n\nAttributes:\n    ok: Whether the request was done.\n    status: The status of a refusal: 409 conflict, 422 refused.\n    detail: The reason of a refusal.\n    file_sha256: For a save, the hash of the written file.\n    run: For a run, the submitted run.",
+        "description": "The answer of the command to a request.\n\nAttributes:\n    ok: Whether the request was done.\n    status: The status of a refusal, 4xx or 5xx: 409 conflict, 422 refused.\n    detail: The reason of a refusal.\n    file_sha256: For a save, the hash of the written file.\n    run: For a run, the submitted run.",
         "properties": {
           "detail": {
             "default": "",

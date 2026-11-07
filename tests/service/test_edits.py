@@ -9,6 +9,7 @@ import pytest
 from simrun.service import app as app_module
 from simrun.service.edits import EditResult, EditState
 from simrun.store import RunSummary
+from simrun.workflow import Workflow
 
 
 def open_body(**kw):
@@ -274,3 +275,65 @@ def test_a_poll_which_lost_its_client_does_not_mark_the_session_seen(live):
     seen = web.http.get(f"/edits/{sid}").json()["seen"]
     time.sleep(2.5)
     assert web.http.get(f"/edits/{sid}").json()["seen"] == seen
+
+
+def test_a_stale_request_is_not_returned_and_dropped(service):
+    session = open_edit(service)
+    sid = session["id"]
+    edits = service.client.app.state.service.edits
+    fresh = edits.add_request(sid, "save", Workflow.model_validate(service.workflow()))
+    stale = edits.add_request(sid, "save", Workflow.model_validate(service.workflow()))
+    path = service.settings.store / "edits" / sid / "requests" / f"{stale.id}.json"
+    old = datetime.now(UTC) - timedelta(seconds=app_module.EDIT_WAIT_S + 1)
+    path.write_text(stale.model_copy(update={"created": old}).model_dump_json())
+    assert [r.id for r in edits.requests(sid)] == [fresh.id]
+    assert not path.exists()
+
+
+def test_a_waiting_save_answers_503_as_soon_as_the_command_closes(service):
+    session = open_edit(service)
+    sid = session["id"]
+    edits = service.client.app.state.service.edits
+    timer = threading.Timer(0.3, lambda: edits.close(sid))
+    timer.start()
+    started = time.monotonic()
+    response = service.post(
+        f"/edits/{sid}/save", {"workflow": service.workflow(), "base": "h1"}
+    )
+    timer.join()
+    assert response.status_code == 503
+    assert response.json()["detail"] == "the machine of the session is not connected"
+    assert time.monotonic() - started < 5
+    assert request_files(service, sid) == []
+
+
+@pytest.mark.parametrize("route", ["save", "run"])
+def test_a_refusal_other_than_409_or_422_is_a_502(service, route):
+    session = open_edit(service)
+    command = Command(
+        service,
+        session["id"],
+        lambda r: EditResult(ok=False, status=403, detail="the service said no"),
+    )
+    response = service.post(
+        f"/edits/{session['id']}/{route}",
+        {"workflow": service.workflow(), "base": "h1"},
+    )
+    command.join()
+    assert response.status_code == 502
+    assert response.json()["detail"] == "the service said no"
+
+
+def test_a_refusal_needs_an_error_status(service):
+    with pytest.raises(ValueError, match="4xx or 5xx"):
+        EditResult(ok=False)
+    session = open_edit(service)
+    sid = session["id"]
+    edits = service.client.app.state.service.edits
+    request = edits.add_request(
+        sid, "save", Workflow.model_validate(service.workflow())
+    )
+    answer = service.post(
+        f"/edits/{sid}/requests/{request.id}/result", {"ok": False, "status": 200}
+    )
+    assert answer.status_code == 422
