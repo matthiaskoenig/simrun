@@ -1,14 +1,23 @@
+import contextlib
 import hashlib
+import shutil
+import signal
+import socket
 import subprocess
 import threading
+import time
 from pathlib import Path
 
+import httpx
 import pytest
 from typer.testing import CliRunner
 
+from simrun import cli, edit
 from simrun.cli import app
-from simrun.client import Client
-from simrun.edit import Editor, run_edit
+from simrun.client import Client, ClientError
+from simrun.edit import Editor, EditResult, run_edit
+from simrun.service import app as app_module
+from simrun.service import edits as edits_module
 from simrun.workflow import load_workflow
 
 SQUARES = {"id": "squares", "type": "demo.squares", "settings": {"n": 4}}
@@ -178,10 +187,6 @@ def test_save_keeps_the_mode(make):
 
 
 def test_run_edit_retries_a_transport_error(make, monkeypatch):
-    import httpx
-
-    from simrun import edit
-
     monkeypatch.setattr(edit, "BACKOFF_START_S", 0.01)
     web, client, path, _ = make()
     real = Editor.step
@@ -198,3 +203,179 @@ def test_run_edit_retries_a_transport_error(make, monkeypatch):
     (session_id,) = [p.name for p in (web.settings.store / "edits").iterdir()]
     assert len(calls) == 4
     assert session(web, session_id)["closed"] is True
+
+
+def serve_through(editor, thread, errors=()):
+    """Serve the browser's request, swallowing the errors the loop backs off from."""
+    while thread.is_alive():
+        with contextlib.suppress(*errors):
+            editor.step(0.2)
+    thread.join()
+
+
+def test_a_result_which_failed_to_post_is_posted_again_not_run_again(make, monkeypatch):
+    web, client, _, editor = make()
+    opened = editor.open()
+    submits = []
+    real_submit = client.submit
+
+    def submit(*args):
+        submits.append(1)
+        return real_submit(*args)
+
+    real_result = client.edit_result
+    failures = [httpx.ConnectError("down")]
+
+    def edit_result(*args):
+        if failures:
+            raise failures.pop()
+        real_result(*args)
+
+    monkeypatch.setattr(client, "submit", submit)
+    monkeypatch.setattr(client, "edit_result", edit_result)
+    out = []
+    thread = browser(web, opened.id, "run", {"workflow": workflow_body()}, out)
+    serve_through(editor, thread, (httpx.TransportError,))
+    assert out[0].status_code == 200, out[0].text
+    assert len(submits) == 1
+    assert not failures
+
+
+def test_a_result_of_a_request_the_browser_gave_up_is_skipped(
+    make, monkeypatch, caplog
+):
+    monkeypatch.setattr(app_module, "EDIT_WAIT_S", 0.3)
+    web, _, _, editor = make()
+    opened = editor.open()
+
+    def slow(request):
+        time.sleep(0.6)
+        return EditResult(ok=True, file_sha256="x")
+
+    monkeypatch.setattr(editor, "handle", slow)
+    out = []
+    thread = browser(
+        web, opened.id, "save", {"workflow": workflow_body(), "base": ""}, out
+    )
+    serve(editor, thread)
+    editor.step(0)  # the result goes after the browser gave up: a 404
+    assert out[0].status_code == 503
+    assert "no longer waited for" in caplog.text
+    editor.step(0)  # nothing is posted again
+    assert caplog.text.count("no longer waited for") == 1
+
+
+def test_run_edit_retries_a_503_of_a_proxy(make, monkeypatch):
+    monkeypatch.setattr(edit, "BACKOFF_START_S", 0.01)
+    _, client, path, _ = make()
+    real = client.edit_requests
+    calls = []
+
+    def flaky(*args):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise ClientError(503, "Service Unavailable")
+        return real(*args)
+
+    monkeypatch.setattr(client, "edit_requests", flaky)
+    run_edit(client, path, {}, None, should_stop=lambda: len(calls) >= 4)
+    assert len(calls) == 4
+
+
+def test_the_session_stays_connected_while_a_request_is_handled(make, monkeypatch):
+    monkeypatch.setattr(edits_module, "EDIT_CONNECTED_S", 0.5)
+    monkeypatch.setattr(edit, "EDIT_WATCH_S", 0.1)
+    web, _, _, editor = make()
+    opened = editor.open()
+    seen = []
+
+    def slow(request):
+        time.sleep(1.2)
+        seen.append(session(web, opened.id)["connected"])
+        return EditResult(ok=True, file_sha256="x")
+
+    monkeypatch.setattr(editor, "handle", slow)
+    out = []
+    thread = browser(
+        web, opened.id, "save", {"workflow": workflow_body(), "base": ""}, out
+    )
+    serve(editor, thread)
+    assert seen == [True]
+    assert out[0].status_code == 200, out[0].text
+
+
+def test_an_invalid_file_still_sends_the_tree(make, repo):
+    web, _, path, editor = make({"model": repo})
+    opened = editor.open()
+    path.write_text("a: [")
+    (repo / "new.py").write_text("x\n")
+    editor.step(0)
+    now = session(web, opened.id)
+    assert "?? new.py" in now["tree"][0]["changed_files"]
+    assert now["file_sha256"] == opened.file_sha256
+
+
+def test_git_failing_is_a_warning(make, repo, caplog):
+    web, _, path, editor = make({"model": repo})
+    opened = editor.open()
+    shutil.rmtree(repo / ".git")
+    path.write_text("name: edited\ntasks: []\n")
+    editor.step(0)
+    assert "the state of the trees cannot be read" in caplog.text
+    assert session(web, opened.id)["workflow"]["name"] == "edited"
+
+
+def test_a_refused_state_is_a_warning(make, monkeypatch, caplog):
+    _, client, path, editor = make()
+    editor.open()
+
+    def refuse(*args):
+        raise ClientError(500, "boom")
+
+    monkeypatch.setattr(client, "edit_state", refuse)
+    path.write_text("name: edited\ntasks: []\n")
+    editor.step(0)
+    assert "the state could not be sent" in caplog.text
+
+
+def test_close_is_best_effort_when_the_service_does_not_answer(
+    make, monkeypatch, caplog
+):
+    monkeypatch.setattr(edit, "EDIT_CLOSE_TIMEOUT_S", 0.3)
+    _, client, _, editor = make()
+    editor.open()
+    with socket.socket() as silent:  # accepts connections, never answers
+        silent.bind(("127.0.0.1", 0))
+        silent.listen()
+        port = silent.getsockname()[1]
+        client._http = httpx.Client(base_url=f"http://127.0.0.1:{port}")
+        started = time.monotonic()
+        editor.close()
+        assert time.monotonic() - started < 3
+    assert "the session could not be closed" in caplog.text
+
+
+def test_cli_edit_second_ctrl_c_interrupts_and_exits_0(monkeypatch, tmp_path):
+    handlers = {n: signal.getsignal(n) for n in (signal.SIGINT, signal.SIGTERM)}
+    checked = []
+
+    def fake_run_edit(client, path, sources, group, *, should_stop):
+        assert not should_stop()
+        first = signal.getsignal(signal.SIGINT)
+        assert callable(first)
+        first(signal.SIGINT, None)  # the first Ctrl-C
+        assert should_stop()
+        assert signal.getsignal(signal.SIGINT) is signal.default_int_handler
+        assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL
+        checked.append(1)
+        raise KeyboardInterrupt  # the second Ctrl-C
+
+    monkeypatch.setattr(cli, "run_edit", fake_run_edit)
+    monkeypatch.setattr(cli, "make_client", lambda: None)
+    try:
+        result = CliRunner().invoke(app, ["edit", str(tmp_path / "wf.yaml")])
+    finally:
+        for number, handler in handlers.items():
+            signal.signal(number, handler)
+    assert checked == [1]
+    assert result.exit_code == 0, result.output
