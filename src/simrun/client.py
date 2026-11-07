@@ -24,6 +24,13 @@ from simrun.service.app import (
 )
 from simrun.service.compare import CompareTable
 from simrun.service.controller import TERMINAL_RUN_STATES
+from simrun.service.edits import (
+    EditRequest,
+    EditResult,
+    EditSession,
+    EditState,
+    OpenEdit,
+)
 from simrun.service.logs import DEFAULT_TAIL_LINES
 from simrun.snapshot import snapshot
 from simrun.store import RunRecord, RunState
@@ -132,6 +139,7 @@ class Client:
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         """Create the client."""
+        self.url = url.rstrip("/")
         self.store = store
         self._http = httpx.Client(
             base_url=url,
@@ -242,6 +250,39 @@ class Client:
         return ValidationResult.model_validate(
             self._call("POST", "/validate", json=body).json()
         )
+
+    def open_edit(self, body: OpenEdit) -> EditSession:
+        """Open an edit session for the workflow file of this machine."""
+        data = self._call("POST", "/edits", json=body.model_dump(mode="json")).json()
+        return EditSession.model_validate(data)
+
+    def edit_state(self, session_id: str, state: EditState) -> EditSession:
+        """Send what was read from disk to an edit session."""
+        response = self._call(
+            "PUT",
+            f"/edits/{session_id}/state",
+            json=state.model_dump(mode="json", exclude_none=True),
+        )
+        return EditSession.model_validate(response.json())
+
+    def edit_requests(self, session_id: str, timeout: float) -> list[EditRequest]:
+        """Long poll the open requests of the browser, for up to `timeout` s."""
+        response = self._call(
+            "GET", f"/edits/{session_id}/requests", params={"timeout": timeout}
+        )
+        return [EditRequest.model_validate(item) for item in response.json()]
+
+    def edit_result(self, session_id: str, request_id: str, result: EditResult) -> None:
+        """Answer a request of the browser."""
+        self._call(
+            "POST",
+            f"/edits/{session_id}/requests/{request_id}/result",
+            json=result.model_dump(mode="json"),
+        )
+
+    def close_edit(self, session_id: str) -> None:
+        """Close an edit session, the command stopped."""
+        self._call("POST", f"/edits/{session_id}/close")
 
     def wait(self, run_id: str, timeout_s: float | None = None) -> RunSummary:
         """Wait for a run to end, or for `timeout_s` seconds (None: forever).
