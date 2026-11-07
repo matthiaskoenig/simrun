@@ -38,6 +38,160 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/edits": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Edits */
+        get: operations["list_edits_edits_get"];
+        put?: never;
+        /** Open Edit */
+        post: operations["open_edit_edits_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edits/{session_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Edit */
+        get: operations["get_edit_edits__session_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edits/{session_id}/close": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Close Edit */
+        post: operations["close_edit_edits__session_id__close_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edits/{session_id}/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Edit Events */
+        get: operations["edit_events_edits__session_id__events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edits/{session_id}/requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Edit Requests */
+        get: operations["edit_requests_edits__session_id__requests_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edits/{session_id}/requests/{request_id}/result": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Edit Result */
+        post: operations["edit_result_edits__session_id__requests__request_id__result_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edits/{session_id}/run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Edit */
+        post: operations["run_edit_edits__session_id__run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edits/{session_id}/save": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Save Edit */
+        post: operations["save_edit_edits__session_id__save_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/edits/{session_id}/state": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Put Edit State */
+        put: operations["put_edit_state_edits__session_id__state_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/estimate": {
         parameters: {
             query?: never;
@@ -405,6 +559,144 @@ export interface components {
                 [key: string]: unknown;
             }[];
         };
+        /**
+         * EditRequest
+         * @description A request of the browser to the command.
+         *
+         *     Attributes:
+         *         id: Id of the request.
+         *         kind: `save` writes the file, `run` submits the workflow.
+         *         workflow: The workflow of the draft.
+         *         base: For a save, the hash of the file the draft started from.
+         *         force: Save although the file changed on disk.
+         *         group: Group of the run.
+         *         split: Split mode of the run.
+         *         reserve: Node reserved for the run.
+         *         created: When the request was made.
+         */
+        EditRequest: {
+            /** Base */
+            base: string;
+            /**
+             * Created
+             * Format: date-time
+             */
+            created: string;
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+            /** Group */
+            group?: string | null;
+            /** Id */
+            id: string;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "save" | "run";
+            /** Reserve */
+            reserve?: string | null;
+            split?: components["schemas"]["SplitMode"] | null;
+            workflow: components["schemas"]["Workflow"];
+        };
+        /**
+         * EditResult
+         * @description The answer of the command to a request.
+         *
+         *     Attributes:
+         *         ok: Whether the request was done.
+         *         status: The status of a refusal: 409 conflict, 422 refused.
+         *         detail: The reason of a refusal.
+         *         file_sha256: For a save, the hash of the written file.
+         *         run: For a run, the submitted run.
+         */
+        EditResult: {
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** File Sha256 */
+            file_sha256?: string | null;
+            /** Ok */
+            ok: boolean;
+            run?: components["schemas"]["RunSummary"] | null;
+            /**
+             * Status
+             * @default 200
+             */
+            status: number;
+        };
+        /**
+         * EditSession
+         * @description An edit session.
+         *
+         *     Attributes:
+         *         id: Id of the session.
+         *         owner: The user of the token which opened it.
+         *         host: The machine of the command.
+         *         path: The absolute path of the workflow file there.
+         *         workflow: The workflow as in the file.
+         *         file_sha256: Hash of the file content, empty for a file which does not exist.
+         *         sources: The provenance of the last snapshots.
+         *         tree: Per source the state of the working tree.
+         *         created: When the session was opened.
+         *         seen: The last poll of the command.
+         *         closed: The command stopped.
+         *         connected: Not closed and seen lately; computed when read.
+         */
+        EditSession: {
+            /**
+             * Closed
+             * @default false
+             */
+            closed: boolean;
+            /**
+             * Connected
+             * @default false
+             */
+            connected: boolean;
+            /**
+             * Created
+             * Format: date-time
+             */
+            created: string;
+            /** File Sha256 */
+            file_sha256: string;
+            /** Host */
+            host: string;
+            /** Id */
+            id: string;
+            /** Owner */
+            owner: string;
+            /** Path */
+            path: string;
+            /**
+             * Seen
+             * Format: date-time
+             */
+            seen: string;
+            /** Sources */
+            sources: components["schemas"]["SourceProvenance"][];
+            /** Tree */
+            tree: components["schemas"]["TreeState"][];
+            workflow: components["schemas"]["Workflow"];
+        };
+        /**
+         * EditState
+         * @description What the command read from disk, sent when it changed.
+         */
+        EditState: {
+            /** File Sha256 */
+            file_sha256: string;
+            /** Sources */
+            sources?: components["schemas"]["SourceProvenance"][] | null;
+            /** Tree */
+            tree: components["schemas"]["TreeState"][];
+            workflow: components["schemas"]["Workflow"];
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -457,6 +749,23 @@ export interface components {
             pending: number;
             /** Total */
             total: number;
+        };
+        /**
+         * OpenEdit
+         * @description The body which opens a session.
+         */
+        OpenEdit: {
+            /** File Sha256 */
+            file_sha256: string;
+            /** Host */
+            host: string;
+            /** Path */
+            path: string;
+            /** Sources */
+            sources: components["schemas"]["SourceProvenance"][];
+            /** Tree */
+            tree: components["schemas"]["TreeState"][];
+            workflow: components["schemas"]["Workflow"];
         };
         /**
          * OutputFile
@@ -575,6 +884,18 @@ export interface components {
             scratch_gb?: number | null;
             /** Workers */
             workers?: number | null;
+        };
+        /**
+         * RunBody
+         * @description The body of a run, with the options of `SubmitRequest`.
+         */
+        RunBody: {
+            /** Group */
+            group?: string | null;
+            /** Reserve */
+            reserve?: string | null;
+            split?: components["schemas"]["SplitMode"] | null;
+            workflow: components["schemas"]["Workflow"];
         };
         /**
          * RunItem
@@ -745,6 +1066,20 @@ export interface components {
             tasks: {
                 [key: string]: components["schemas"]["TaskState"];
             };
+        };
+        /**
+         * SaveBody
+         * @description The body of a save.
+         */
+        SaveBody: {
+            /** Base */
+            base: string;
+            /**
+             * Force
+             * @default false
+             */
+            force: boolean;
+            workflow: components["schemas"]["Workflow"];
         };
         /**
          * ServerUsage
@@ -957,6 +1292,26 @@ export interface components {
             uses_cores: boolean;
         };
         /**
+         * TreeState
+         * @description The live state of the working tree of a source.
+         *
+         *     Attributes:
+         *         name: Name of the source.
+         *         branch: The branch, none when detached.
+         *         commit: The commit.
+         *         changed_files: The files which differ from the commit.
+         */
+        TreeState: {
+            /** Branch */
+            branch: string | null;
+            /** Changed Files */
+            changed_files: string[];
+            /** Commit */
+            commit: string;
+            /** Name */
+            name: string;
+        };
+        /**
          * Usage
          * @description Bytes of the run store per run and per group (`""` without a group).
          */
@@ -1116,6 +1471,324 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["CompareTable"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_edits_edits_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditSession"][];
+                };
+            };
+        };
+    };
+    open_edit_edits_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OpenEdit"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditSession"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_edit_edits__session_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditSession"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    close_edit_edits__session_id__close_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditSession"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_events_edits__session_id__events_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_requests_edits__session_id__requests_get: {
+        parameters: {
+            query?: {
+                timeout?: number;
+            };
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditRequest"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    edit_result_edits__session_id__requests__request_id__result_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditResult"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_edit_edits__session_id__run_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    save_edit_edits__session_id__save_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["SaveBody"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditSession"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    put_edit_state_edits__session_id__state_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                session_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EditState"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EditSession"];
                 };
             };
             /** @description Validation Error */
