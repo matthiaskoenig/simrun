@@ -35,6 +35,10 @@ export interface Edit {
   /** The errors per task, without the `task '<id>':` prefix. */
   taskErrors: ComputedRef<Record<string, string[]>>;
   estimate: Ref<Record<string, TaskEstimate>>;
+  /** What the service said of the draft: null while never validated or when the validation itself failed. */
+  valid: Ref<boolean | null>;
+  /** Why the run could not be opened, null otherwise. */
+  loadError: Ref<string | null>;
   types: Ref<TaskTypeView[]>;
   openSession(id: string, signal: AbortSignal): void;
   openRun(id: string): Promise<void>;
@@ -61,6 +65,8 @@ export function useEdit(): Edit {
   const changedOnDisk = ref(false);
   const messages = ref<string[]>([]);
   const estimate = shallowRef<Record<string, TaskEstimate>>({});
+  const valid = ref<boolean | null>(null);
+  const loadError = ref<string | null>(null);
   const types = shallowRef<TaskTypeView[]>([]);
   // the sources a run was made with, used while there is no session
   const runSources = shallowRef<SourceProvenance[]>([]);
@@ -68,6 +74,8 @@ export function useEdit(): Edit {
   let timer: ReturnType<typeof setTimeout> | undefined;
   // a later validation makes the answer of an earlier one stale
   let generation = 0;
+  // a later open makes the answer of an earlier openRun stale
+  let opening = 0;
 
   const dirty = computed(() => isDirty.value);
   const connected = computed(() => session.value?.connected ?? false);
@@ -91,16 +99,26 @@ export function useEdit(): Edit {
       const result = await api.validate(workflow);
       if (mine !== generation) return;
       messages.value = result.errors;
+      valid.value = result.ok;
       if (!result.ok) {
         estimate.value = {};
         return;
       }
+    } catch (error) {
+      if (mine !== generation) return;
+      console.error("validate failed: %o", error);
+      messages.value = [`validation failed: ${error instanceof Error ? error.message : String(error)}`];
+      valid.value = null;
+      estimate.value = {};
+      return;
+    }
+    try {
       const planned = await api.estimate(workflow, sources());
       if (mine === generation) estimate.value = planned;
     } catch (error) {
       if (mine !== generation) return;
       // an estimate which fails (no snapshots yet) leaves the draft valid
-      console.error("validate or estimate failed: %o", error);
+      console.error("estimate failed: %o", error);
       estimate.value = {};
     }
   }
@@ -135,18 +153,26 @@ export function useEdit(): Edit {
     );
   }
 
+  function reset(): void {
+    session.value = null;
+    draft.value = null;
+    base.value = "";
+    group.value = null;
+    isDirty.value = false;
+    changedOnDisk.value = false;
+    messages.value = [];
+    valid.value = null;
+    estimate.value = {};
+    runSources.value = [];
+    loadError.value = null;
+  }
+
   function openSession(id: string, signal: AbortSignal): void {
+    opening += 1;
     if (sessionId !== id) {
       clearTimeout(timer);
-      session.value = null;
-      draft.value = null;
-      base.value = "";
-      group.value = null;
-      isDirty.value = false;
-      changedOnDisk.value = false;
-      messages.value = [];
-      estimate.value = {};
-      runSources.value = [];
+      generation += 1;
+      reset();
       sessionId = id;
     }
     loadTypes();
@@ -163,15 +189,21 @@ export function useEdit(): Edit {
   async function openRun(id: string): Promise<void> {
     clearTimeout(timer);
     sessionId = null;
-    session.value = null;
+    generation += 1;
+    reset();
+    const mine = ++opening;
     loadTypes();
-    const record = await api.run(id);
+    let record;
+    try {
+      record = await api.run(id);
+    } catch (error) {
+      if (mine === opening) loadError.value = error instanceof Error ? error.message : String(error);
+      return;
+    }
+    if (mine !== opening) return;
     draft.value = clone(record.workflow);
     group.value = record.group ?? null;
     runSources.value = record.sources;
-    base.value = "";
-    isDirty.value = false;
-    changedOnDisk.value = false;
     schedule();
   }
 
@@ -190,11 +222,21 @@ export function useEdit(): Edit {
     const workflow = draft.value;
     if (current === null || workflow === null) throw new Error("there is no session to save to");
     try {
-      const saved = await api.save(current.id, workflow, force ? current.file_sha256 : base.value, force);
+      let target = base.value;
+      if (force) {
+        // the event with the new hash may not have arrived yet
+        const fresh = await api.edit(current.id);
+        session.value = fresh;
+        target = fresh.file_sha256;
+      }
+      const saved = await api.save(current.id, workflow, target, force);
       session.value = saved;
       base.value = saved.file_sha256;
-      isDirty.value = false;
-      changedOnDisk.value = false;
+      // an edit made while the save was in flight is not on disk: the draft stays dirty
+      if (draft.value === workflow) {
+        isDirty.value = false;
+        changedOnDisk.value = false;
+      }
     } catch (error) {
       if (error instanceof ApiError && error.status === 409) {
         changedOnDisk.value = true;
@@ -215,5 +257,5 @@ export function useEdit(): Edit {
 
   if (getCurrentScope()) onScopeDispose(() => clearTimeout(timer));
 
-  return { session, draft, base, group, dirty, connected, changedOnDisk, errors, taskErrors, estimate, types, openSession, openRun, change, reload, save, run };
+  return { session, draft, base, group, dirty, connected, changedOnDisk, errors, taskErrors, estimate, valid, loadError, types, openSession, openRun, change, reload, save, run };
 }
