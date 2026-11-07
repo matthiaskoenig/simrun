@@ -2,10 +2,23 @@
  * The event streams of the service (`text/event-stream`), read with `fetch`.
  *
  * `EventSource` cannot send the bearer token but in the URL, which the token
- * never goes into; so a stream is read with `fetch` and `parseEvents`. A
- * stream ends after a while on the service and is then opened again, as after
- * an error, with a backoff of 1 s doubling to 10 s, which an event resets; a
- * 401 ends the session and the stream.
+ * never goes into; so a stream is read with `fetch` and `parseEvents`.
+ *
+ * The contract of `stream`:
+ *
+ * - An end of the body is the service bounding a stream (`events_max_s`): the
+ *   stream is opened again after the delay, unless `done()` is true then (a
+ *   run stream ends once its run is final), which ends it for good. An end is
+ *   not an error and does not mark the streams as reconnecting.
+ * - A network error, a 5xx, a 408 or a 429 is transient: the stream is marked
+ *   as reconnecting (`connected` false) and opened again after the delay.
+ * - Any other 4xx is permanent (a 404 of an unknown run): the stream ends and
+ *   `onError(status)` is called once; a 401 also ends the session.
+ * - A connection which receives nothing, not even the `: keep-alive` comment
+ *   the service sends every 15 s, for `WATCHDOG_MS` is dead (a silent drop of
+ *   the network): it is aborted and handled as a network error.
+ * - The delay is 1 s, doubling to 10 s, and back to 1 s after every event.
+ * - Aborting `signal` ends the stream at once, also during the delay.
  */
 import { computed, reactive } from "vue";
 import { auth } from "../auth";
@@ -69,6 +82,22 @@ export function parseEvents(chunk: string, state: ParserState): { events: Stream
 const INITIAL_DELAY_MS = 1000;
 const MAX_DELAY_MS = 10_000;
 
+/** How long a connection may stay silent: three times the keep-alive interval of the service, 15 s. */
+export const WATCHDOG_MS = 45_000;
+
+/** The options of `stream`. */
+export interface StreamOptions {
+  /** Whether the stream is complete; checked when the body ends, true ends the stream. */
+  done?: () => boolean;
+  /** Called once with the status of a permanent error, which ends the stream. */
+  onError?: (status: number) => void;
+}
+
+/** Whether an answer with `status` (not 2xx) may succeed when the request is repeated. */
+function transient(status: number): boolean {
+  return status >= 500 || status === 408 || status === 429 || status < 400;
+}
+
 // the streams which failed and wait to be opened again
 const reconnecting = reactive(new Set<symbol>());
 
@@ -111,40 +140,65 @@ interface Connection {
   onMessage: () => void;
 }
 
-/** Reads one connection of a stream to its end; false after a 401, an error after a failure. */
-async function read({ path, onEvent, signal, onOpen, onMessage }: Connection): Promise<boolean> {
-  const response = await fetch(path, {
-    headers: authorized(auth.token.value, { Accept: "text/event-stream" }),
-    cache: "no-store",
-    signal,
-  });
-  if (response.status === 401) {
-    auth.logout();
-    return false;
-  }
-  if (!response.ok || response.body === null) throw new Error(`${path}: ${response.status} ${response.statusText}`);
-  onOpen();
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let state = initialState();
-  for (;;) {
-    const { value, done } = await reader.read();
-    if (done) return true;
-    const result = parseEvents(decoder.decode(value, { stream: true }), state);
-    state = result.state;
-    for (const event of result.events) {
-      onMessage();
-      deliver(onEvent, event);
+/** How a connection ended: the body ended, or a permanent error with its status. */
+type Outcome = { kind: "end" } | { kind: "error"; status: number };
+
+/**
+ * Reads one connection of a stream to its end; a transient failure, or
+ * silence for `WATCHDOG_MS`, raises.
+ */
+async function read({ path, onEvent, signal, onOpen, onMessage }: Connection): Promise<Outcome> {
+  const watchdog = new AbortController();
+  const connection = AbortSignal.any([signal, watchdog.signal]);
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const alive = (): void => {
+    clearTimeout(timer);
+    timer = setTimeout(() => watchdog.abort(new Error(`${path}: nothing received for ${WATCHDOG_MS} ms`)), WATCHDOG_MS);
+  };
+  alive();
+  try {
+    const response = await fetch(path, {
+      headers: authorized(auth.token.value, { Accept: "text/event-stream" }),
+      cache: "no-store",
+      signal: connection,
+    });
+    if (!response.ok && !transient(response.status)) return { kind: "error", status: response.status };
+    if (!response.ok || response.body === null) throw new Error(`${path}: ${response.status} ${response.statusText}`);
+    alive();
+    onOpen();
+    const reader = response.body.getReader();
+    // a body which is not tied to the signal (a service worker, a test) is cancelled by hand
+    const cancel = (): void => void reader.cancel(connection.reason).catch(() => undefined);
+    connection.addEventListener("abort", cancel, { once: true });
+    try {
+      const decoder = new TextDecoder();
+      let state = initialState();
+      for (;;) {
+        const { value, done } = await reader.read();
+        connection.throwIfAborted();
+        if (done) return { kind: "end" };
+        alive();
+        const result = parseEvents(decoder.decode(value, { stream: true }), state);
+        state = result.state;
+        for (const event of result.events) {
+          onMessage();
+          deliver(onEvent, event);
+        }
+      }
+    } finally {
+      connection.removeEventListener("abort", cancel);
     }
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 /**
- * Reads the stream `path` of the API until `signal` aborts, opening it again
- * after an end or an error; `onEvent` gets the name and the parsed JSON data
- * of every event.
+ * Reads the stream `path` of the API until `signal` aborts, `done()` is true
+ * at the end of the body or a permanent error; `onEvent` gets the name and the
+ * parsed JSON data of every event. See the contract at the top of the module.
  */
-export function stream(path: string, onEvent: Handler, signal: AbortSignal): void {
+export function stream(path: string, onEvent: Handler, signal: AbortSignal, options: StreamOptions = {}): void {
   const id = Symbol(path);
   let delay = INITIAL_DELAY_MS;
   const connection: Connection = {
@@ -157,9 +211,16 @@ export function stream(path: string, onEvent: Handler, signal: AbortSignal): voi
   const run = async (): Promise<void> => {
     while (!signal.aborted) {
       try {
-        if (!(await read(connection))) break;
+        const outcome = await read(connection);
+        if (outcome.kind === "error") {
+          if (outcome.status === 401) auth.logout();
+          options.onError?.(outcome.status);
+          break;
+        }
+        if (options.done?.()) break;
       } catch {
-        // the service is down, the network dropped or an event was no JSON: open it again after the delay
+        // the service is down, the network dropped, the connection was silent
+        // or an event was no JSON: open it again after the delay
         if (signal.aborted) break;
         reconnecting.add(id);
       }
