@@ -19,3 +19,17 @@ body {
   color: #111827;
   -webkit-font-smoothing: antialiased;
 }
+
+/* a reserved server in the servers strip, `.stripes` of the mockup */
+.stripes {
+  background-image: repeating-linear-gradient(135deg, #fde68a 0 6px, #fef3c7 6px 12px);
+}
+
+/* a text cut at its start, so that its end stays visible: `…test-agent-0` */
+.truncate-start {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
