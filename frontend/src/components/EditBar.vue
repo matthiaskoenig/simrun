@@ -105,8 +105,9 @@ const button = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm 
           v-if="connected"
           type="button"
           data-save
-          :class="[button, 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60']"
-          :disabled="saving"
+          :class="[button, 'border border-gray-200 bg-white text-gray-700 hover:bg-gray-50 disabled:opacity-60 disabled:hover:bg-white']"
+          :disabled="saving || !(dirty || changedOnDisk)"
+          :title="dirty || changedOnDisk ? undefined : 'Nothing to save'"
           @click="$emit('save', false)"
         >
           {{ saving ? "Saving..." : "Save" }}
@@ -123,7 +124,7 @@ const button = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm 
         <button
           type="button"
           data-run
-          :class="[button, 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60']"
+          :class="[button, 'bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-60 disabled:hover:bg-blue-600']"
           :disabled="valid === false || running"
           @click="$emit('run')"
         >
