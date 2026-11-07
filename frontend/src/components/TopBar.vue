@@ -49,7 +49,7 @@ const cluster = computed(() => ({
       >
         <AppIcon name="server" class="size-3.5" />
         <span class="tabular-nums"
-          ><b class="font-semibold text-gray-900">{{ formatCores(cluster.used) }}</b>/{{ cluster.total }} cores</span
+          ><b class="font-semibold text-gray-900">{{ formatCores(cluster.used) }}</b>/{{ formatCores(cluster.total) }} cores</span
         >
         <span class="text-gray-300">|</span>
         <span class="tabular-nums">{{ cluster.queued }} queued</span>

@@ -28,23 +28,59 @@ class PlanError(ValueError):
     """A task which cannot be planned on the nodes."""
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class Node:
     """A node of the cluster.
 
     Attributes:
         name: Name of the node.
-        cores: Allocatable cores.
-        memory_gb: Allocatable memory in GiB.
+        cores: The whole cores a worker pod of a run can have on the node, what the
+            planner plans with.
+        memory_gb: The GiB of memory a worker pod of a run can have on the node,
+            what the planner plans with.
         gpus: Number of GPUs.
         reserved_by: Name of the reservation holding the node, None if free.
+        allocatable_cores: The cores the scheduler gives the pods of the runs
+            (sidecars included), as it counts their requests.
+        allocatable_memory_gb: The GiB of memory the scheduler gives the pods of
+            the runs, as it counts their requests.
     """
 
     name: str
     cores: int
     memory_gb: float
-    gpus: int = 0
-    reserved_by: str | None = None
+    gpus: int
+    reserved_by: str | None
+    allocatable_cores: float
+    allocatable_memory_gb: float
+
+    def __init__(
+        self,
+        name: str,
+        cores: int,
+        memory_gb: float,
+        gpus: int = 0,
+        reserved_by: str | None = None,
+        allocatable_cores: float | None = None,
+        allocatable_memory_gb: float | None = None,
+    ) -> None:
+        """Create the node; the allocatable cores and memory default to the others."""
+        values = {
+            "name": name,
+            "cores": cores,
+            "memory_gb": memory_gb,
+            "gpus": gpus,
+            "reserved_by": reserved_by,
+            "allocatable_cores": float(
+                cores if allocatable_cores is None else allocatable_cores
+            ),
+            "allocatable_memory_gb": float(
+                memory_gb if allocatable_memory_gb is None else allocatable_memory_gb
+            ),
+        }
+        for key, value in values.items():
+            # a frozen dataclass sets its fields past its own __setattr__
+            object.__setattr__(self, key, value)
 
 
 @dataclass(frozen=True)

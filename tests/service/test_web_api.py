@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Any
 
 from simrun.ledger import Ledger
+from simrun.planner import Node
 from simrun.service.app import openapi_document
 from simrun.service.backend import Placement
 from simrun.worker import WorkerReport, write_report
@@ -73,6 +74,22 @@ def test_servers(service):
     assert by_name["srv-04"]["reserved_by"] == "someone"
     assert by_name["srv-01"]["pods"] == []
     assert by_name["srv-03"]["pods"] == []  # the workflow is not started
+
+
+def test_servers_have_the_capacity_the_scheduler_counts(service):
+    # the planner plans a worker pod with 39 cores and 187 GiB, the scheduler
+    # counts the requests of the pods (their sidecars included) against 39.5 and
+    # 187.6: the strip shows the pods against the latter
+    service.backend._nodes["srv-02"] = Node(
+        "srv-02", 39, 187.0, allocatable_cores=39.5, allocatable_memory_gb=187.6
+    )
+    by_name = {s["name"]: s for s in service.get("/servers").json()}
+    assert (by_name["srv-02"]["cores"], by_name["srv-02"]["memory_gb"]) == (
+        39.5,
+        187.6,
+    )
+    # a node without them: the capacity of the planner
+    assert (by_name["srv-03"]["cores"], by_name["srv-03"]["memory_gb"]) == (40, 188)
 
 
 def _progress(task_dir: Path, *units: tuple[str, int]) -> None:

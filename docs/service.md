@@ -27,7 +27,7 @@ The identity of the token is recorded with the run and decides its priority: the
 | `GET /runs` | the runs, filtered by `group`, `owner`, `agent` and `state` |
 | `GET /runs/{run}` | the record of a run |
 | `GET /me` | the identity of the token |
-| `GET /servers` | the servers of the cluster with their cores, memory and reservation and the cores and memory the pods on them request |
+| `GET /servers` | the servers of the cluster with their reservation, the cores and memory the scheduler gives the pods of runs (allocatable less the requests of other pods) and the pods of runs on them with their requests |
 | `GET /events` | server-sent events: `runs` (the runs, filtered as `GET /runs`, with owner and workflow) and `servers`, each when it changed |
 | `GET /runs/{run}/events` | server-sent events: `run` (the record), `progress` and `workers` of a run, each when it changed; it ends after a run ended |
 | `GET /runs/{run}/tasks/{task}/workers` | the workers of a task: server, state, attempts, processes, memory and units |

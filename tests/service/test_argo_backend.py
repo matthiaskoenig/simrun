@@ -202,12 +202,23 @@ def _k8s_node(
     }
 
 
+# 6442450Ki, the allocatable memory of `_k8s_node`, in GiB: 6.14
+ALLOCATABLE_GB = 6442450 / 1024**2
+
+
 def test_node_is_allocatable_minus_the_executor_rounded_down() -> None:
-    # 6442450Ki is 6.14 GiB, 0.25 GiB of the executor beside it: 5 GiB, 19 cores
-    assert node_from(_k8s_node()) == Node("n1", 19, 5.0, 0, None)
+    # 6.14 GiB, 0.25 GiB of the executor beside it: 5 GiB, 19 cores for the
+    # planner; the scheduler counts the requests of the pods against all of it
+    node = node_from(_k8s_node())
+    assert node == Node("n1", 19, 5.0, 0, None, 20.0, ALLOCATABLE_GB)
+    assert node is not None
+    assert (node.allocatable_cores, round(node.allocatable_memory_gb, 2)) == (
+        20.0,
+        6.14,
+    )
     node = _k8s_node(cpu="19500m")
     node["status"]["allocatable"]["nvidia.com/gpu"] = "2"
-    assert node_from(node) == Node("n1", 19, 5.0, 2, None)
+    assert node_from(node) == Node("n1", 19, 5.0, 2, None, 19.5, ALLOCATABLE_GB)
 
 
 def _k8s_pod(
@@ -260,8 +271,9 @@ def test_nodes_without_the_requests_of_other_pods() -> None:
     )
     pods = SimpleNamespace(items=[daemon, run, elsewhere, infrastructure])
     created, calls = _fake_backend(list_pod_for_all_namespaces=pods)
-    # 20 cores and 6.14 GiB less the executor, 0.5 cores and 2 GiB of other pods
-    assert created.nodes() == [Node("n1", 19, 3.0, 0, None)]
+    # 20 cores and 6.14 GiB less the executor, 0.5 cores and 2 GiB of other pods;
+    # without the executor and not rounded, 19.5 cores and 4.14 GiB
+    assert created.nodes() == [Node("n1", 19, 3.0, 0, None, 19.5, ALLOCATABLE_GB - 2)]
     (listing,) = [c for c in calls if c[0] == "list_pod_for_all_namespaces"]
     assert listing[2]["field_selector"] == (
         "status.phase!=Succeeded,status.phase!=Failed"
@@ -270,9 +282,11 @@ def test_nodes_without_the_requests_of_other_pods() -> None:
 
 def test_node_reservation_and_taints() -> None:
     reserved = {"key": "simrun/reserved", "value": "r1", "effect": "NoExecute"}
-    assert node_from(_k8s_node([reserved])) == Node("n1", 19, 5.0, 0, "r1")
+    assert node_from(_k8s_node([reserved])) == Node(
+        "n1", 19, 5.0, 0, "r1", 20.0, ALLOCATABLE_GB
+    )
     labelled = _k8s_node(labels={"simrun/reserved": "r2"})
-    assert node_from(labelled) == Node("n1", 19, 5.0, 0, "r2")
+    assert node_from(labelled) == Node("n1", 19, 5.0, 0, "r2", 20.0, ALLOCATABLE_GB)
     control = {"key": "node-role.kubernetes.io/control-plane", "effect": "NoSchedule"}
     assert node_from(_k8s_node([control])) is None
     prefer = {"key": "x", "effect": "PreferNoSchedule"}
