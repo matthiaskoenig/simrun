@@ -50,4 +50,40 @@ describe("SchemaForm", () => {
     expect(wrapper.emitted("update:value")!.at(-1)).toEqual([{ n: 3 }]);
     expect(wrapper.get("[data-field='n']").text()).not.toContain("a whole number");
   });
+
+  it("shows the errors of a field under it, those of a nested field in its group", () => {
+    const nested = {
+      properties: {
+        n: { title: "N", type: "integer" },
+        opt: { properties: { tol: { title: "Tol", type: "number" } }, title: "Opt", type: "object" },
+      },
+      type: "object",
+    };
+    const wrapper = mount(SchemaForm, {
+      props: { schema: nested, value: {}, errors: { n: ["Field required"], "opt.tol": ["Input should be a valid number"] } },
+    });
+    expect(wrapper.get("[data-field='n'] [data-field-error]").text()).toBe("Field required");
+    expect(wrapper.get("[data-field='n'] input").classes()).toContain("border-red-400");
+    expect(wrapper.get("[data-field='tol'] [data-field-error]").text()).toBe("Input should be a valid number");
+  });
+
+  it("puts scalar fields in two columns and lists, objects and JSON across both", () => {
+    const wide = {
+      properties: {
+        n: { title: "N", type: "integer" },
+        ok: { title: "Ok", type: "boolean" },
+        mode: { enum: ["a", "b"], title: "Mode", type: "string" },
+        code: { maxLength: 8, title: "Code", type: "string" },
+        image: { title: "Image", type: "string" },
+        names: { items: { type: "string" }, title: "Names", type: "array" },
+        extra: { additionalProperties: { type: "string" }, title: "Extra", type: "object" },
+      },
+      type: "object",
+    };
+    const wrapper = mount(SchemaForm, { props: { schema: wide, value: {} } });
+    const span = (key: string) => wrapper.get(`[data-field='${key}']`).classes().includes("col-span-2");
+    expect(["n", "ok", "mode", "code"].map(span)).toEqual([false, false, false, false]);
+    expect(["image", "names", "extra"].map(span)).toEqual([true, true, true]);
+    expect(wrapper.get("[data-form]").classes()).toContain("grid-cols-2");
+  });
 });

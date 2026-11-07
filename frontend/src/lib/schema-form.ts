@@ -27,6 +27,52 @@ export interface Field {
   fields?: Field[];
   /** Whether `null` is allowed (`anyOf` with `{type: "null"}`). */
   nullable: boolean;
+  /** The longest text a `string` takes, when the schema says. */
+  maxLength?: number;
+}
+
+/** The longest `maxLength` of a string which still fits one of the two columns of the form. */
+export const SHORT_STRING = 32;
+
+/**
+ * Whether a field spans both columns of the form: lists, groups and JSON, and
+ * strings which are not known to be short (an image, a path).
+ */
+export function wide(field: Field): boolean {
+  if (field.kind === "list" || field.kind === "object" || field.kind === "json") return true;
+  return field.kind === "string" && !(field.maxLength !== undefined && field.maxLength <= SHORT_STRING);
+}
+
+/**
+ * The errors of the service by the dotted location of their field, from the
+ * errors of a task (`<loc>: <msg>`, the task prefix removed); the others are
+ * returned apart, as written.
+ */
+export function fieldErrors(errors: string[], keys: string[]): { byField: Record<string, string[]>; other: string[] } {
+  const byField: Record<string, string[]> = {};
+  const other: string[] = [];
+  const known = new Set(keys);
+  for (const error of errors) {
+    const match = /^([\w.]+): (.*)$/s.exec(error);
+    const loc = match?.[1];
+    if (match && loc && known.has(loc.split(".")[0]!)) (byField[loc] ??= []).push(match[2]!);
+    else other.push(error);
+  }
+  return { byField, other };
+}
+
+/** The errors of the fields under `key`, by their location below it. */
+export function errorsBelow(errors: Record<string, string[]>, key: string): Record<string, string[]> {
+  const prefix = `${key}.`;
+  return Object.fromEntries(Object.entries(errors).filter(([loc]) => loc.startsWith(prefix)).map(([loc, list]) => [loc.slice(prefix.length), list]));
+}
+
+/** The errors of the field `key` itself, and those of the items of a list or JSON field (`key.<index>`), which have no field of their own. */
+export function errorsAt(errors: Record<string, string[]>, field: Field): string[] {
+  const own = errors[field.key] ?? [];
+  if (field.kind === "object") return own;
+  const prefix = `${field.key}.`;
+  return [...own, ...Object.entries(errors).flatMap(([loc, list]) => (loc.startsWith(prefix) ? list.map((m) => `${loc.slice(prefix.length)}: ${m}`) : []))];
 }
 
 const ITEM_KINDS = new Set(["string", "number", "integer"]);
@@ -94,6 +140,7 @@ function field(root: JsonSchema, key: string, raw: JsonSchema, required: boolean
   if (Array.isArray(node.enum)) return { ...common, kind: "enum", options: node.enum };
   switch (node.type) {
     case "string":
+      return { ...common, kind: "string", ...(typeof node.maxLength === "number" ? { maxLength: node.maxLength } : {}) };
     case "number":
     case "integer":
     case "boolean":

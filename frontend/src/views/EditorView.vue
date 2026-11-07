@@ -14,6 +14,7 @@ import EditInspector from "../components/EditInspector.vue";
 import TaskPalette from "../components/TaskPalette.vue";
 import TopBar from "../components/TopBar.vue";
 import { addTask } from "../lib/edit-graph";
+import { fileOf, shortRun } from "../lib/format";
 import type { TaskTypeView, Workflow } from "../api/client";
 import { useEdit } from "../stores/edit";
 import { useLive } from "../stores/live";
@@ -28,6 +29,13 @@ const selected = ref<string | null>(null);
 // why the last connection was refused, shown over the canvas until the next edit
 const refused = ref<string | null>(null);
 const canvas = ref<InstanceType<typeof EditCanvas> | null>(null);
+
+// the last part of the breadcrumb: the file of a session, or the run of a rerun
+const crumb = computed(() => {
+  if (props.run) return `rerun of #${shortRun(props.id)}`;
+  const path = edit.session.value?.path;
+  return path ? fileOf(path).name : null;
+});
 
 // the sources shown in the workflow panel: the trees of the session, else those of the run
 const tree = computed(() => edit.session.value?.tree ?? edit.runSources.value);
@@ -121,13 +129,20 @@ onBeforeUnmount(() => controller?.abort());
       :runs="live.runs.value"
       :servers="live.servers.value"
       :connected="live.connected.value"
-      :workflow="edit.draft.value?.name ?? null"
+      :workflow="crumb"
+      :crumb-title="run ? null : (edit.session.value?.path ?? null)"
       mode="editor"
       :session="run ? null : id"
     />
     <div class="flex min-h-0 flex-1">
       <aside data-palette class="w-[260px] shrink-0 border-r border-gray-200 bg-white">
-        <TaskPalette :types="edit.types.value" @add="add" />
+        <TaskPalette :types="edit.types.value" @add="add">
+          <template v-if="run" #footer>The workflow of run <span class="font-mono text-gray-700">#{{ shortRun(id) }}</span></template>
+          <template v-else-if="edit.session.value" #footer>
+            Saves to <span class="font-mono text-gray-700" :title="edit.session.value.path">{{ fileOf(edit.session.value.path).name }}</span> on
+            {{ edit.session.value.host }}
+          </template>
+        </TaskPalette>
       </aside>
       <main data-canvas class="relative flex min-w-0 flex-1 flex-col bg-gray-50">
         <EditBar
@@ -142,6 +157,7 @@ onBeforeUnmount(() => controller?.abort());
           :saving="saving"
           :running="running"
           :error="failure"
+          :run="run ? id : null"
           @save="save"
           @reload="edit.reload()"
           @run="runDraft"
