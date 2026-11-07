@@ -9,6 +9,7 @@ function run(fields: Partial<RunItem> & Pick<RunItem, "id" | "state" | "owner" |
     group: null,
     message: null,
     priority: "standard",
+    progress: null,
     tasks: { squares: "waiting" },
     workflow: "squares",
     ...fields,

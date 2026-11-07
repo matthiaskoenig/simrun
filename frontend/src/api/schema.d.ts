@@ -531,6 +531,13 @@ export interface components {
         /**
          * RunItem
          * @description A run of the list of runs: its summary with its owner and workflow name.
+         *
+         *     Attributes:
+         *         owner: The owner of the run, of an agent the person it acts for.
+         *         workflow: The name of the workflow.
+         *         progress: The progress of an active run (submitting, queued, running) from
+         *             0 to 1, from the states of its tasks and their ledgers (`run_progress`);
+         *             None for a run which ended.
          */
         RunItem: {
             /** Agent */
@@ -551,6 +558,11 @@ export interface components {
             /** Owner */
             owner: string;
             priority: components["schemas"]["Priority"];
+            /**
+             * Progress
+             * @default null
+             */
+            progress: number | null;
             state: components["schemas"]["RunState"];
             /** Submitted By */
             submitted_by: string;
@@ -826,7 +838,7 @@ export interface components {
         TaskProgress: {
             counts: components["schemas"]["LedgerCounts"] | null;
             /** First */
-            first: {
+            first?: {
                 [key: string]: unknown;
             } | null;
             /** Last */
