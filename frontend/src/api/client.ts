@@ -20,8 +20,10 @@ export type RunState = Schemas["RunState"];
 export type RunSummary = Schemas["RunSummary"];
 export type ServerUsage = Schemas["ServerUsage"];
 export type TaskProgress = Schemas["TaskProgress"];
+export type TaskSpec = Schemas["TaskSpec"];
 export type TaskState = Schemas["TaskState"];
 export type WorkerView = Schemas["WorkerView"];
+export type Workflow = Schemas["Workflow"];
 
 /** A request with the token of the session, which a 401 ends. */
 async function call(path: string, init?: RequestInit): Promise<Response> {
