@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { auth } from "../auth";
-import { connected, initialState, parseEvents, stream, type ParserState } from "./sse";
+import { connected, initialState, parseEvents, stream, WATCHDOG_MS, type ParserState } from "./sse";
 
 function parseAll(chunks: string[]): { event: string; data: string }[] {
   let state: ParserState = initialState();
@@ -11,6 +11,17 @@ function parseAll(chunks: string[]): { event: string; data: string }[] {
     state = result.state;
   }
   return events;
+}
+
+/** A body which yields nothing until the test enqueues into its controller. */
+function silentBody(): { stream: ReadableStream<Uint8Array>; send: (text: string) => void } {
+  let controller!: ReadableStreamDefaultController<Uint8Array>;
+  const stream = new ReadableStream<Uint8Array>({
+    start(c) {
+      controller = c;
+    },
+  });
+  return { stream, send: (text) => controller.enqueue(new TextEncoder().encode(text)) };
 }
 
 function body(text: string): ReadableStream<Uint8Array> {
@@ -140,6 +151,106 @@ describe("stream", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
     await vi.advanceTimersByTimeAsync(1000);
     expect(fetchMock).toHaveBeenCalledTimes(4);
+  });
+
+  it("stops on a 404 and calls onError once", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValue(new Response("{}", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onError = vi.fn();
+
+    stream("/runs/unknown/events", () => {}, controller.signal, { onError });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledExactlyOnceWith(404);
+    expect(connected.value).toBe(true);
+    expect(auth.token.value).toBe("secret");
+  });
+
+  it("calls onError on a 401 too", async () => {
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockResolvedValue(new Response("", { status: 401 })));
+    const onError = vi.fn();
+
+    stream("/events", () => {}, controller.signal, { onError });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(401);
+    expect(auth.token.value).toBeNull();
+  });
+
+  it("reconnects after a 5xx, a 408 and a 429", async () => {
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(new Response("", { status: 503 }))
+      .mockResolvedValueOnce(new Response("", { status: 408 }))
+      .mockResolvedValueOnce(new Response("", { status: 429 }))
+      .mockResolvedValue(new Response("", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onError = vi.fn();
+
+    stream("/events", () => {}, controller.signal, { onError });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(connected.value).toBe(false);
+    await vi.advanceTimersByTimeAsync(1000 + 2000 + 4000);
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(404);
+  });
+
+  it("stops when the body ends and done() is true", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => new Response(body("event: run\ndata: {}\n\n")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    stream("/runs/r1/events", () => {}, controller.signal, { done: () => true });
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(connected.value).toBe(true);
+  });
+
+  it("reconnects when the body ends and done() is false", async () => {
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async () => new Response(body("event: run\ndata: {}\n\n")));
+    vi.stubGlobal("fetch", fetchMock);
+
+    stream("/runs/r1/events", () => {}, controller.signal, { done: () => false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(connected.value).toBe(true);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("aborts a connection silent for 45 s and reconnects", async () => {
+    expect(WATCHDOG_MS).toBe(45_000);
+    // a body which never yields, as after a silent drop of the network
+    const signals: AbortSignal[] = [];
+    const fetchMock = vi.fn<typeof fetch>().mockImplementation(async (_path, init) => {
+      if (init?.signal) signals.push(init.signal);
+      return new Response(silentBody().stream);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    stream("/events", () => {}, controller.signal);
+    await vi.advanceTimersByTimeAsync(WATCHDOG_MS - 1);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(connected.value).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(signals[0]?.aborted).toBe(true);
+    expect(controller.signal.aborted).toBe(false);
+    expect(connected.value).toBe(false);
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps a connection whose keep-alive comments arrive", async () => {
+    const silent = silentBody();
+    const fetchMock = vi.fn<typeof fetch>().mockResolvedValueOnce(new Response(silent.stream));
+    vi.stubGlobal("fetch", fetchMock);
+
+    stream("/events", () => {}, controller.signal);
+    for (let i = 0; i < 6; i++) {
+      await vi.advanceTimersByTimeAsync(15_000);
+      silent.send(": keep-alive\n\n");
+    }
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(connected.value).toBe(true);
   });
 
   it("does not reconnect once aborted", async () => {
