@@ -29,7 +29,7 @@ On the machine with the working trees, with `SIMRUN_URL`, `SIMRUN_TOKEN` and `SI
 simrun edit fit.yaml --source model=~/git/pkdb_models --source sbmlsim=~/git/sbmlsim
 ```
 
-It reads the file (a file which does not exist yet is a new workflow named by the file stem, without tasks), snapshots the sources, opens an edit session in the service and prints the link of the Editor, e.g. `http://localhost:8000/ui/#/edit/<id>`. It keeps running: it answers the saves and runs of the browser, and every 2 s it sends the file and the state of the working trees (branch, commit, uncommitted files) to the session when they changed. Ctrl-C (or SIGTERM) closes the session and ends the command. `--group` is the group of the runs started from the Editor which name none.
+It reads the file (a file which does not exist yet is a new workflow named by the file stem, without tasks), snapshots the sources, opens an edit session in the service and prints the link of the Editor, e.g. `http://localhost:8000/ui/#/edit/<id>`. It keeps running: it answers the saves and runs of the browser, and every 2 s it sends the file and the state of the working trees (branch, commit, uncommitted files) to the session when they changed. While a run is being submitted (plans, snapshots) it keeps telling the service that it is alive, and when the service is not reachable or a proxy answers 502, 503 or 504 (e.g. during a redeploy), it retries with a backoff of 1 s doubling to 10 s; a request is done once, also when its answer had to be sent again. Ctrl-C (or SIGTERM) closes the session and ends the command with exit code 0; when the service does not answer the close within 5 s, the command ends anyway and the session shows not connected after 30 s. A second Ctrl-C ends the command at once. `--group` is the group of the runs started from the Editor which name none.
 
 ### The session
 
@@ -48,18 +48,18 @@ The Editor has the palette of the task types of the service on the left, the can
 
 The bar shows the branch, the commit and the uncommitted files of the model source, the machine of the session and the state of the draft: **valid, saved**, **unsaved changes**, the number of errors, or **changed on disk**.
 
-- **Save** sends the draft to the command, which writes it into the file atomically, in the form `simrun` writes a workflow (the fields which differ from the defaults, a list indented below its key): comments and the formatting of a hand-written file are not kept.
+- **Save** sends the draft to the command, which writes it into the file atomically, in the form `simrun` writes a workflow (the fields which differ from the defaults, a list indented below its key): comments and the formatting of a hand-written file are not kept. Save is enabled only with unsaved changes (or a file changed on disk), so opening a hand-written file and looking at it never rewrites it. A save or a run waits up to 60 s for the command; it fails at once when the command stops meanwhile.
 - **Run workflow** sends the draft, saved or not, to the command, which snapshots the working trees again, plans the tasks with the task types installed there and submits the run, as `simrun submit` does with the same sources. The file is not written by a run. The Editor then shows the run in the Executions.
 
 ### Conflicts
 
-A change of the file on disk (by another editor, or by `git checkout`) reaches the Editor within a few seconds. Without unsaved changes the Editor takes the new workflow and lays it out again. With unsaved changes the bar says **changed on disk** and offers **Reload** (drop the draft for the file on disk) and **Save anyway** (overwrite the file with the draft). A plain Save is never written over a file which changed since the draft started from it: the command refuses it and the bar offers the same two choices. A file which appears on disk after the session opened on a missing file is such a change as well.
+A change of the file on disk (by another editor, or by `git checkout`) reaches the Editor within a few seconds. Without unsaved changes the Editor takes the new workflow and lays it out again. With unsaved changes the bar says **changed on disk** and offers **Reload** (drop the draft for the file on disk) and **Save anyway** (overwrite the file on disk with the draft, whatever changed there). A plain Save is never written over a file which changed since the draft started from it: the command refuses it and the bar offers the same two choices. A file which appears on disk after the session opened on a missing file is such a change as well.
 
 ### Without a connected machine
 
 When the command stopped, or its machine has not asked for 30 s (asleep, off the network), the bar says that the machine is **not connected**. **Save** becomes **Download YAML**, which downloads the draft as `<workflow name>.yaml` in the form a save writes, and the state says **unsaved changes, download to keep them** once the draft was changed. **Run workflow** submits the draft from the browser with the last snapshots of the session, as edited, without the plans of the task types. Starting the command again opens a new session.
 
-**Rerun with changes** in the run bar of the Executions opens the workflow and the sources of a run in the Editor (`#/runs/<run>/edit`). There is no machine behind it, the bar says **from run #<run>**: Download YAML keeps the changes, and Run workflow submits the changed workflow with the snapshots and the group of the run.
+**Rerun with changes** in the run bar of the Executions opens the workflow and the sources of a run in the Editor (`#/runs/<run>/edit`). There is no machine behind it, the bar says **from run #<run>**: Download YAML keeps the changes, and Run workflow submits the changed workflow with the snapshots, the group and the reservation of the run (the reservation shows in the inspector of the workflow and can be changed there).
 
 ## Development
 

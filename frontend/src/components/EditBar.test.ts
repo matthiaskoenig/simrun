@@ -81,6 +81,13 @@ describe("EditBar", () => {
     expect(bar.find("[data-download]").exists()).toBe(false);
   });
 
+  it("disables Save for a clean draft, so a hand-written file is not rewritten", () => {
+    expect(mountBar().get("[data-save]").attributes("disabled")).toBeDefined();
+    expect(mountBar({ dirty: true }).get("[data-save]").attributes("disabled")).toBeUndefined();
+    expect(mountBar({ changedOnDisk: true }).get("[data-save]").attributes("disabled")).toBeUndefined();
+    expect(mountBar({ dirty: true, saving: true }).get("[data-save]").attributes("disabled")).toBeDefined();
+  });
+
   it("shows Running... and disables Run while the request waits", () => {
     const bar = mountBar({ running: true });
     expect(bar.get("[data-run]").text()).toBe("Running...");
