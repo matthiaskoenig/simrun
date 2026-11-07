@@ -141,7 +141,14 @@ watch(
   },
 );
 
-onNodesInitialized(() => void fitView(FIT));
+// the view fits the first layout; Vue Flow initializes the nodes again on every added task,
+// which must not move the view away from where the person works
+let fitted = false;
+onNodesInitialized(() => {
+  if (fitted) return;
+  fitted = true;
+  void fitView(FIT);
+});
 
 // a changed size of the canvas fits the view again, once per frame
 const container = ref<HTMLElement | null>(null);

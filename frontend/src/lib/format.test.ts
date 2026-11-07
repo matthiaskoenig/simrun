@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { formatBytes, formatCores, formatDuration, formatGb, formatTime, initials } from "./format";
+import { formatBytes, formatCores, formatDuration, formatGb, formatPlacement, formatTime, initials } from "./format";
 
 describe("formatDuration", () => {
   it("names seconds, minutes and hours with minutes", () => {
@@ -70,5 +70,13 @@ describe("initials", () => {
     expect(initials("alice")).toBe("AL");
     expect(initials("alice-bot")).toBe("AB");
     expect(initials("")).toBe("?");
+  });
+});
+
+describe("formatPlacement", () => {
+  it("names the pods, the worker processes of a pod and the memory of a pod", () => {
+    expect(formatPlacement(1, 1, 6)).toBe("1 pod of 1 worker, 6 GB");
+    expect(formatPlacement(1, 8, 12)).toBe("1 pod of 8 workers, 12 GB");
+    expect(formatPlacement(4, 36, 180)).toBe("4 pods of 36 workers, 180 GB each");
   });
 });

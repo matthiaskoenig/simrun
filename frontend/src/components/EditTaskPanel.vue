@@ -8,7 +8,7 @@
 import { computed, ref, watch } from "vue";
 import type { ResourceOverride, TaskEstimate, TaskSpec, TaskTypeView, Workflow } from "../api/client";
 import { disconnect, removeTask, renameTask } from "../lib/edit-graph";
-import { formatDuration, formatGb } from "../lib/format";
+import { formatDuration, formatGb, formatPlacement } from "../lib/format";
 import { kindOf } from "../lib/kinds";
 import SchemaForm from "./SchemaForm.vue";
 
@@ -161,7 +161,7 @@ function remove(): void {
         <div class="flex justify-between"><span>Duration</span><b class="font-semibold text-gray-900">{{ estimate.seconds === null ? "unknown" : formatDuration(estimate.seconds) }}</b></div>
         <div class="flex justify-between">
           <span>Placement</span>
-          <b class="font-semibold text-gray-900">{{ estimate.plan.pods }} {{ estimate.plan.pods === 1 ? "pod" : "pods" }} of {{ estimate.plan.shape.processes }} workers, {{ formatGb(estimate.plan.shape.memory_gb) }}</b>
+          <b data-placement class="font-semibold text-gray-900">{{ formatPlacement(estimate.plan.pods, estimate.plan.shape.processes, estimate.plan.shape.memory_gb) }}</b>
         </div>
         <div v-if="estimate.plan.units !== null" class="mt-1.5 text-[11px] text-gray-500">{{ estimate.plan.units }} units</div>
       </div>

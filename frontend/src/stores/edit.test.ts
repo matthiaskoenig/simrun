@@ -334,4 +334,24 @@ describe("useEdit", () => {
       group: "fits",
     });
   });
+
+  it("downloads the YAML and revokes its URL only after the download began", async () => {
+    const record = runRecord({ id: "r1", workflow: workflow("ran"), sources });
+    mockFetch("", (path) => {
+      if (path === "/runs/r1") return reply(record);
+      if (path === "/workflows/yaml") return new Response("name: ran\n");
+      return reply({ ok: true, errors: [] });
+    });
+    const edit = effectScope().run(() => useEdit())!;
+    await edit.openRun("r1");
+    const click = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+    URL.createObjectURL = vi.fn(() => "blob:x");
+    URL.revokeObjectURL = vi.fn();
+    await edit.download();
+    expect(click).toHaveBeenCalledOnce();
+    expect(URL.revokeObjectURL).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith("blob:x");
+    click.mockRestore();
+  });
 });
