@@ -15,6 +15,7 @@ export type EditSession = Schemas["EditSession"];
 export type Identity = Schemas["Identity"];
 export type OutputFile = Schemas["OutputFile"];
 export type PodUsage = Schemas["PodUsage"];
+export type ResourceOverride = Schemas["ResourceOverride"];
 export type RunItem = Schemas["RunItem"];
 export type RunRecord = Schemas["RunRecord"];
 export type RunState = Schemas["RunState"];
@@ -70,6 +71,8 @@ export const api = {
   outputs: (id: string, task: string): Promise<OutputFile[]> => json(`/runs/${segment(id)}/outputs/${segment(task)}`),
   /** Cancels a run. */
   cancel: (id: string): Promise<RunSummary> => json(`/runs/${segment(id)}/cancel`, { method: "POST" }),
+  /** The servers of the cluster with their usage. */
+  servers: (): Promise<ServerUsage[]> => json("/servers"),
   /** The task types of the service. */
   taskTypes: (): Promise<TaskTypeView[]> => json("/task-types"),
   /** The edit sessions of the caller, newest first. */

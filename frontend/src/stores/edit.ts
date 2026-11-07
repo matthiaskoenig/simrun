@@ -40,6 +40,8 @@ export interface Edit {
   /** Why the run could not be opened, null otherwise. */
   loadError: Ref<string | null>;
   types: Ref<TaskTypeView[]>;
+  /** The sources a run was made with, empty for a session. */
+  runSources: Ref<SourceProvenance[]>;
   openSession(id: string, signal: AbortSignal): void;
   openRun(id: string): Promise<void>;
   change(workflow: Workflow): void;
@@ -257,5 +259,5 @@ export function useEdit(): Edit {
 
   if (getCurrentScope()) onScopeDispose(() => clearTimeout(timer));
 
-  return { session, draft, base, group, dirty, connected, changedOnDisk, errors, taskErrors, estimate, valid, loadError, types, openSession, openRun, change, reload, save, run };
+  return { session, draft, base, group, dirty, connected, changedOnDisk, errors, taskErrors, estimate, valid, loadError, types, runSources, openSession, openRun, change, reload, save, run };
 }
