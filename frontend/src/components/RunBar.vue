@@ -17,6 +17,8 @@ const props = defineProps<{ record: RunRecord; progress: Record<string, TaskProg
 
 const agent = computed(() => props.record.agent !== null);
 const who = computed(() => props.record.agent ?? props.record.submitted_by);
+// a run starts once its image is ready and its workflow is submitted
+const started = computed(() => props.record.built ?? props.record.created);
 
 // the progress of the run as its card in the list counts it, with the ledgers of its tasks
 const percent = computed(() => runPercent(props.record.tasks, props.progress));
@@ -84,7 +86,7 @@ watch(stoppable, (value) => {
         <AppIcon :name="agent ? 'bot' : 'user'" class="size-3.5" />
         <span class="truncate">{{ who }}<span v-if="agent" class="text-gray-400"> for {{ record.owner }}</span></span>
       </span>
-      <span data-started class="shrink-0 text-gray-500">started {{ formatTime(record.created) }}</span>
+      <span data-started class="shrink-0 text-gray-500" :title="`submitted ${formatTime(record.created)}`">started {{ formatTime(started) }}</span>
       <StatusPill :status="record.state" small />
       <span
         v-if="record.state === 'running'"

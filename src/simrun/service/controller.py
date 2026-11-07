@@ -157,8 +157,8 @@ def task_states(
     return states
 
 
-def _attempt(name: str) -> int:
-    """The attempt of a report file `<worker>-<attempt>.json`."""
+def attempt_of(name: str) -> int:
+    """The attempt of a report file `<worker>-<attempt>.json`, 0 without one."""
     try:
         return int(name.removesuffix(".json").rsplit("-", 1)[1])
     except IndexError, ValueError:
@@ -770,7 +770,7 @@ class Controller:
                 logger.warning("report %s of run %s: %s", name, record.id, error)
                 (marks / name).touch()
                 continue
-            oom = is_oom(report, _attempt(name), record.oom_kills)
+            oom = is_oom(report, attempt_of(name), record.oom_kills)
             self.resources.record(key, report, base, oom=oom, run=record.id)
             (marks / name).touch()
         shape = record.plans.get(task_id, {}).get("shape")
