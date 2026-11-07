@@ -416,6 +416,13 @@ def _gb(value: int | None) -> float | None:
     return None if value is None else value / 1024**3
 
 
+def _newer(pod: Placement, than: Placement) -> bool:
+    """Whether a pod is of a later attempt; a pod of no known attempt is newest."""
+    if pod.attempt is None or than.attempt is None:
+        return than.attempt is not None
+    return pod.attempt > than.attempt
+
+
 def _pending(record: RunRecord) -> bool:
     """Whether a run still has to release its node or cancel its workflow."""
     return record.pending_release is not None or record.pending_cancel
@@ -775,8 +782,60 @@ class _Service:
             for n in self.backend.nodes()
         ]
 
-    def workers(self, record: RunRecord, task_id: str) -> list[WorkerView]:
-        """The workers of a task, sorted by id; 404 for an unknown task."""
+    def live_pods(self, record: RunRecord) -> list[Placement]:
+        """The pods of the workers of a run which have not terminated.
+
+        None before the workflow of the run was submitted and none once the run
+        ended: the backend is not asked then.
+        """
+        if record.backend_name is None or record.state in TERMINAL_RUN_STATES:
+            return []
+        return [
+            p
+            for p in self.backend.placements()
+            if p.workflow == record.backend_name and p.worker is not None
+        ]
+
+    def task_workers(self, record: RunRecord) -> dict[str, list[WorkerView]]:
+        """The workers of every task of a run, from one listing of the pods."""
+        pods = self.live_pods(record)
+        return {t: self.workers(record, t, pods) for t in record.tasks}
+
+    def run_state(self, record: RunRecord) -> tuple[dict[str, str], bool]:
+        """A tick of the stream of a run: its events and whether they are final.
+
+        Args:
+            record: The record of the run.
+
+        Returns:
+            The JSON text of the events `run`, `progress` and `workers`, and
+            whether the run is terminal with the states of its tasks final.
+        """
+        final = record.state in TERMINAL_RUN_STATES and all(
+            state in FINAL_TASK_STATES for state in record.tasks.values()
+        )
+        return {
+            "run": record.model_dump_json(),
+            "progress": _PROGRESS.dump_json(self.progress(record)).decode(),
+            "workers": _WORKERS.dump_json(self.task_workers(record)).decode(),
+        }, final
+
+    def workers(
+        self,
+        record: RunRecord,
+        task_id: str,
+        pods: list[Placement] | None = None,
+    ) -> list[WorkerView]:
+        """The workers of a task, sorted by id; 404 for an unknown task.
+
+        Args:
+            record: The record of the run.
+            task_id: The task.
+            pods: The live pods of the run (`live_pods`), listed when None.
+
+        Returns:
+            A view per worker of its reports or its pod.
+        """
         task_dir = self.task_dir(record, task_id)
         reports: dict[str, dict[int, WorkerReport]] = {}
         for path in sorted((task_dir / WORKERS_DIR).glob("*.json")):
@@ -787,14 +846,13 @@ class _Service:
                 continue
             reports.setdefault(report.worker, {})[_attempt(path.name)] = report
         live: dict[str, Placement] = {}
-        if record.backend_name is not None:
-            for p in self.backend.placements():
-                if (
-                    p.workflow == record.backend_name
-                    and p.worker is not None
-                    and _task_of(p.dag_task) == task_id
-                ):
-                    live[p.worker] = p
+        for p in self.live_pods(record) if pods is None else pods:
+            if p.worker is None or _task_of(p.dag_task) != task_id:
+                continue
+            # of two pods of a worker, the one of the later attempt
+            seen = live.get(p.worker)
+            if seen is None or _newer(p, seen):
+                live[p.worker] = p
         units = record.plans.get(task_id, {}).get("units")
         claims: dict[str, list[int]] = {}
         if units is not None and (task_dir / UNITS_DIR).is_dir():
@@ -1186,17 +1244,7 @@ def create_app(
         service.read(run_id)  # 404 before the stream starts
 
         def compute() -> tuple[dict[str, str], bool]:
-            record = service.read(run_id)
-            progress = service.progress(record)
-            workers = {t: service.workers(record, t) for t in record.tasks}
-            final = record.state in TERMINAL_RUN_STATES and all(
-                state in FINAL_TASK_STATES for state in record.tasks.values()
-            )
-            return {
-                "run": record.model_dump_json(),
-                "progress": _PROGRESS.dump_json(progress).decode(),
-                "workers": _WORKERS.dump_json(workers).decode(),
-            }, final
+            return service.run_state(service.read(run_id))
 
         return _event_response(_stream(request, settings, compute))
 
