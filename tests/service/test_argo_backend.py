@@ -566,6 +566,14 @@ def test_logs_of_the_pods_of_a_task_in_their_order() -> None:
     assert [c[2]["tail_lines"] for c in reads] == [50, 50]
 
 
+def test_logs_of_a_pod_without_a_log_yet() -> None:
+    # the API answers an empty body (None) for a pod whose container has not
+    # started, e.g. a pending worker of a running task
+    created, _ = _fake_backend(read_namespaced_pod_log=lambda *a, **k: None)
+    found = created.logs(WF, "a", tail_lines=300)
+    assert [(log.pod, log.text) for log in found] == [("p-w0", ""), ("p-merge", "")]
+
+
 def test_reserve_taints_and_labels_the_node() -> None:
     created, calls = _fake_backend(read_node=_k8s_reserved(None))
     created.reserve("n1", "r2")
