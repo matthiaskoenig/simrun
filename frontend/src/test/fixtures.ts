@@ -1,5 +1,5 @@
-/** The fixtures of the tests of the executions: six runs of people and agents and three servers. */
-import type { Identity, RunItem, ServerUsage } from "../api/client";
+/** The fixtures of the tests of the executions: six runs of people and agents, three servers, and the record of a run. */
+import type { Identity, RunItem, RunRecord, ServerUsage } from "../api/client";
 
 function run(fields: Partial<RunItem> & Pick<RunItem, "id" | "state" | "owner" | "submitted_by">): RunItem {
   return {
@@ -49,3 +49,29 @@ export const servers: ServerUsage[] = [
     pods: [{ run_id: "r3", task_id: "squares", pod: "r3-squares-w0", phase: "Pending", cores: 4, memory_gb: 6 }],
   },
 ];
+
+/** The record of a running run of one task of mk, with `fields` replaced. */
+export function runRecord(fields: Partial<RunRecord> = {}): RunRecord {
+  return {
+    id: "r1",
+    state: "running",
+    agent: null,
+    backend_name: null,
+    created: "2026-11-07T13:02:00Z",
+    finished: null,
+    group: null,
+    image: null,
+    message: null,
+    owner: "mk",
+    pending_cancel: false,
+    pending_logs: false,
+    plans: {},
+    priority: "standard",
+    reserve: null,
+    sources: [],
+    submitted_by: "mk",
+    tasks: { squares: "running" },
+    workflow: { name: "squares", split: "fastest", tasks: [{ id: "squares", type: "demo.squares" }] },
+    ...fields,
+  };
+}
