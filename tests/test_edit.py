@@ -1,5 +1,6 @@
 import contextlib
 import hashlib
+import re
 import shutil
 import signal
 import socket
@@ -160,7 +161,9 @@ def test_close_on_stop(make):
 def test_cli_edit_help():
     result = CliRunner().invoke(app, ["edit", "--help"])
     assert result.exit_code == 0
-    assert "--source" in result.output and "--group" in result.output
+    # rich styles the help on a terminal it forces, e.g. in GitHub Actions
+    text = re.sub(r"\x1b\[[0-9;]*m", "", result.output)
+    assert "--source" in text and "--group" in text
 
 
 def test_invalid_file_does_not_kill_the_command(make):
