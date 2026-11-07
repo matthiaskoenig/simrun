@@ -82,6 +82,8 @@ LATEST_LINK = "latest"
 # an ended run is moved to `runs/<prefix><id>-<pid>` under the lock, then removed
 TRASH_PREFIX = ".trash-"
 PROGRESS_TAIL_BYTES = 8192
+# the most a task which is not over counts towards the progress of its run
+UNFINISHED_TASK_MAX = 0.99
 
 
 class ServiceSettings(BaseModel):
@@ -173,15 +175,25 @@ class TaskProgress(BaseModel):
     """
 
     counts: LedgerCounts | None
-    first: dict[str, Any] | None
+    # a default: a client validates the answers of a service not yet redeployed
+    first: dict[str, Any] | None = None
     last: dict[str, Any] | None
 
 
 class RunItem(RunSummary):
-    """A run of the list of runs: its summary with its owner and workflow name."""
+    """A run of the list of runs: its summary with its owner and workflow name.
+
+    Attributes:
+        owner: The owner of the run, of an agent the person it acts for.
+        workflow: The name of the workflow.
+        progress: The progress of an active run (submitting, queued, running) from
+            0 to 1, from the states of its tasks and their ledgers (`run_progress`);
+            None for a run which ended.
+    """
 
     owner: str
     workflow: str
+    progress: float | None = None
 
 
 class PodUsage(BaseModel):
@@ -421,6 +433,35 @@ def _newer(pod: Placement, than: Placement) -> bool:
     if pod.attempt is None or than.attempt is None:
         return than.attempt is not None
     return pod.attempt > than.attempt
+
+
+def run_progress(
+    tasks: dict[str, TaskState], counts: dict[str, LedgerCounts | None]
+) -> float:
+    """The progress of a run from 0 to 1, as the web app counts it.
+
+    The mean over its tasks: a task which is over (done or skipped) counts whole, a
+    task with a ledger the share of its units done, at most `UNFINISHED_TASK_MAX`
+    (its merge and outputs are still to come), any other task nothing; so the
+    progress is 1 only once every task is over.
+
+    Args:
+        tasks: The states of the tasks.
+        counts: The ledger counts by task, None or missing without a ledger.
+
+    Returns:
+        The progress, 0 for a run without tasks.
+    """
+    if not tasks:
+        return 0.0
+    total = 0.0
+    for task_id, state in tasks.items():
+        found = counts.get(task_id)
+        if state in (TaskState.DONE, TaskState.SKIPPED):
+            total += 1.0
+        elif found is not None and found.total > 0:
+            total += min(found.done / found.total, UNFINISHED_TASK_MAX)
+    return total / len(tasks)
 
 
 def _pending(record: RunRecord) -> bool:
@@ -702,18 +743,23 @@ class _Service:
             raise HTTPException(404, f"run {record.id} has no task {task_id!r}")
         return self.store.run_dir(record.id) / "tasks" / task_id
 
+    def counts(self, record: RunRecord, task_id: str) -> LedgerCounts | None:
+        """The ledger counts of a task, None for a task without a ledger."""
+        task_dir = self.task_dir(record, task_id)
+        units = record.plans.get(task_id, {}).get("units")
+        if units is None or not (task_dir / UNITS_DIR).is_dir():
+            return None
+        return Ledger(task_dir / UNITS_DIR, units).counts()
+
     def progress(self, record: RunRecord) -> dict[str, TaskProgress]:
-        """The ledger counts and the last progress line of every task."""
+        """The ledger counts and the first and the last progress line of every task."""
         result: dict[str, TaskProgress] = {}
         for task_id in record.tasks:
-            task_dir = self.task_dir(record, task_id)
-            units = record.plans.get(task_id, {}).get("units")
-            counts = None
-            if units is not None and (task_dir / UNITS_DIR).is_dir():
-                counts = Ledger(task_dir / UNITS_DIR, units).counts()
-            path = task_dir / PROGRESS_FILE
+            path = self.task_dir(record, task_id) / PROGRESS_FILE
             result[task_id] = TaskProgress(
-                counts=counts, first=_first_line(path), last=_last_line(path)
+                counts=self.counts(record, task_id),
+                first=_first_line(path),
+                last=_last_line(path),
             )
         return result
 
@@ -741,13 +787,32 @@ class _Service:
         state: RunState | None,
         limit: int,
     ) -> list[RunItem]:
-        """The most recent runs matching the filters, the newest first."""
+        """The most recent runs matching the filters, the newest first.
+
+        An active run carries its progress, from its record and its ledgers.
+        """
         runs = self.store.index.runs(group, owner, agent, state)
         runs.sort(key=lambda r: (r.summary.created, r.summary.id), reverse=True)
         return [
-            RunItem(**r.summary.model_dump(), owner=r.owner, workflow=r.workflow)
+            RunItem(
+                **r.summary.model_dump(),
+                owner=r.owner,
+                workflow=r.workflow,
+                progress=self._run_progress(r.summary),
+            )
             for r in runs[:limit]
         ]
+
+    def _run_progress(self, summary: RunSummary) -> float | None:
+        """The progress of an active run, None for one which ended or is gone."""
+        if summary.state in TERMINAL_RUN_STATES:
+            return None
+        try:
+            record = self.store.read(summary.id)
+        except KeyError:
+            return None
+        counts = {t: self.counts(record, t) for t in record.tasks}
+        return run_progress(record.tasks, counts)
 
     def servers(self) -> list[ServerUsage]:
         """Every node with the pods of the runs on it."""

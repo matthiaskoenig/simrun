@@ -2,10 +2,13 @@ import json
 from pathlib import Path
 from typing import Any
 
-from simrun.ledger import Ledger
+import pytest
+
+from simrun.ledger import Ledger, LedgerCounts
 from simrun.planner import Node
-from simrun.service.app import openapi_document
+from simrun.service.app import TaskProgress, openapi_document, run_progress
 from simrun.service.backend import Placement
+from simrun.store import TaskState
 from simrun.worker import WorkerReport, write_report
 
 GB = 1024**3
@@ -40,6 +43,57 @@ def test_run_items(service):
     assert [i.owner for i in got] == ["mk", "mk"]
     assert [i.workflow for i in got] == ["squares", "squares"]
     assert [i.id for i in web.run_items(None, None, None, None, 1)] == [second["id"]]
+
+
+def test_run_progress_counts_like_the_web_app():
+    counts = {
+        "a": LedgerCounts(pending=600, claimed=10, done=390, total=1000),
+        "b": LedgerCounts(pending=0, claimed=0, done=0, total=250),
+        "c": None,
+    }
+    tasks = {
+        "a": TaskState.RUNNING,
+        "b": TaskState.RUNNING,
+        "c": TaskState.WAITING,
+        "d": TaskState.DONE,
+    }
+    # the mean of 0.39, 0, 0 and 1 over the four tasks
+    assert run_progress(tasks, counts) == pytest.approx(1.39 / 4)
+    assert run_progress({"d": TaskState.DONE, "e": TaskState.SKIPPED}, {}) == 1.0
+    assert run_progress({}, {}) == 0.0
+    # every unit done, but the task is not over: below 1
+    whole = LedgerCounts(pending=0, claimed=0, done=8, total=8)
+    assert run_progress({"a": TaskState.RUNNING}, {"a": whole}) == 0.99
+    empty = LedgerCounts(pending=0, claimed=0, done=0, total=0)
+    assert run_progress({"a": TaskState.RUNNING}, {"a": empty}) == 0.0
+
+
+def test_run_items_carry_the_progress_of_active_runs(service):
+    ended = service.submit()["id"]
+    service.backend.start(service.name(ended))
+    service.backend.finish(service.name(ended))
+    service.controller.reconcile()
+    run_id = service.submit(workflow=service.workflow(n=40))["id"]
+    task_dir = service.run_dir(run_id) / "tasks" / "squares"
+    ledger = Ledger.create(task_dir / "units", 40)
+    for _ in range(10):
+        unit = ledger.claim("squares-w0")
+        assert unit is not None
+        ledger.complete(unit, "squares-w0")
+    service.backend.start(service.name(run_id))
+    service.controller.reconcile()
+    web = service.client.app.state.service
+    items = {i.id: i for i in web.run_items(None, None, None, None, 200)}
+    assert items[run_id].state == "running"
+    assert items[run_id].progress == 0.25
+    assert items[ended].state == "succeeded"
+    assert items[ended].progress is None
+
+
+def test_task_progress_without_a_first_line_of_an_older_service():
+    # a client validates the answers of a service which is not yet redeployed
+    progress = TaskProgress.model_validate({"counts": None, "last": None})
+    assert progress.first is None
 
 
 def test_me(service):

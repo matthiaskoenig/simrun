@@ -412,7 +412,7 @@
         "type": "object"
       },
       "RunItem": {
-        "description": "A run of the list of runs: its summary with its owner and workflow name.",
+        "description": "A run of the list of runs: its summary with its owner and workflow name.\n\nAttributes:\n    owner: The owner of the run, of an agent the person it acts for.\n    workflow: The name of the workflow.\n    progress: The progress of an active run (submitting, queued, running) from\n        0 to 1, from the states of its tasks and their ledgers (`run_progress`);\n        None for a run which ended.",
         "properties": {
           "agent": {
             "anyOf": [
@@ -474,6 +474,18 @@
           },
           "priority": {
             "$ref": "#/components/schemas/Priority"
+          },
+          "progress": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Progress"
           },
           "state": {
             "$ref": "#/components/schemas/RunState"
@@ -1096,7 +1108,6 @@
         },
         "required": [
           "counts",
-          "first",
           "last"
         ],
         "title": "TaskProgress",

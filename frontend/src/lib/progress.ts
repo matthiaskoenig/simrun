@@ -7,6 +7,9 @@
  * A task which is not over is never whole, even with every unit done (its
  * merge and its outputs are still to come), so that a run shows 100 % only
  * once every task is over.
+ *
+ * The service counts the `progress` of an active run of the list the same way
+ * (`run_progress` of `simrun.service.app`), from the ledgers the list lacks.
  */
 import type { TaskProgress, TaskState } from "../api/client";
 

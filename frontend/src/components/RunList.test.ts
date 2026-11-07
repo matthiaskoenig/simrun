@@ -23,14 +23,24 @@ describe("RunList", () => {
     expect(wrapper.get('[data-run="r4"] [data-status]').text()).toBe("succeeded");
   });
 
-  it("shows the progress of a running run of several tasks as its run bar counts it, without ledgers", () => {
+  it("shows the progress of a running run as its run bar counts it, from the states of its tasks without ledgers", () => {
     const bar = mountList().get('[data-run="r6"] [data-progress]');
-    expect(bar.attributes("title")).toBe("0 of 2 tasks done");
+    expect(bar.attributes("title")).toBe("0 %, 0 of 2 tasks done");
     expect(bar.get("div").attributes("style")).toContain("width: 0%");
     const run = { ...runs[0]!, tasks: { fit: "done", sobol: "running", report: "waiting", plot: "skipped" } as const };
     const two = mount(RunList, { props: { runs: [run], selected: null, identity: mk } });
     expect(two.get("[data-progress] div").attributes("style")).toContain("width: 50%");
     expect(mountList().find('[data-run="r5"] [data-progress]').exists()).toBe(false);
+  });
+
+  it("shows the progress of a running run of a single task from its ledger", () => {
+    const run = { ...runs[0]!, tasks: { squares: "running" } as const, progress: 0.425 };
+    const wrapper = mount(RunList, { props: { runs: [run], selected: null, identity: mk } });
+    const bar = wrapper.get("[data-progress]");
+    expect(bar.attributes("title")).toBe("42 %, 0 of 1 task done");
+    expect(bar.get("div").attributes("style")).toContain("width: 42.5%");
+    const unknown = mount(RunList, { props: { runs: [{ ...run, progress: null }], selected: null, identity: mk } });
+    expect(unknown.get("[data-progress] div").attributes("style")).toContain("width: 0%");
   });
 
   it("shows the message of a failed run in red", () => {

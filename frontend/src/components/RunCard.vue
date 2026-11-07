@@ -15,13 +15,14 @@ const who = computed(() => props.run.agent ?? props.run.submitted_by);
 // the ids of simrun are long (`20261107-002755-17eb1c`): they get a line of their own
 const meta = computed(() => [props.run.group, who.value, formatTime(props.run.created)].filter((part) => part !== null).join(" · "));
 
-// a run of several tasks shows its progress as its run bar counts it, from
-// the states of its tasks alone: the ledgers come with the stream of the run
+// a running run shows its progress as its run bar counts it: the service
+// counts it from the ledgers of its tasks, else it comes from their states alone
 const tasks = computed(() => {
   const states = Object.values(props.run.tasks);
   return { total: states.length, finished: states.filter((s) => FINISHED_TASK_STATES.has(s)).length };
 });
-const progress = computed(() => runProgress(props.run.tasks));
+const progress = computed(() => props.run.progress ?? runProgress(props.run.tasks));
+const percent = computed(() => Math.floor(progress.value * 100));
 
 const note = computed(() => {
   if (props.run.message) return props.run.message;
@@ -63,10 +64,10 @@ const note = computed(() => {
       </div>
     </div>
     <div
-      v-if="run.state === 'running' && tasks.total > 1"
+      v-if="run.state === 'running'"
       data-progress
       class="mt-1.5 h-1 overflow-hidden rounded-full bg-gray-200"
-      :title="`${tasks.finished} of ${tasks.total} tasks done`"
+      :title="`${percent} %, ${tasks.finished} of ${tasks.total} ${tasks.total === 1 ? 'task' : 'tasks'} done`"
     >
       <div
         class="h-full rounded-full bg-blue-500 transition-all duration-300"
