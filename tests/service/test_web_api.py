@@ -241,6 +241,47 @@ def test_workers_done_while_the_pod_of_the_reported_attempt_ends(service):
     assert (view["state"], view["node"], view["attempts"]) == ("done", "srv-01", 1)
 
 
+def test_the_workers_of_a_run_list_the_pods_once(service, monkeypatch):
+    tasks = [{"id": t, "type": "demo.squares", "settings": {"n": 4}} for t in "abc"]
+    run_id = service.submit(workflow={"name": "demo", "tasks": tasks})["id"]
+    name = service.name(run_id)
+    service.backend.place(
+        _placement(service, run_id, dag_task="b-w0", pod="pod-b", worker="b-w0")
+    )
+    service.backend.start(name)
+    calls: list[None] = []
+    placements = service.backend.placements
+
+    def counted() -> list[Placement]:
+        calls.append(None)
+        return placements()
+
+    monkeypatch.setattr(service.backend, "placements", counted)
+    web = service.client.app.state.service
+    workers = web.task_workers(web.read(run_id))
+    assert len(calls) == 1
+    assert {t: [v.worker for v in views] for t, views in workers.items()} == {
+        "a": [],
+        "b": ["b-w0"],
+        "c": [],
+    }
+    # a tick of the stream of the run: one listing for the workers of every task
+    calls.clear()
+    payloads, final = web.run_state(web.read(run_id))
+    assert sorted(json.loads(payloads["workers"])) == ["a", "b", "c"]
+    assert not final
+    assert len(calls) == 1
+    # a run which ended has no pods to list
+    service.backend.finish(name)
+    service.controller.reconcile()
+    calls.clear()
+    record = web.read(run_id)
+    assert record.state == "succeeded"
+    web.task_workers(record)
+    web.run_state(record)
+    assert calls == []
+
+
 def test_workers_unknown_task(service):
     run_id = service.submit()["id"]
     assert service.get(f"/runs/{run_id}/tasks/nope/workers").status_code == 404
