@@ -33,23 +33,23 @@ It reads the file (a file which does not exist yet is a new workflow named by th
 
 ### The session
 
-A session lives in the store under `edits/<id>/`, so a restart of the service keeps it. The page `#/edit` (the **Editor** switch of the top bar) lists the sessions of your token, the connected ones first; a click opens one. Saves and runs of a session are allowed only to the person whose token opened it. A session is **connected** while its command runs and asked the service for requests within the last 30 s.
+A session lives in the store under `edits/<id>/`, so a restart of the service keeps it. The page `#/edit` (the **Editor** switch of the top bar) lists the sessions of your token by file name, with the directory, the machine, the workflow and whether the session is connected; the sessions which are no longer connected are listed under **Closed**. A click opens one; the breadcrumb of the top bar then names the file. Saves and runs of a session are allowed only to the person whose token opened it. A session is **connected** while its command runs and asked the service for requests within the last 30 s.
 
 ### Editing
 
 The Editor has the palette of the task types of the service on the left, the canvas in the middle with the bar floating above it, and the inspector on the right.
 
-- **Palette**: the task types installed in the service, grouped by the part of their name before the first `.` (`demo.squares` under "Demo", `command` under "General"), with a search. A click adds a task right of the right-most one, a drag drops it where it is let go. A new task is named by the last part of its type, with `-2`, `-3` for further ones.
+- **Palette**: the task types installed in the service, grouped by the part of their name before the first `.` (`demo.squares` under "Demo", `command` under "General"), with the `description` of the type (see [Plugins](plugins.md#the-contract)) and a search; its footer says which file a save writes on which machine. A click adds a task right of the right-most one and pans the canvas to show it, a drag drops it where it is let go. A new task is named by the last part of its type, with `-2`, `-3` for further ones.
 - **Canvas**: a card per task with a handle per output port on the right and per input port of its type on the left. Dragging from an output to an input connects them; a connection which closes a cycle or reaches a port which is already connected is refused with a note under the bar. Delete or Backspace removes the selected task (and the inputs which read it) or edge. The tasks are laid out when the session opens and when the workflow comes from disk; afterwards they stay where they are dragged. Positions are not saved in the file.
-- **Inspector**: with a task selected, its id, its settings as a form of the JSON Schema of the settings of its type (an empty field is not written, so the default of the type applies; what the form cannot edit is edited as JSON), its inputs and the ports staged to local scratch, its resources (workers and memory per worker overriding the learned ones, its split) and the estimate: memory per worker, duration and placement (the pods, the worker processes of a pod and the memory of a pod). Without a selected task, the workflow: its name, its split, the reservation of a server, the group of the run and the sources.
-- **Validation and estimate**: every change is validated by the service 400 ms after the last one; the errors of a task show on its card and in the inspector, the others in the inspector of the workflow. A valid workflow is estimated with the last snapshots of the sources, and the cards show the chips of the estimate (workers, memory per worker, duration, pods). The estimate is of the workflow as edited: a task type which plans its settings does so only when the workflow runs.
+- **Inspector**: with a task selected, its type and id, its settings as a form of the JSON Schema of the settings of its type (numbers, choices and switches in two columns; an empty field is not written, so the default of the type applies; what the form cannot edit is edited as JSON), its inputs and the ports staged to local scratch, its resources (workers and memory per worker overriding the learned ones, its split) and the estimate: memory per worker, duration and placement (the pods, the worker processes of a pod and the memory of a pod). Without a selected task, the workflow: its name, its split, the reservation of a server, the group of the run and the sources.
+- **Validation and estimate**: every change is validated by the service 400 ms after the last one; the errors of a task show on its card and in the inspector, an error of a setting under its field, the others in the inspector of the workflow. A valid workflow is estimated with the last snapshots of the sources, and the cards show the chips of the estimate (workers, memory per worker, duration, pods). The estimate is of the workflow as edited: a task type which plans its settings does so only when the workflow runs.
 
 ### Save and Run
 
 The bar shows the branch, the commit and the uncommitted files of the model source, the machine of the session and the state of the draft: **valid, saved**, **unsaved changes**, the number of errors, or **changed on disk**.
 
-- **Save** sends the draft to the command, which writes it into the file atomically, in the form `simrun` writes a workflow: comments and the formatting of a hand-written file are not kept.
-- **Run** sends the draft, saved or not, to the command, which snapshots the working trees again, plans the tasks with the task types installed there and submits the run, as `simrun submit` does with the same sources. The file is not written by a run. The Editor then shows the run in the Executions.
+- **Save** sends the draft to the command, which writes it into the file atomically, in the form `simrun` writes a workflow (the fields which differ from the defaults, a list indented below its key): comments and the formatting of a hand-written file are not kept.
+- **Run workflow** sends the draft, saved or not, to the command, which snapshots the working trees again, plans the tasks with the task types installed there and submits the run, as `simrun submit` does with the same sources. The file is not written by a run. The Editor then shows the run in the Executions.
 
 ### Conflicts
 
@@ -57,9 +57,9 @@ A change of the file on disk (by another editor, or by `git checkout`) reaches t
 
 ### Without a connected machine
 
-When the command stopped, or its machine has not asked for 30 s (asleep, off the network), the bar says **not connected**. **Save** becomes **Download YAML**, which downloads the draft as `<workflow name>.yaml` in the form a save writes, and the state says **unsaved changes, download to keep them** once the draft was changed. **Run** submits the draft from the browser with the last snapshots of the session, as edited, without the plans of the task types. Starting the command again opens a new session.
+When the command stopped, or its machine has not asked for 30 s (asleep, off the network), the bar says that the machine is **not connected**. **Save** becomes **Download YAML**, which downloads the draft as `<workflow name>.yaml` in the form a save writes, and the state says **unsaved changes, download to keep them** once the draft was changed. **Run workflow** submits the draft from the browser with the last snapshots of the session, as edited, without the plans of the task types. Starting the command again opens a new session.
 
-**Rerun with changes** in the run bar of the Executions opens the workflow and the sources of a run in the Editor (`#/runs/<run>/edit`). There is no machine behind it: Download YAML keeps the changes, and Run submits the changed workflow with the snapshots and the group of the run.
+**Rerun with changes** in the run bar of the Executions opens the workflow and the sources of a run in the Editor (`#/runs/<run>/edit`). There is no machine behind it, the bar says **from run #<run>**: Download YAML keeps the changes, and Run workflow submits the changed workflow with the snapshots and the group of the run.
 
 ## Development
 
