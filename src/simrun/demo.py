@@ -10,7 +10,7 @@ import os
 import time
 import uuid
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from simrun.plugins import ResourceHint, TaskPaths, TaskType
 
@@ -25,10 +25,10 @@ class SquaresSettings(BaseModel):
         memory_mb: Megabytes each unit allocates.
     """
 
-    n: int
-    sleep_s: float = 0.0
-    fail_at: int | None = None
-    memory_mb: int = 0
+    n: int = Field(title="Units")
+    sleep_s: float = Field(0.0, title="Sleep per unit (s)")
+    fail_at: int | None = Field(None, title="Fail at unit")
+    memory_mb: int = Field(0, title="Memory per unit (MB)")
 
 
 def count_units(settings: SquaresSettings) -> int:

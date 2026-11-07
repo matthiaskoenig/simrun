@@ -12,7 +12,15 @@ def test_task_types(service):
     assert {"demo.report", "demo.squares"} <= set(names)
     squares = next(t for t in listed if t["name"] == "demo.squares")
     assert squares["splittable"] is True
-    assert "n" in squares["settings_schema"]["properties"]
+    titles = {
+        k: v["title"] for k, v in squares["settings_schema"]["properties"].items()
+    }
+    assert titles == {
+        "n": "Units",
+        "sleep_s": "Sleep per unit (s)",
+        "fail_at": "Fail at unit",
+        "memory_mb": "Memory per unit (MB)",
+    }
     assert squares["outputs"] == ["squares"]
     types = service.client.app.state.service.types
     hint = types["demo.squares"].hint

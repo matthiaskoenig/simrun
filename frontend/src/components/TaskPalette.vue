@@ -62,7 +62,7 @@ function onDragStart(event: DragEvent, type: TaskTypeView): void {
           </span>
           <div class="min-w-0 flex-1">
             <div class="truncate text-sm font-medium text-gray-900">{{ type.name }}</div>
-            <div data-description class="truncate text-[11px] text-gray-500">{{ description(type) }}</div>
+            <div data-description class="line-clamp-2 text-[11px] leading-snug text-gray-500">{{ description(type) }}</div>
           </div>
           <AppIcon name="grip-vertical" class="size-3.5 text-gray-300" />
         </div>
