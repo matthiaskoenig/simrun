@@ -35,6 +35,7 @@ nav = [
       { "demo" = "api/demo.md" },
       { "client" = "api/client.md" },
       { "cli" = "api/cli.md" },
+      { "local" = "api/local.md" },
       { "mcp" = "api/mcp.md" },
       { "planner" = "api/planner.md" },
       { "resources" = "api/resources.md" },

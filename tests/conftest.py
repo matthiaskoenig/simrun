@@ -183,6 +183,7 @@ def make_settings(tmp_path: Path, **kw: Any) -> ServiceSettings:
         "cluster": ClusterConfig(registry="localhost:5000"),
         "poll_s": 3600.0,
         "default_image": "localhost:5000/base:1",
+        "web": None,
     }
     values.update(kw)
     return ServiceSettings(**values)

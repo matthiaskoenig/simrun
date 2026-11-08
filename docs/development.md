@@ -183,6 +183,14 @@ A release is made from `develop`. Since `develop` only accepts pull requests, th
 
     This starts the `CI-CD` workflow, which checks that the tag is the version of the package, builds the sdist and the wheel, publishes them to [PyPI](https://pypi.org/project/simrun/), creates the GitHub release from `release-notes/x.y.z.md` and fast-forwards `main` to the tagged commit. It does not run the test matrix again: the merge into `develop` ran it on the same commit, and the job `tested on develop` waits for that run and stops the release unless it passed, so the tag can be pushed right after the merge. Next to it the tests on the k3d cluster run on the tag, and the release waits for them. Check the version before pushing, a tag cannot be moved or deleted afterwards.
 
+    The wheel and the sdist contain the built web app in `simrun/web`, which `simrun serve --local` serves: the job builds `frontend/` and copies `frontend/dist` to the gitignored `src/simrun/web` before the build (`artifacts` of `pyproject.toml`). A package built without it has no web app, and a checkout serves `frontend/dist` once built. To build the package with the web app locally:
+
+    ```bash
+    (cd frontend && npm ci && npm run build)
+    rm -rf src/simrun/web && cp -r frontend/dist src/simrun/web
+    uvx hatch build
+    ```
+
 8. test the installation from PyPI in a fresh environment:
 
     ```bash

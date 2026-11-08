@@ -107,6 +107,13 @@ path = "./src/simrun/__init__.py"
 [tool.hatch.build.targets.wheel]
 # the package with its data, `build_constraints.txt`
 packages = ["src/simrun"]
+# the built web app, gitignored: the release copies frontend/dist there before the
+# build (docs/development.md); a build without it has no web app
+artifacts = ["src/simrun/web/**"]
+
+[tool.hatch.build.targets.sdist]
+# the built web app, so a wheel built from the sdist has it too
+artifacts = ["src/simrun/web/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -239,9 +239,24 @@ jobs:
           echo "::error::the tag $GITHUB_REF_NAME is not the version $version of src/simrun/__init__.py"
           exit 1
         fi
+    - name: Set up node
+      uses: actions/setup-node@v7
+      with:
+        node-version: 24
+        cache: npm
+        cache-dependency-path: frontend/package-lock.json
+    - name: Build the web app into the package
+      # src/simrun/web is gitignored and an artifact of the build (pyproject.toml),
+      # so an installation from PyPI serves the web app of `simrun serve --local`
+      run: |
+        (cd frontend && npm ci && npm run build)
+        rm -rf src/simrun/web
+        cp -r frontend/dist src/simrun/web
     - name: Build package
-      # the sdist and the wheel
-      run: uvx hatch build
+      # the sdist and the wheel, both with the web app
+      run: |
+        uvx hatch build
+        unzip -l dist/*.whl | grep -q 'simrun/web/index.html'
     - name: Check the package
       run: uvx twine check --strict dist/*
     - name: Publish to PyPI

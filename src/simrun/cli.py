@@ -16,12 +16,14 @@ from typing import Annotated, Any, NoReturn
 import click
 import httpx
 import typer
+import uvicorn
 from pydantic import BaseModel
 from rich.console import Console
 from rich.table import Column, Table
 
 from simrun.client import Client, ClientError
 from simrun.edit import run_edit
+from simrun.local import LOCAL_DIR, SERVICE_FILE, LocalService, serve_local, web_dir
 from simrun.service.app import RunSummary
 from simrun.service.logs import DEFAULT_TAIL_LINES
 from simrun.store import RunState
@@ -348,3 +350,60 @@ def usage(as_json: AS_JSON = False) -> None:
     for run, size in sorted(result.runs.items(), key=lambda kv: -kv[1])[:20]:
         runs.add_row(run, f"{size / 2**30:.2f}")
     console.print(runs)
+
+
+@app.command()
+@_guarded
+def serve(
+    local: Annotated[
+        bool,
+        typer.Option(
+            "--local",
+            help="Run the local service of the current directory, its store in "
+            f"{LOCAL_DIR}/, on 127.0.0.1.",
+        ),
+    ] = False,
+    port: Annotated[
+        int | None,
+        typer.Option(help="The port; a free one for --local, else 8000."),
+    ] = None,
+    host: Annotated[
+        str, typer.Option(help="The address of the configured service.")
+    ] = "127.0.0.1",
+    idle_exit: Annotated[
+        float | None,
+        typer.Option(
+            "--idle-exit",
+            metavar="SECONDS",
+            help="With --local: exit after this long without a request and without "
+            "a live run.",
+        ),
+    ] = None,
+) -> None:
+    """Run the service until stopped.
+
+    With --local the service of the current directory with the local backend: the
+    tasks run as processes on this machine, Ctrl-C cancels the runs. Without, the
+    service of the settings named by SIMRUN_CONFIG, as
+    `uvicorn --factory simrun.service.app:serve` runs it.
+    """
+    if not local:
+        if idle_exit is not None:
+            _fail("--idle-exit needs --local")
+        uvicorn.run(
+            "simrun.service.app:serve",
+            factory=True,
+            host=host,
+            port=8000 if port is None else port,
+            timeout_graceful_shutdown=5,
+        )
+        return
+    if host != "127.0.0.1":
+        _fail("the local service listens on 127.0.0.1 only")
+
+    def ready(service: LocalService) -> None:
+        typer.echo(f"simrun at {service.url}/ui/ (token in {LOCAL_DIR}/{SERVICE_FILE})")
+        if web_dir() is None:
+            typer.echo("the web app is not built in this installation", err=True)
+
+    serve_local(Path.cwd(), port or 0, idle_exit, ready)
