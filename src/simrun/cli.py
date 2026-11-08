@@ -61,6 +61,14 @@ LOCAL = Annotated[
     ),
 ]
 RESERVE = Annotated[str | None, typer.Option(help="A node to reserve for the run.")]
+SNAPSHOT = Annotated[
+    bool,
+    typer.Option(
+        "--snapshot",
+        help="With --local: copy and install the sources as on the cluster, "
+        "instead of recording their provenance only.",
+    ),
+]
 
 EXIT_FAILED = 1
 EXIT_TIMEOUT = 2
@@ -227,14 +235,12 @@ def _follow(
     """Follow a run to its end, showing it; the summary of the run at the end."""
     view = _RunView()
     if not as_json and console.is_terminal:
-        with Live(view.table(), console=console, refresh_per_second=4) as live:
-
-            def show(data: dict[str, Any]) -> None:
-                view.update(data)
-                live.update(view.table())
-
-            client.wait_live(run_id, show, timeout)
-            live.update(view.table())
+        # rendered anew at every refresh, so the elapsed time ticks between events
+        with Live(
+            console=console, get_renderable=view.table, refresh_per_second=4
+        ) as live:
+            client.wait_live(run_id, view.update, timeout)
+            live.refresh()
     else:
         printed: dict[str, str] = {}
 
@@ -270,14 +276,7 @@ def submit(
             "instead of directly.",
         ),
     ] = False,
-    snapshot: Annotated[
-        bool,
-        typer.Option(
-            "--snapshot",
-            help="With --local: copy and install the sources as on the cluster, "
-            "instead of recording their provenance only.",
-        ),
-    ] = False,
+    snapshot: SNAPSHOT = False,
     wait_: Annotated[
         bool | None,
         typer.Option(
@@ -293,6 +292,9 @@ def submit(
 ) -> None:
     """Snapshot the sources and submit a workflow."""
     split = SplitMode.SINGLE_SERVER if single_server else None
+    follow = local if wait_ is None else wait_
+    if timeout is not None and not follow:
+        _fail("--timeout needs --wait")
     client = _client(local, snapshot, docker)
     summary = client.submit(
         workflow,
@@ -302,7 +304,6 @@ def submit(
         reserve,
         "docker" if docker else None,
     )
-    follow = local if wait_ is None else wait_
     if not follow:
         if as_json:
             _json(summary)
@@ -529,14 +530,7 @@ def edit(
     source: SOURCE = None,
     group: GROUP = None,
     local: LOCAL = False,
-    snapshot: Annotated[
-        bool,
-        typer.Option(
-            "--snapshot",
-            help="With --local: copy and install the sources as on the cluster, "
-            "instead of recording their provenance only.",
-        ),
-    ] = False,
+    snapshot: SNAPSHOT = False,
 ) -> None:
     """Serve the Editor of the web app for a workflow file until stopped.
 

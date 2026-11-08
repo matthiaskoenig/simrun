@@ -191,6 +191,8 @@ def make_settings(tmp_path: Path, **kw: Any) -> ServiceSettings:
 
 @contextmanager
 def _running(settings: ServiceSettings, backend: FakeBackend) -> Generator[Service]:
+    if backend.store is None:
+        backend.store = settings.store
     with TestClient(create_app(settings, backend, TYPES)) as client:
         yield Service(client, backend, settings)
 
@@ -348,6 +350,7 @@ def live(tmp_path: Path) -> Iterator[Callable[..., Live]]:
     def start(**kw: Any) -> Live:
         settings: ServiceSettings = make_settings(tmp_path, **kw)
         backend = FakeBackend()
+        backend.store = settings.store
         app = create_app(settings, backend, TYPES)
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))

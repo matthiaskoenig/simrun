@@ -1050,6 +1050,31 @@ def test_output_archive_leaves_out_escaping_links(service):
         assert ".simrun-merged" not in tar.getnames()
 
 
+def test_output_archive_is_streamed_in_chunks(service, monkeypatch):
+    import io
+    import tarfile
+
+    monkeypatch.setattr(app_module, "TAR_CHUNK", 7)
+    run_id, out = _outputs(service)
+    body = bytes(range(256)) * 9
+    (out / "big.bin").write_bytes(body)
+    (out / "big.bin").chmod(0o640)
+    archive = service.get(f"/runs/{run_id}/outputs/squares/archive")
+    assert archive.status_code == 200
+    assert archive.headers["content-disposition"] == (
+        f'attachment; filename="{run_id}-squares.tar"'
+    )
+    assert len(archive.content) % tarfile.RECORDSIZE == 0
+    with tarfile.open(fileobj=io.BytesIO(archive.content)) as tar:
+        member = tar.getmember("big.bin")
+        assert member.mode == 0o640
+        big = tar.extractfile(member)
+        small = tar.extractfile("squares/0.json")
+        assert big is not None and small is not None
+        assert big.read() == body
+        assert small.read() == b'{"i": 0}'
+
+
 # --- snapshots through the API ----------------------------------------------
 
 
@@ -1352,8 +1377,10 @@ def test_a_too_large_upload_closes_its_spooled_files(live, monkeypatch):
             made.append(self)
 
     monkeypatch.setattr(starlette.formparsers, "SpooledTemporaryFile", Recorded)
-    server = live(max_upload_bytes=64 * 1024)
-    body = b"x" * (256 * 1024)
+    # a limit above one read of the socket (64 KiB), so the parser has spooled the
+    # start of the tar when the limit trips, and a body far above it
+    server = live(max_upload_bytes=1024 * 1024)
+    body = b"x" * (4 * 1024 * 1024)
     scan = _scan_of({"a.bin": body})
     request = httpx.Request(
         "POST",

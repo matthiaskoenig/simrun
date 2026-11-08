@@ -344,3 +344,20 @@ def test_upload_fails_when_a_file_changes_twice(
         error.value.status == 422 and "changed during the upload" in error.value.detail
     )
     assert len(changed) == 2
+
+
+@pytest.mark.parametrize(
+    ("status", "detail"), [(404, "Not Found"), (405, "Method Not Allowed")]
+)
+def test_upload_to_a_service_without_uploads_names_the_cause(
+    repo: Path, status: int, detail: str
+) -> None:
+    transport = httpx.MockTransport(
+        lambda request: httpx.Response(status, json={"detail": detail})
+    )
+    client = Client("http://old", "t", None, "upload", transport=transport)
+    with pytest.raises(ClientError) as error:
+        client.source(repo, "model")
+    assert error.value.status == status
+    assert "too old for uploads" in error.value.detail
+    assert "SIMRUN_STORE" in error.value.detail

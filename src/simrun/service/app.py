@@ -24,7 +24,7 @@ import shutil
 import tarfile
 import tempfile
 import time
-from collections.abc import AsyncGenerator, Callable, Iterable
+from collections.abc import AsyncGenerator, Callable, Iterable, Iterator
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PurePosixPath
@@ -42,7 +42,6 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
 )
-from starlette.background import BackgroundTask
 from starlette.datastructures import UploadFile
 from starlette.formparsers import MultiPartException, MultiPartParser
 
@@ -155,6 +154,8 @@ SNAPSHOT_UPLOAD_BODY: dict[str, Any] = {
 # an ended run is moved to `runs/<prefix><id>-<pid>` under the lock, then removed
 TRASH_PREFIX = ".trash-"
 PROGRESS_TAIL_BYTES = 8192
+# the largest chunk of a file in a streamed tar
+TAR_CHUNK = 1024 * 1024
 # the most a task which is not over counts towards the progress of its run
 UNFINISHED_TASK_MAX = 0.99
 
@@ -195,6 +196,42 @@ async def _read_upload(request: Request, limit: int) -> Any:
         return await parser.parse()
     except MultiPartException as error:
         raise HTTPException(422, error.message) from error
+
+
+def _tar_stream(files: Iterable[tuple[Path, str]]) -> Iterator[bytes]:
+    """A tar of files by their names in it, in chunks of at most `TAR_CHUNK` bytes.
+
+    A file which cannot be opened is left out; one which shrinks while it is read
+    is padded with zeros to the size of its header, one which grows is cut there.
+    """
+    size = 0
+    for path, name in files:
+        try:
+            file = path.open("rb")
+        except OSError:
+            continue
+        with file:
+            stat = os.fstat(file.fileno())
+            info = tarfile.TarInfo(name)
+            info.size = stat.st_size
+            info.mtime = int(stat.st_mtime)
+            info.mode = stat.st_mode & 0o7777
+            header = info.tobuf(tarfile.PAX_FORMAT, "utf-8", "surrogateescape")
+            yield header
+            remaining = info.size
+            while remaining:
+                chunk = file.read(min(TAR_CHUNK, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
+                yield chunk
+            padding = remaining + (-info.size % tarfile.BLOCKSIZE)
+            if padding:
+                yield bytes(padding)
+        size += len(header) + info.size + (-info.size % tarfile.BLOCKSIZE)
+    # the end of the archive, two zero blocks, then the rest of the last record
+    end = 2 * tarfile.BLOCKSIZE
+    yield bytes(end + (-(size + end) % tarfile.RECORDSIZE))
 
 
 def _web_dir() -> Path | None:
@@ -974,29 +1011,32 @@ class _Service:
             raise HTTPException(404, f"no output file {path!r}")
         return file
 
-    def output_archive(self, record: RunRecord, task_id: str) -> Path:
-        """A temporary tar of the output of a task, to delete after sending.
+    def output_archive(self, record: RunRecord, task_id: str) -> Iterator[bytes]:
+        """The output of a task as a tar, streamed: nothing is written first.
 
         The files inside the output directory, named relative to it; a link which
-        leads out of it and the marker of a merge are left out.
+        leads out of it and the marker of a merge are left out. The task is checked
+        at the call (404), the files are read while the tar is sent.
         """
         out = self.task_dir(record, task_id) / "out"
-        handle, name = tempfile.mkstemp(prefix="simrun-outputs-", suffix=".tar")
-        with os.fdopen(handle, "wb") as raw, tarfile.open(fileobj=raw, mode="w") as tar:
-            if out.is_dir():
-                root = out.resolve()
-                for path in sorted(out.rglob("*")):
-                    try:
-                        real = path.resolve(strict=True)
-                    except OSError:
-                        continue
-                    if (
-                        real.is_relative_to(root)
-                        and real.is_file()
-                        and path.name != MERGED_MARKER
-                    ):
-                        tar.add(real, arcname=path.relative_to(out).as_posix())
-        return Path(name)
+
+        def files() -> Iterator[tuple[Path, str]]:
+            if not out.is_dir():
+                return
+            root = out.resolve()
+            for path in sorted(out.rglob("*")):
+                try:
+                    real = path.resolve(strict=True)
+                except OSError:
+                    continue
+                if (
+                    real.is_relative_to(root)
+                    and real.is_file()
+                    and path.name != MERGED_MARKER
+                ):
+                    yield real, path.relative_to(out).as_posix()
+
+        return _tar_stream(files())
 
     def outputs(self, record: RunRecord, task_id: str) -> list[OutputFile]:
         """The files of the output of a task, relative to the store."""
@@ -1871,14 +1911,15 @@ def create_app(
         return FileResponse(file, media_type="application/octet-stream")
 
     @app.get("/runs/{run_id}/outputs/{task_id}/archive")
-    def output_archive(run_id: str, task_id: str) -> FileResponse:
+    def output_archive(run_id: str, task_id: str) -> StreamingResponse:
         """The output directory of a task as a tar, without the marker of a merge."""
-        archive = service.output_archive(service.read(run_id), task_id)
-        return FileResponse(
-            archive,
+        chunks = service.output_archive(service.read(run_id), task_id)
+        return StreamingResponse(
+            chunks,
             media_type="application/x-tar",
-            filename=f"{run_id}-{task_id}.tar",
-            background=BackgroundTask(archive.unlink, missing_ok=True),
+            headers={
+                "Content-Disposition": f'attachment; filename="{run_id}-{task_id}.tar"'
+            },
         )
 
     @app.post("/runs/{run_id}/cancel")

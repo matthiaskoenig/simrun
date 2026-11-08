@@ -3,8 +3,10 @@
 The state of a run is the service's, not the one of Argo (Ruling 17b): a split task is
 done when its `<task>-merge` node succeeded (when its coordinator `<task>-w0` merges,
 `TaskPlan.coordinator_merges`, there is no such node and it is done when `<task>-w0`
-succeeded) and failed when its `<task>-w0` or its merge failed (after the retries of
-Argo), an extra worker never fails a task; an
+succeeded and wrote `out/.simrun-merged`; without the marker the harness of its image
+is one which does not merge, from simrun 0.1.0, and the task failed) and failed when
+its `<task>-w0` or its merge failed (after the retries of Argo), an extra worker
+never fails a task; an
 unsplit task is its node `<task>`. When every task is done the run succeeded, when a
 task failed the run failed; in both cases the controller stops the workflow, so extra
 workers still waiting for admission go away, and releases the reserved node.
@@ -106,12 +108,24 @@ LOGS_WAIT_S = 600.0
 
 
 def _split_state(
-    task_id: str, nodes: dict[str, str], coordinator_merges: bool = False
+    task_id: str,
+    nodes: dict[str, str],
+    coordinator_merges: bool,
+    merged: Callable[[], bool],
 ) -> TaskState:
+    """The state of a split task from the phases of its nodes.
+
+    Args:
+        task_id: The task.
+        nodes: The phases of the nodes of the workflow by name.
+        coordinator_merges: Whether its coordinator merges (no merge node).
+        merged: Whether its output has the marker of a merge, asked only when its
+            coordinator which merges succeeded.
+    """
     w0 = nodes.get(f"{task_id}-w0")
     merge = nodes.get(f"{task_id}-merge")
     if coordinator_merges and w0 == "Succeeded":
-        return TaskState.DONE
+        return TaskState.DONE if merged() else TaskState.FAILED
     extra = re.compile(rf"{re.escape(task_id)}-extra(\(\d+:\d+\))?")
     extras = [phase for node, phase in nodes.items() if extra.fullmatch(node)]
     if merge == "Succeeded":
@@ -165,6 +179,7 @@ def task_states(
     types: dict[str, TaskType],
     status: BackendStatus,
     plans: dict[str, TaskPlan],
+    merged: Callable[[str], bool],
 ) -> dict[str, TaskState]:
     """The state of every task of a workflow from the phases of its DAG nodes.
 
@@ -178,7 +193,10 @@ def task_states(
         types: The task types by name.
         status: The status of the workflow in the backend.
         plans: The plans of the tasks, by id; a split task whose plan merges in the
-            coordinator is done when `<task>-w0` succeeded.
+            coordinator is done when `<task>-w0` succeeded and `merged` holds.
+        merged: Whether the output of a task by id has the marker of a merge: a
+            coordinator which succeeded without it ran a harness which does not
+            merge, and its task failed.
 
     Returns:
         The state of every task by id.
@@ -188,7 +206,10 @@ def task_states(
         if types[task.type].splittable:
             plan = plans.get(task.id)
             states[task.id] = _split_state(
-                task.id, status.tasks, plan is not None and plan.coordinator_merges
+                task.id,
+                status.tasks,
+                plan is not None and plan.coordinator_merges,
+                lambda task_id=task.id: merged(task_id),
             )
         else:
             states[task.id] = _unsplit_state(status.tasks.get(task.id))
@@ -493,7 +514,7 @@ class Controller:
         self,
         task: TaskSpec,
         shape: PodShape | None,
-        coordinator_merges: bool = False,
+        coordinator_merges: bool,
     ) -> list[tuple[str, PodShape | None]]:
         """The patterns of the pod keys of a task with the shapes of their pods.
 
@@ -609,18 +630,44 @@ class Controller:
                         )
         return None
 
+    def _merged(self, record: RunRecord, task_id: str) -> bool:
+        """Whether the output of a task has the marker of a merge."""
+        task_dir = self.store.run_dir(record.id) / "tasks" / task_id
+        return (task_dir / "out" / MERGED_MARKER).is_file()
+
+    def _unmerged(
+        self, record: RunRecord, task: TaskSpec, nodes: dict[str, str]
+    ) -> bool:
+        """Whether the coordinator of a task which merges succeeded without merging."""
+        merges = bool(record.plans.get(task.id, {}).get("coordinator_merges"))
+        return (
+            merges
+            and self.types[task.type].splittable
+            and nodes.get(f"{task.id}-w0") == "Succeeded"
+            and not self._merged(record, task.id)
+        )
+
     def _failure(
         self,
         record: RunRecord,
         task_id: str,
         failed: dict[str, list[FailedAttempt]],
+        status_tasks: dict[str, str],
     ) -> str:
         """Why a task failed: the exit of its last failed pod, for the run message.
 
         Exit 3 and 4 are the analysis and a configuration error of the harness
-        (`simrun.worker`); a `command` task exits as its command does.
+        (`simrun.worker`); a `command` task exits as its command does. A
+        coordinator which succeeded without merging ran the harness of simrun
+        0.1.0, which does not merge.
         """
         task = next(t for t in record.workflow.tasks if t.id == task_id)
+        if self._unmerged(record, task, status_tasks):
+            return (
+                f"task {task_id} failed: {task_id}-w0 ended without merging the "
+                "units; the harness of its image does not merge in the coordinator, "
+                "it needs a simrun newer than 0.1.0"
+            )
         last: tuple[str, FailedAttempt] | None = None
         for key, attempts in sorted(failed.items()):
             if not attempts or self._task_of(record, key) is not task:
@@ -638,7 +685,13 @@ class Controller:
 
     def _next(self, record: RunRecord, status: BackendStatus) -> RunRecord:
         """The record after a status of its workflow."""
-        tasks = task_states(record.workflow, self.types, status, task_plans(record))
+        tasks = task_states(
+            record.workflow,
+            self.types,
+            status,
+            task_plans(record),
+            lambda task_id: self._merged(record, task_id),
+        )
         kills = self._memory_kills(record, status.failed)
         record = record.model_copy(update={"oom_kills": kills})
         killed = self._killed_twice(record, status.failed, kills)
@@ -650,7 +703,8 @@ class Controller:
         failed = [t for t, s in tasks.items() if s == TaskState.FAILED]
         if failed:
             message = "; ".join(
-                self._failure(record, task_id, status.failed) for task_id in failed
+                self._failure(record, task_id, status.failed, status.tasks)
+                for task_id in failed
             )
             return closed(record, RunState.FAILED, tasks, message)
         if all(s == TaskState.DONE for s in tasks.values()):

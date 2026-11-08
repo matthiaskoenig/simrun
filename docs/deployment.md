@@ -68,6 +68,8 @@ docker push registry.cluster.internal:5000/simrun-service:0.1.0
 
 The plugins are installed with their dependencies at the versions of the lock of simrun (`constraints.txt`): a plugin which needs another version of a dependency of simrun fails the build instead of moving it. The base (`--build-arg BASE`) is the base image of the environments in the registry, which the registry mirrors with its digest (`ClusterConfig.base_image`). At runtime the service keeps the cache of uv in `/var/cache/uv`, a volume of the deployment, so a submission does not download the metadata and the build backends again.
 
+A client without the store mounted (`SIMRUN_STORE`) uploads its snapshots through the API, and the service spools an upload to its temporary directory (`TMPDIR`, else `/tmp`) before it moves the files into the store: the container's `/tmp` must hold up to `max_upload_bytes` (2 GiB by default) per concurrent upload, so give the pod the ephemeral storage for it or mount a volume at `/tmp`.
+
 ## Builds of the images of the environments
 
 An image is built by a Job of `buildctl`, which sends the build context (a ConfigMap of its files, owned by the Job) to the BuildKit daemon of the cluster and pushes the image to the registry with the credentials of the optional Secret `simrun-registry-auth`; whether the registry has an image is asked its API.

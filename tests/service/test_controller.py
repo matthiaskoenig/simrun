@@ -362,10 +362,13 @@ WORKFLOW = Workflow(
 )
 
 
-def _states(merges: bool = False, **nodes: str) -> dict[str, TaskState]:
+def _states(
+    merges: bool = False, merged: bool = True, **nodes: str
+) -> dict[str, TaskState]:
     status = BackendStatus(phase="Running", tasks=nodes)
     plans = {"a": TaskPlan("a", 1, _SHAPE, "b", "e", 4, coordinator_merges=merges)}
-    return task_states(WORKFLOW, {**TYPES, COMMAND.name: COMMAND}, status, plans)
+    types = {**TYPES, COMMAND.name: COMMAND}
+    return task_states(WORKFLOW, types, status, plans, lambda _: merged)
 
 
 _SHAPE = PodShape(
@@ -386,6 +389,25 @@ def test_a_split_task_whose_coordinator_merges_is_done_with_its_coordinator():
     assert _states(True, **{"a-w0": "Error"})["a"] == TaskState.FAILED
     # a plan of a record from before: the merge node is still awaited
     assert _states(False, **{"a-w0": "Succeeded"})["a"] == TaskState.RUNNING
+
+
+def test_a_coordinator_which_succeeded_without_merging_fails_its_task():
+    # the harness of simrun 0.1.0 ignores SIMRUN_MERGE: no marker of a merge
+    assert _states(True, False, **{"a-w0": "Succeeded"})["a"] == TaskState.FAILED
+    assert _states(True, False, **{"a-w0": "Running"})["a"] == TaskState.RUNNING
+
+
+def test_an_old_harness_fails_the_run_with_its_cause(service):
+    run_id = service.submit()["id"]
+    name = service.name(run_id)
+    service.backend.merges = False  # the coordinator exits 0 without merging
+    service.backend.finish(name)
+    service.controller.reconcile()
+    record = service.store.read(run_id)
+    assert record.state == RunState.FAILED
+    assert record.tasks["squares"] == TaskState.FAILED
+    assert "does not merge" in (record.message or "")
+    assert "newer than 0.1.0" in (record.message or "")
 
 
 def test_task_states():
