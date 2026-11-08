@@ -3,6 +3,7 @@
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -40,6 +41,11 @@ AGENTS = [f"k3d-{CLUSTER}-agent-{i}" for i in range(3)]
 # images of k3s, Kueue, Argo, BuildKit and the runs
 MIN_FREE_GB = 20
 SETUP_TIMEOUT_S = 600.0
+# the errors of an apply while the CRDs or the webhook of Kueue are not up yet
+TRANSIENT_APPLY = re.compile(
+    r"no matches for kind|ensure CRDs are installed|failed calling webhook"
+    r"|connection refused|no endpoints available"
+)
 TERMINAL = ("succeeded", "failed", "cancelled")
 # the base image of the images of the environments (`ClusterConfig.base_image`, a
 # repository of the registry), mirrored from its source with its digest
@@ -157,8 +163,9 @@ def apply_manifests() -> None:
                 REPO / "deploy" / "k3d",
             )
             break
-        except RuntimeError:
-            if time.monotonic() > deadline:
+        except RuntimeError as error:
+            # only the CRDs and the webhook of Kueue which are not up yet pass
+            if not TRANSIENT_APPLY.search(str(error)) or time.monotonic() > deadline:
                 raise
             time.sleep(10)
     for namespace, deployment in (
