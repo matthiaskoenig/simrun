@@ -31,7 +31,7 @@ import socket
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Generator
 from pathlib import Path
 
 import httpx
@@ -78,7 +78,7 @@ def _free_port() -> int:
 
 
 @contextlib.contextmanager
-def k3d_service() -> Iterator[dict[str, str]]:
+def k3d_service() -> Generator[dict[str, str]]:
     """A service of the environment against the local test system; its variables."""
     if not K3D.is_file():
         sys.exit(f"{K3D} is missing: run `uv run python tests/cluster/local.py up`")

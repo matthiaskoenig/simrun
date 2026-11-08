@@ -354,6 +354,10 @@ def image_ref(env: Environment, registry: str, dockerfile_text: str) -> str:
     return f"{registry}/simrun-env:{digest.hexdigest()[:16]}"
 
 
+# a requirement locked from a git repository, e.g. `pkpdsim @ git+https://...`
+GIT_REQUIREMENT = re.compile(r"@ git\+", re.MULTILINE)
+
+
 def dockerfile(
     env: Environment,
     base_image: str,
@@ -372,13 +376,17 @@ def dockerfile(
         wheel: File name of the simrun wheel in the build context, the only file
             copied; the harness of the service, never installed by name.
         system_packages: Debian packages installed before the requirements, the
-            shared libraries their wheels link (`ClusterConfig.system_packages`).
+            shared libraries their wheels link (`ClusterConfig.system_packages`);
+            `git` as well when a requirement is locked from a git repository.
     """
+    packages = list(system_packages)
+    if GIT_REQUIREMENT.search(env.requirements) and "git" not in packages:
+        packages.append("git")  # uv clones a dependency locked from git
     system = ""
-    if system_packages:
+    if packages:
         system = (
             "RUN apt-get update && apt-get install -y --no-install-recommends "
-            f"{' '.join(system_packages)} && rm -rf /var/lib/apt/lists/*\n"
+            f"{' '.join(packages)} && rm -rf /var/lib/apt/lists/*\n"
         )
     return (
         f"FROM {base_image}\n"
