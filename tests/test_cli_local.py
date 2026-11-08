@@ -46,11 +46,11 @@ def project(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
 def test_submit_local_runs_the_example_and_status_shows_it(project: Path) -> None:
     shutil.copy(EXAMPLES / "squares.yaml", "squares.yaml")
     runner = CliRunner()
-    result = runner.invoke(app, ["submit", "squares.yaml", "--local", "--json"])
+    result = runner.invoke(
+        app, ["submit", "squares.yaml", "--local", "--timeout", "120", "--json"]
+    )
     assert result.exit_code == 0, result.output
-    run_id = json.loads(result.output)["id"]
-    waited = runner.invoke(app, ["wait", run_id, "--local", "--timeout", "120"])
-    assert waited.exit_code == 0, waited.output
+    run_id = json.loads(result.output.strip().splitlines()[-1])["id"]
     status = runner.invoke(app, ["status", run_id, "--local", "--json"])
     assert json.loads(status.output)["run"]["state"] == "succeeded"
     listed = runner.invoke(app, ["list", "--local", "--json"])

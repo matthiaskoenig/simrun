@@ -3,9 +3,13 @@
 The CLI (`simrun.cli`) and the MCP server (`simrun.mcp`) both go through `Client`.
 """
 
+import json
 import logging
 import os
+import tarfile
+import tempfile
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
@@ -46,9 +50,27 @@ STORE_ENV = "SIMRUN_STORE"
 POLL_S = 30.0
 REQUEST_TIMEOUT_S = 60.0
 BACKOFF_START_S = 1.0
+REFOLLOW_S = 0.2
 BACKOFF_MAX_S = 10.0
 # answers of a proxy or a restarting service, retried by `wait` and `simrun edit`
 RETRY_STATUS = (502, 503, 504)
+
+
+def _apply_event(current: dict[str, Any], event: str, data: str) -> bool:
+    """Put an event of the stream of a run into `current`; whether it changed."""
+    try:
+        if event == "run":
+            current["run"] = RunRecord.model_validate_json(data)
+        elif event == "progress":
+            raw = json.loads(data)
+            current["progress"] = {
+                k: TaskProgress.model_validate(v) for k, v in raw.items()
+            }
+        else:
+            return False
+    except ValueError:
+        return False
+    return "run" in current
 
 
 def plan_tasks(workflow: Workflow, types: dict[str, TaskType]) -> Workflow:
@@ -376,6 +398,99 @@ class Client:
             if deadline is not None and time.monotonic() >= deadline:
                 return summary
 
+    def wait_live(
+        self,
+        run_id: str,
+        on_update: Callable[[dict[str, Any]], None],
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """Follow a run through its event stream until it is final.
+
+        The stream ends when the run is final and also every `events_max_s` of
+        the service; it is opened again then. A dropped connection or a restarting
+        service is retried with a backoff of 1 s doubling to 10 s.
+
+        Args:
+            run_id: The run.
+            on_update: Called with the latest `{"run": RunRecord, "progress":
+                dict[str, TaskProgress]}` whenever one of them changed.
+            timeout_s: Seconds to follow (None: until the run is final).
+
+        Returns:
+            The last update; its run is not terminal when the timeout passed.
+
+        Raises:
+            ClientError: For an unknown run or another refusal.
+            httpx.TransportError: When the service was never reached before the
+                timeout.
+        """
+        current: dict[str, Any] = {}
+        deadline = None if timeout_s is None else time.monotonic() + timeout_s
+        backoff = BACKOFF_START_S
+        while True:
+            remaining = None if deadline is None else deadline - time.monotonic()
+            if remaining is not None and remaining <= 0:
+                return current or self._update(run_id)
+            try:
+                self._follow(run_id, current, on_update, remaining)
+                backoff = BACKOFF_START_S
+            except httpx.TransportError as error:
+                remaining = None if deadline is None else deadline - time.monotonic()
+                if remaining is not None and remaining <= 0:
+                    if not current:
+                        raise
+                    return current
+                logger.warning(
+                    "follow %s: %s, retrying in %.0f s", run_id, error, backoff
+                )
+                time.sleep(backoff if remaining is None else min(backoff, remaining))
+                backoff = min(backoff * 2, BACKOFF_MAX_S)
+                continue
+            run = current.get("run")
+            if isinstance(run, RunRecord) and run.state in TERMINAL_RUN_STATES:
+                return current
+            time.sleep(REFOLLOW_S)  # a stream which ends at once does not spin
+
+    def _update(self, run_id: str) -> dict[str, Any]:
+        return {"run": self.status(run_id), "progress": self.progress(run_id)}
+
+    def _follow(
+        self,
+        run_id: str,
+        current: dict[str, Any],
+        on_update: Callable[[dict[str, Any]], None],
+        remaining: float | None,
+    ) -> None:
+        """Read one event stream into `current` until it ends."""
+        read = POLL_S * 2 if remaining is None else min(POLL_S * 2, remaining + 0.5)
+        timeout = httpx.Timeout(REQUEST_TIMEOUT_S, read=read)
+        event = ""
+        data: list[str] = []
+        try:
+            with self._http.stream(
+                "GET", f"/runs/{run_id}/events", timeout=timeout
+            ) as response:
+                if response.status_code in RETRY_STATUS:
+                    raise httpx.TransportError(f"status {response.status_code}")
+                if response.is_error:
+                    response.read()
+                    raise ClientError(response.status_code, _detail(response))
+                for line in response.iter_lines():
+                    if line:
+                        field, _, value = line.partition(":")
+                        value = value.removeprefix(" ")
+                        if field == "event":
+                            event = value
+                        elif field == "data":
+                            data.append(value)
+                        continue
+                    if data and _apply_event(current, event, "\n".join(data)):
+                        on_update(current)
+                    event, data = "", []
+        except httpx.ReadTimeout:
+            if remaining is None:
+                raise
+
     def status(self, run_id: str) -> RunRecord:
         """The record of a run."""
         return RunRecord.model_validate(self._call("GET", f"/runs/{run_id}").json())
@@ -421,6 +536,36 @@ class Client:
         """The output files of a task, paths relative to the store."""
         data = self._call("GET", f"/runs/{run_id}/outputs/{task_id}").json()
         return [OutputFile.model_validate(f) for f in data]
+
+    def output_file(self, run_id: str, task_id: str, path: str) -> bytes:
+        """The bytes of a file of the output of a task, `path` relative to it."""
+        return self._call(
+            "GET", f"/runs/{run_id}/outputs/{task_id}/file", params={"path": path}
+        ).content
+
+    def output_archive(self, run_id: str, task_id: str, to: Path) -> list[Path]:
+        """Extract the output of a task into the directory `to`.
+
+        Returns:
+            The extracted files, sorted.
+        """
+        to.mkdir(parents=True, exist_ok=True)
+        with (
+            tempfile.TemporaryFile() as spool,
+            self._http.stream(
+                "GET", f"/runs/{run_id}/outputs/{task_id}/archive"
+            ) as response,
+        ):
+            if response.is_error:
+                response.read()
+                raise ClientError(response.status_code, _detail(response))
+            for chunk in response.iter_bytes():
+                spool.write(chunk)
+            spool.seek(0)
+            with tarfile.open(fileobj=spool, mode="r:") as tar:
+                names = [m.name for m in tar.getmembers() if m.isfile()]
+                tar.extractall(to, filter="data")
+        return sorted(to / name for name in names)
 
     def delete(self, run_id: str) -> CleanupResult:
         """Delete an ended run."""
