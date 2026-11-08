@@ -136,8 +136,12 @@ class WorkerReport:
         prepare_seconds: The seconds from the start of the harness to the start of
             its work: the install of the sources, the restart, the imports and the
             staging of the inputs.
-        cpu_seconds: The user and system seconds of the harness and of its children
-            (the processes of the pool, the command of `simrun-exec`) which ended.
+        cpu_seconds: The user and system seconds of the harness, of the children it
+            reaped (the command of `simrun-exec`) and of the units it completed, each
+            measured in the process of the pool which computed it.
+        throttled_seconds: The seconds the processes of the cgroup of the worker
+            waited for its CPU quota during the work, None without a cgroup of its
+            own (the local backend).
     """
 
     worker: str
@@ -154,6 +158,7 @@ class WorkerReport:
     started: float | None = None
     prepare_seconds: float = 0.0
     cpu_seconds: float = 0.0
+    throttled_seconds: float | None = None
 
     @classmethod
     def from_json(cls, text: str) -> WorkerReport:
@@ -269,21 +274,25 @@ def _kill(pids: set[int]) -> None:
 
 def _compute(
     setup: str | None, ref: str, settings: BaseModel, index: int, paths: TaskPaths
-) -> float:
+) -> tuple[float, float]:
     """Compute one unit in a process of the pool, after the setup of the process.
 
     The setup runs in the first unit of a process, so its exception is the exception
     of that unit, and a broken pool only means that a process died.
 
     Returns:
-        The seconds the unit took in the process, its setup included.
+        The seconds the unit took in the process, its setup included, and the cpu
+        seconds of the process and of the children it waited for meanwhile; the
+        processes of the pool are children of the forkserver, so the harness never
+        reaps them itself.
     """
     start = time.monotonic()
+    cpu = cpu_seconds()
     if setup is not None and setup not in _SETUPS_DONE:
         resolve(setup)(settings, paths)
         _SETUPS_DONE.add(setup)
     resolve(ref)(settings, index, paths)
-    return time.monotonic() - start
+    return time.monotonic() - start, cpu_seconds() - cpu
 
 
 @contextmanager
@@ -355,8 +364,9 @@ class _Units:
     failed: int | None = None
     broken: BrokenProcessPool | None = None
     seconds: float = 0.0
+    cpu_seconds: float = 0.0
 
-    def complete(self, index: int, seconds: float) -> None:
+    def complete(self, index: int, measured: tuple[float, float]) -> None:
         try:
             self.ledger.complete(index, self.worker)
         except ValueError:
@@ -368,7 +378,9 @@ class _Units:
             )
             return
         self.done.append(index)
+        seconds, cpu = measured
         self.seconds += seconds
+        self.cpu_seconds += cpu
         _append_progress(self.progress, self.worker, index)
 
     def release(self, index: int) -> None:
@@ -381,14 +393,14 @@ class _Units:
                 self.worker,
             )
 
-    def settle(self, future: Future[float], index: int) -> None:
+    def settle(self, future: Future[tuple[float, float]], index: int) -> None:
         """Complete the unit of a future which succeeded, else release it."""
         if future.done() and not future.cancelled() and future.exception() is None:
             self.complete(index, future.result())
         else:
             self.release(index)
 
-    def finished(self, future: Future[float], index: int) -> None:
+    def finished(self, future: Future[tuple[float, float]], index: int) -> None:
         """Complete the unit of a finished future, or release it and note why."""
         error = None if future.cancelled() else future.exception()
         if not future.cancelled() and error is None:
@@ -513,6 +525,24 @@ class _OomKills:
         return now - (self.start or 0)
 
 
+class _Throttled:
+    """The seconds the cgroup waited for its CPU quota from now on.
+
+    Without a cgroup of its own (`process`) there is none: the machine has no quota.
+    """
+
+    def __init__(self, source: MemorySource = "cgroup") -> None:
+        """Read `cpu.stat` now, unless the source is `process`."""
+        self.start = cgroup.cpu_throttled_seconds() if source == "cgroup" else None
+
+    def since(self) -> float | None:
+        """The seconds since the object was created, None without the counter."""
+        if self.start is None:
+            return None
+        now = cgroup.cpu_throttled_seconds()
+        return None if now is None else now - self.start
+
+
 class MemorySampler:
     """The maximum of the anonymous memory of the worker over its samples.
 
@@ -606,7 +636,7 @@ def _compute_units(
         mp_context=multiprocessing.get_context("forkserver"),
         initializer=_init_process,
     )
-    in_flight: dict[Future[float], int] = {}
+    in_flight: dict[Future[tuple[float, float]], int] = {}
     # the processes the pool started, which it starts in `submit` only
     started: set[int] = set()
     deadline: float | None = None
@@ -761,6 +791,7 @@ def run_worker(
         units = _Units(ledger, worker, paths.task_dir / PROGRESS_FILE)
         sampler = MemorySampler(memory_source)
         oom_kills = _OomKills(memory_source)
+        throttled = _Throttled(memory_source)
         coordination = None
         if coordinator:
             stale = grace_s + STALE_MARGIN_S if stale_s is None else stale_s
@@ -792,7 +823,8 @@ def run_worker(
                 failed=units.failed is not None,
                 started=_started(work_started),
                 prepare_seconds=work_started - _started(work_started),
-                cpu_seconds=cpu_seconds(),
+                cpu_seconds=cpu_seconds() + units.cpu_seconds,
+                throttled_seconds=throttled.since(),
             )
             write_report(report, paths.task_dir, attempt)
     if units.failed is not None:
@@ -1309,6 +1341,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
     start = time.monotonic()
     work_started = time.time()
     oom_kills = _OomKills(source)
+    throttled = _Throttled(source)
     try:
         process = subprocess.Popen(argv)
     except OSError as error:
@@ -1335,6 +1368,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
             started=_started(work_started),
             prepare_seconds=work_started - _started(work_started),
             cpu_seconds=cpu_seconds(),
+            throttled_seconds=throttled.since(),
         )
         write_report(report, paths.task_dir, attempt)
     if stop.is_set():

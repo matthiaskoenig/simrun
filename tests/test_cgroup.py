@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from simrun import cgroup
 from simrun.cgroup import cpu_quota, memory_anon, memory_limit, memory_oom_kills
 
 
@@ -43,3 +44,11 @@ def test_memory_oom_kills(tmp_path: Path) -> None:
         "low 0\nhigh 0\nmax 12\noom 2\noom_kill 1\noom_group_kill 0\n"
     )
     assert memory_oom_kills(tmp_path) == 1
+
+
+def test_cpu_throttled_seconds(tmp_path: Path) -> None:
+    assert cgroup.cpu_throttled_seconds(tmp_path) is None
+    (tmp_path / "cpu.stat").write_text(
+        "usage_usec 9000000\nnr_periods 10\nnr_throttled 4\nthrottled_usec 2500000\n"
+    )
+    assert cgroup.cpu_throttled_seconds(tmp_path) == 2.5

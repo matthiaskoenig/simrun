@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 
 import pytest
@@ -1097,6 +1098,37 @@ def test_report_carries_when_the_worker_started_and_its_cpu(
     assert 3.0 <= report["prepare_seconds"] < 30.0
     assert report["cpu_seconds"] > 0.0
     assert report["seconds"] > 0.0
+
+
+def _burn(settings: SquaresSettings, index: int, paths: TaskPaths) -> None:
+    began = time.process_time()
+    while time.process_time() - began < 0.3:
+        pass
+
+
+def test_a_unit_measures_the_cpu_of_its_process(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the processes of the pool are children of the forkserver, which the harness
+    # never reaps: a unit measures its cpu in the process which computes it
+    module = types.ModuleType("simrun_test_burn")
+    module.burn = _burn  # ty: ignore[unresolved-attribute]
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    seconds, cpu = worker._compute(
+        None, "simrun_test_burn:burn", SquaresSettings(n=1), 0, task_paths(tmp_path)
+    )
+    assert cpu >= 0.3
+    assert seconds >= cpu * 0.5
+
+
+def test_the_throttling_of_the_cgroup_from_now_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    readings = iter([10.0, 11.5])
+    monkeypatch.setattr(worker.cgroup, "cpu_throttled_seconds", lambda: next(readings))
+    assert worker._Throttled("cgroup").since() == pytest.approx(1.5)
+    # without a cgroup of its own (the local backend) there is no quota
+    assert worker._Throttled("process").since() is None
 
 
 def test_exec_report_carries_when_the_command_started_and_its_cpu(
