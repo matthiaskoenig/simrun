@@ -61,7 +61,7 @@ The service reads a YAML file named by `SIMRUN_CONFIG`, a `simrun.service.app.Se
 | `python` | the python of the images of the environments (3.14) |
 | `build_constraints` | the pinned versions of the build backends, `src/simrun/build_constraints.txt` by default |
 | `backend` | `module:callable` of the backend, `simrun.service.argo_backend:backend` |
-| `web` | the directory of the built [web app](web-app.md), served at `/ui/` without a token; no `/ui/` without it |
+| `web` | the directory of the built [web app](web-app.md), served at `/ui/` without a token; by default the one of the installation (`simrun/web` of the package, else `frontend/dist` of a checkout), `null` for no `/ui/` |
 
 `cluster`, a `simrun.config.ClusterConfig`:
 

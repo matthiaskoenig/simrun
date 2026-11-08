@@ -31,6 +31,7 @@ Every command takes `--json` (except `logs`, which prints the logs as text, and 
 | `simrun cancel RUN` | cancel a run |
 | `simrun cleanup` | remove ended runs and the snapshots nothing refers to |
 | `simrun usage` | the bytes of the store per group and run |
+| `simrun serve` | run the service in the foreground: `--local` the local service of the current directory, else the service of `SIMRUN_CONFIG` |
 
 ### submit
 
@@ -96,3 +97,13 @@ simrun usage
 ```
 
 `cleanup` removes the runs which ended more than `--older-than` days ago (30 by default), only the ones of `--group` or only `--failed` runs, and the snapshots no remaining run refers to; `--dry-run` lists what it would remove.
+
+### serve
+
+```bash
+simrun serve --local                  # the local service of the current directory
+simrun serve --local --idle-exit 1800 # exits after 30 min without a request and without a live run
+simrun serve --port 8000              # the service of SIMRUN_CONFIG, as uvicorn --factory simrun.service.app:serve
+```
+
+`serve --local` runs the service of the current directory with the local backend, which runs the tasks as processes on this machine: its store, index and token are in `.simrun/` (with a `.gitignore` of everything, so none of it lands in git), it listens on `127.0.0.1` only, on a free port unless `--port` names one, and serves the [web app](web-app.md) at `/ui/`. It prints `simrun at http://127.0.0.1:<port>/ui/ (token in .simrun/service.json)`; `.simrun/service.json` holds the pid, the port, the token and the URL while it runs. Ctrl-C (or SIGTERM) cancels the runs and waits for their processes, so no process of a run outlives the service. One service runs per directory; a second one is refused. A command which needs the local service starts it in the background when none runs (`python -m simrun serve --local --idle-exit 1800`, its output in `.simrun/service.log`).

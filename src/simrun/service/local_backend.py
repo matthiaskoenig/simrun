@@ -208,6 +208,7 @@ class LocalBackend:
         self._active: dict[str, _Run] = {}
         self._used = 0
         self._callbacks: list[Callable[[], None]] = []
+        self._closed = False
 
     # the protocol
 
@@ -228,13 +229,18 @@ class LocalBackend:
         Raises:
             ValueError: A task stages a port which is no input, or its type is
                 neither splittable nor has a command.
+            RuntimeError: The backend is closed.
         """
         name = workflow_name(record.id)
         with self._cond:
+            if self._closed:
+                raise RuntimeError("the local backend is closed")
             if name in self._runs:
                 return name
         run = _Run(name, record.id, self._nodes(record, plans, types, cluster))
         with self._cond:
+            if self._closed:
+                raise RuntimeError("the local backend is closed")
             if name in self._runs:
                 return name
             self._runs[name] = run
@@ -377,8 +383,9 @@ class LocalBackend:
         return True
 
     def close(self) -> None:
-        """Cancel every run and wait for the end of its processes."""
+        """Refuse new runs, cancel every run and wait for the end of its processes."""
         with self._cond:
+            self._closed = True
             runs = list(self._runs.values())
         for run in runs:
             self.cancel(run.name)

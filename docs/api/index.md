@@ -14,6 +14,7 @@ The workflows, the plugins, the clients, the planning and the harness of the pod
 | [demo](demo.md) | the demo plugin: sums of squares, split into one unit per number |
 | [client](client.md) | the client of the service: snapshots working trees, then calls the API |
 | [cli](cli.md) | the command line of simrun: submit, follow and compare runs |
+| [local](local.md) | the local service of a project in `.simrun/`, started on demand |
 | [mcp](mcp.md) | the MCP server of simrun, a local stdio process of an agent |
 | [planner](planner.md) | the planner: the shape of a worker pod and the number of pieces of a task |
 | [resources](resources.md) | resources learned from the reports of workers |

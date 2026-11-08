@@ -104,6 +104,13 @@ PROGRESS_TAIL_BYTES = 8192
 UNFINISHED_TASK_MAX = 0.99
 
 
+def _web_dir() -> Path | None:
+    """The built web app of the installation, see `simrun.local.web_dir`."""
+    from simrun.local import web_dir  # simrun.local imports this module
+
+    return web_dir()
+
+
 class ServiceSettings(BaseModel):
     """The settings of the service.
 
@@ -126,7 +133,8 @@ class ServiceSettings(BaseModel):
             by default.
         backend: `module:callable` returning the backend, for `serve`.
         web: Directory of the built web app, served at `/ui/` without a token; the
-            app itself talks to the API with the token of the user.
+            app itself talks to the API with the token of the user. The one of the
+            installation by default (`simrun.local.web_dir`), None serves none.
     """
 
     store: Path
@@ -141,7 +149,7 @@ class ServiceSettings(BaseModel):
     python: str = "3.14"
     build_constraints: Path | None = None
     backend: str | None = None
-    web: Path | None = None
+    web: Path | None = Field(default_factory=_web_dir)
 
 
 class SubmitRequest(BaseModel):
@@ -1697,6 +1705,7 @@ def openapi_document() -> dict[str, Any]:
             tokens=root / "tokens.yaml",
             owner="owner",
             cluster=ClusterConfig(registry="localhost:5000"),
+            web=None,
         )
         app = create_app(settings, FakeBackend(), {"command": COMMAND})
         document = app.openapi()

@@ -469,11 +469,13 @@ def test_cancel_kills_the_container(backends, docker_calls, monkeypatch):
     _wait(backend, name, lambda s: bool(_calls(docker_calls)))
     backend.cancel(name)
     container = f"simrun-{run.id}-boxed-0"
+    # the SIGTERM of the cancel, in a thread, and the kill after the end of the
+    # client, in either order
+    expected = [["kill", "--signal", "TERM", container], ["kill", container]]
     deadline = time.monotonic() + DEADLINE_S
-    while ["kill", container] not in _calls(docker_calls):
+    while not all(call in _calls(docker_calls) for call in expected):
         assert time.monotonic() < deadline, _calls(docker_calls)
         time.sleep(0.02)
-    assert ["kill", "--signal", "TERM", container] in _calls(docker_calls)
     status = _wait(backend, name, lambda s: s.tasks["boxed"] == "Failed")
     assert len(status.failed["boxed"]) == 1
 
@@ -550,3 +552,11 @@ def test_backend_reads_the_settings(tmp_path, monkeypatch):
     backend = local_backend.backend()
     assert backend.store == tmp_path / "store"
     assert backend.scratch == tmp_path / "scratch"
+
+
+def test_a_closed_backend_refuses_a_run(backends):
+    backend = backends()
+    backend.close()
+    with pytest.raises(RuntimeError, match="closed"):
+        _submit(backend, [_command("late", "print('late')")])
+    assert backend.placements() == []
