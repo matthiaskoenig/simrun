@@ -44,12 +44,26 @@ const base = {
 afterEach(() => vi.restoreAllMocks());
 
 describe("EditInspector", () => {
+  it("lists the inputs a command reads, without staging or resource overrides", () => {
+    const command: TaskTypeView = { ...type, name: "command", inputs: [], outputs: [], splittable: false };
+    const withCommand: Workflow = {
+      ...workflow,
+      tasks: [...workflow.tasks, { id: "sum", type: "command", settings: {}, inputs: { a: "a.out", b: "b.out" } }],
+    };
+    const wrapper = mount(EditInspector, { props: { ...base, workflow: withCommand, types: [type, command], selected: "sum" } });
+    expect(wrapper.findAll("[data-input]").map((i) => i.attributes("data-input"))).toEqual(["a", "b"]);
+    expect(wrapper.find("[data-stage]").exists()).toBe(false);
+    expect(wrapper.find("[data-workers]").exists()).toBe(false);
+    expect(wrapper.get("[data-command-resources]").text()).toContain("cores, memory, scratch and GPUs of its settings");
+  });
+
   it("shows the estimate and the errors of the task and writes resources.workers", async () => {
     const wrapper = mount(EditInspector, { props: { ...base, selected: "b" } });
     const text = wrapper.text();
     expect(text).toContain("learned");
     expect(text).toContain("2 min");
-    expect(text).toContain("2.5 GB");
+    // the memory per process of the plan, not the learned one before the plan
+    expect(text).toContain("Memory per worker2 GB");
     expect(text).toContain("3 pods");
     expect(text).toContain("input x is bad");
     expect(text).toContain("a.out");

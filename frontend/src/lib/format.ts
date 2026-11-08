@@ -86,3 +86,12 @@ export function initials(name: string): string {
   const letters = words.length >= 2 ? (words[0]?.[0] ?? "") + (words[1]?.[0] ?? "") : (words[0] ?? "").slice(0, 2);
   return letters === "" ? "?" : letters.toUpperCase();
 }
+
+/** The short name of a server, the same everywhere: the names of the servers of a
+ * cluster share their start (`k3d-simrun-test-agent-0`), so the last two parts of
+ * the host name tell them apart (`agent-0`); the full name goes in a tooltip. */
+export function serverLabel(name: string): string {
+  const host = name.split(".")[0] ?? name;
+  const parts = host.split("-");
+  return parts.length > 2 ? parts.slice(-2).join("-") : host;
+}

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TaskTypeView, Workflow } from "../api/client";
-import { addTask, connect, disconnect, newTaskId, paletteGroups, panInto, removeTask, renameTask } from "./edit-graph";
+import { NEW_INPUT, addTask, connect, disconnect, inputPorts, newTaskId, paletteGroups, panInto, removeTask, renameTask } from "./edit-graph";
 
 function type(name: string, extra: Partial<TaskTypeView> = {}): TaskTypeView {
   return {
@@ -136,5 +136,30 @@ describe("panInto", () => {
   it("pans down to clear the bar above a node at the top", () => {
     const next = panInto({ x: 0, y: 0, zoom: 1 }, pane, { x: 100, y: 10, width: 256, height: 80 }, margin);
     expect(next).toEqual({ x: 0, y: 54, zoom: 1 });
+  });
+});
+
+describe("the inputs of a command", () => {
+  const command = { name: "command", inputs: [], outputs: [] } as unknown as TaskTypeView;
+  const workflow = (): Workflow => ({
+    name: "w",
+    split: "fastest",
+    tasks: [
+      { id: "a", type: "demo.squares", settings: {} },
+      { id: "sum", type: "command", settings: {} },
+    ],
+  });
+
+  it("adds a port named after the source task on the new input handle", () => {
+    let w = connect(workflow(), { task: "a", port: "squares" }, { task: "sum", port: NEW_INPUT }) as Workflow;
+    w = connect(w, { task: "a", port: "squares" }, { task: "sum", port: NEW_INPUT }) as Workflow;
+    expect(w.tasks[1]!.inputs).toEqual({ a: "a.squares", "a-2": "a.squares" });
+    expect(inputPorts(w.tasks[1]!, command)).toEqual(["a", "a-2", NEW_INPUT]);
+  });
+
+  it("shows the ports of the type and the ones a task reads", () => {
+    const report = { name: "report", inputs: ["results"], outputs: [] } as unknown as TaskTypeView;
+    const task = { id: "r", type: "report", settings: {}, inputs: { results: "a.out", extra: "a.out" } };
+    expect(inputPorts(task as never, report)).toEqual(["results", "extra"]);
   });
 });

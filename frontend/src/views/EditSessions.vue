@@ -1,7 +1,8 @@
 <!--
   The edit sessions of the caller (`#/edit`): the files `simrun edit` has open,
   by file name with the directory dimmed, the connected ones first and the
-  others under "Closed". Without one, how to start it.
+  others under "Closed": the ones of the last day, the older ones behind
+  "Show older". Without one, how to start it.
 -->
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from "vue";
@@ -16,12 +17,19 @@ const sessions = ref<EditSession[] | null>(null);
 const failed = ref<string | null>(null);
 let timer: ReturnType<typeof setInterval> | undefined;
 
+/** A closed session seen longer ago than this is behind "Show older". */
+const RECENT_MS = 24 * 3600 * 1000;
+const showOlder = ref(false);
+
+const closed = computed(() => (sessions.value ?? []).filter((s) => !s.connected));
+const older = computed(() => closed.value.filter((s) => Date.now() - Date.parse(s.seen) > RECENT_MS));
+
 // the connected sessions, then the others under "Closed"; a section without sessions is left out
 const sections = computed(() =>
   [
     { key: "open", items: (sessions.value ?? []).filter((s) => s.connected) },
-    { key: "closed", items: (sessions.value ?? []).filter((s) => !s.connected) },
-  ].filter((section) => section.items.length > 0),
+    { key: "closed", items: showOlder.value ? closed.value : closed.value.filter((s) => !older.value.includes(s)) },
+  ].filter((section) => section.items.length > 0 || (section.key === "closed" && older.value.length > 0)),
 );
 
 /** The host, the workflow and the state of a session, `laptop · fit · connected`. */
@@ -70,6 +78,7 @@ onUnmounted(() => clearInterval(timer));
           <template v-for="section in sections" :key="section.key">
             <h2 v-if="section.key === 'closed'" data-closed-title class="mt-6 text-xs font-semibold tracking-wide text-gray-500 uppercase">Closed</h2>
             <ul
+              v-if="section.items.length > 0"
               :data-section="section.key"
               class="divide-y divide-gray-100 rounded-lg border border-gray-200 bg-white"
               :class="section.key === 'closed' ? 'mt-2' : 'mt-4'"
@@ -95,6 +104,15 @@ onUnmounted(() => clearInterval(timer));
                 </a>
               </li>
             </ul>
+            <button
+              v-if="section.key === 'closed' && older.length > 0"
+              data-older
+              type="button"
+              class="mt-2 text-xs text-gray-500 hover:text-gray-800"
+              @click="showOlder = !showOlder"
+            >
+              {{ showOlder ? "Hide older" : `Show ${older.length} older` }}
+            </button>
           </template>
         </template>
         <div v-else-if="sessions" data-empty class="mt-4 rounded-lg border border-dashed border-gray-300 bg-white px-4 py-6 text-center">

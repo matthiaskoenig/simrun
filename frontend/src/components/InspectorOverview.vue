@@ -8,7 +8,7 @@
 <script setup lang="ts">
 import { computed, onScopeDispose, ref, watch } from "vue";
 import type { RunRecord, TaskProgress, TaskSpec, TaskState, WorkerView } from "../api/client";
-import { formatDuration } from "../lib/format";
+import { formatDuration, serverLabel } from "../lib/format";
 import { metrics, plannedShape, resourceNote, taskTimes, workerShape } from "../lib/inspect";
 import { rankWorkers, workerLook } from "../lib/workers";
 import AppIcon from "./AppIcon.vue";
@@ -47,10 +47,23 @@ const tiles = computed(() => {
   const counts = props.progress?.counts;
   if (counts) result.push({ label: "Units", value: `${number(counts.done)} / ${number(counts.total)}` });
   const times = taskTimes(props.record, props.task, props.state, props.progress, now.value);
-  result.push({ label: "Elapsed", value: times.elapsed === null ? "-" : formatDuration(times.elapsed) });
-  if (counts) result.push({ label: "Remaining", value: times.remaining === null ? "-" : `≈ ${formatDuration(times.remaining)}` });
+  result.push({ label: "Elapsed", value: times.elapsed === null ? notStarted() : formatDuration(times.elapsed) });
+  if (counts) result.push({ label: "Remaining", value: remaining(times.remaining, counts) });
   return [...result, ...metrics(props.progress?.last)];
 });
+
+/** Elapsed of a task without a start: its pods start on a server, or wait for one. */
+function notStarted(): string {
+  if (!props.live) return "-";
+  return props.state === "running" || props.workers.some((w) => w.node !== null) ? "starting" : "not started";
+}
+
+/** Remaining of a split task: the estimate, and once every unit is done the merge. */
+function remaining(seconds: number | null, counts: { done: number; total: number }): string {
+  if (seconds !== null) return `≈ ${formatDuration(seconds)}`;
+  if (props.live && counts.total > 0 && counts.done >= counts.total) return "merging";
+  return "-";
+}
 
 // GiB with one decimal, as the memory of the servers strip
 const gb = (value: number | null): string => (value === null ? "-" : String(Math.round(value * 10) / 10));
@@ -79,10 +92,20 @@ function note(w: WorkerView): string | null {
 }
 
 const resources = computed(() => resourceNote(props.record.plans[props.task.id]));
+
+/** Why the task failed: its part of the message of the run, `task <id> failed: ...`. */
+const failure = computed(() => {
+  if (props.state !== "failed" || !props.record.message) return null;
+  const parts = props.record.message.split("; ");
+  return parts.find((part) => part.startsWith(`task ${props.task.id} `) || part.startsWith(`task ${props.task.id}:`)) ?? null;
+});
 </script>
 
 <template>
   <div class="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4 text-sm">
+    <p v-if="failure" data-failure class="rounded-lg bg-red-50 px-3 py-2 text-xs leading-relaxed text-red-800 ring-1 ring-red-200">
+      {{ failure }}
+    </p>
     <div class="grid grid-cols-2 gap-2">
       <div v-for="t in tiles" :key="t.label" :data-tile="t.label" class="min-w-0 rounded-lg bg-gray-50 px-3 py-2">
         <div class="truncate text-[11px] text-gray-500" :title="t.label">{{ t.label }}</div>
@@ -112,7 +135,7 @@ const resources = computed(() => resourceNote(props.record.plans[props.task.id])
             <span class="inline-flex min-w-0 items-center gap-1">
               <AppIcon name="server" class="size-3 shrink-0" />
               <span v-if="row.w.node === null" data-node class="text-gray-400 italic">pending</span>
-              <span v-else data-node class="truncate-start font-mono" :title="row.w.node"><bdi>{{ row.w.node }}</bdi></span>
+              <span v-else data-node class="truncate font-mono" :title="row.w.node">{{ serverLabel(row.w.node) }}</span>
             </span>
             <span class="inline-flex shrink-0 items-center gap-1">
               <AppIcon name="cpu" class="size-3" /><span data-processes>{{ row.processes }}</span>
