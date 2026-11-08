@@ -59,11 +59,15 @@ def test_demo_run_end_to_end(service: Service) -> None:
     )
     index = json.loads((task_dir / "logs" / "index.json").read_text())
     nodes = {entry["node"] for entry in index}
-    assert {"squares-w0(0)", "squares-merge(0)"} <= nodes, nodes
+    # the coordinator merges, there is no merge pod
+    assert "squares-w0(0)" in nodes, nodes
+    assert not [n for n in nodes if "-merge" in n], nodes
+    assert (task_dir / "out" / ".simrun-merged").exists()
     logs = service.http.get(
         f"/runs/{run['id']}/logs/squares", headers={"Authorization": "Bearer t-mk"}
     ).text
-    assert "==> squares-merge(0) (" in logs
+    assert "==> squares-w0(0) (" in logs
+    assert "-merge(0)" not in logs
 
 
 def test_take_back_same_priority(service: Service) -> None:
