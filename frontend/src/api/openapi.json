@@ -1268,7 +1268,7 @@
         "type": "object"
       },
       "SourceProvenance": {
-        "description": "Where the files of a snapshot come from.\n\nAttributes:\n    name: Name of the source.\n    branch: Branch of the working tree, `None` for a detached HEAD.\n    commit: Commit of HEAD.\n    dirty: Whether the working tree differs from HEAD.\n    changed_files: Porcelain status lines, e.g. `M src/a.py`.\n    diff_sha256: Hash of the snapshot tree (paths, types, modes, contents);\n        the patch stays as provenance.\n    snapshot: Directory of the snapshot, relative to the store root.\n    patch: Stored `git diff HEAD --binary`, relative to the store root.",
+        "description": "Where the files of a snapshot come from.\n\nAttributes:\n    name: Name of the source.\n    branch: Branch of the working tree, `None` for a detached HEAD.\n    commit: Commit of HEAD.\n    dirty: Whether the working tree differs from HEAD.\n    changed_files: Porcelain status lines, e.g. `M src/a.py`.\n    diff_sha256: Hash of the snapshot tree (paths, types, modes, contents);\n        the patch stays as provenance.\n    snapshot: Directory of the snapshot, relative to the store root.\n    patch: Stored `git diff HEAD --binary`, relative to the store root.\n    path: The working tree of a source recorded without a snapshot (the local\n        mode), None for a snapshot.",
         "properties": {
           "branch": {
             "anyOf": [
@@ -1314,6 +1314,17 @@
               }
             ],
             "title": "Patch"
+          },
+          "path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Path"
           },
           "snapshot": {
             "title": "Snapshot",

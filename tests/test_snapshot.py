@@ -235,10 +235,13 @@ def test_provenance_matches_the_snapshot_without_copying(
     prov = provenance(repo, "proj")
     assert not store.exists()
     assert (prov.snapshot, prov.patch) == ("", None)
+    # the working tree, which a task imports from (`podspec.import_root`)
+    assert prov.path == str(repo.resolve())
     assert prov.dirty
     full = snapshot(repo, store, "proj")
-    assert prov.model_dump(exclude={"snapshot", "patch"}) == full.model_dump(
-        exclude={"snapshot", "patch"}
+    assert full.path is None
+    assert prov.model_dump(exclude={"snapshot", "patch", "path"}) == full.model_dump(
+        exclude={"snapshot", "patch", "path"}
     )
 
 

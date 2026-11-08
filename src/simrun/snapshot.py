@@ -65,6 +65,8 @@ class SourceProvenance(BaseModel):
             the patch stays as provenance.
         snapshot: Directory of the snapshot, relative to the store root.
         patch: Stored `git diff HEAD --binary`, relative to the store root.
+        path: The working tree of a source recorded without a snapshot (the local
+            mode), None for a snapshot.
     """
 
     name: str
@@ -75,6 +77,7 @@ class SourceProvenance(BaseModel):
     diff_sha256: str
     snapshot: str
     patch: str | None
+    path: str | None = None
 
 
 def _run(cmd: list[str]) -> bytes:
@@ -180,7 +183,8 @@ def provenance(repo: Path, name: str) -> SourceProvenance:
         name: Name of the source.
 
     Returns:
-        The provenance, with `snapshot=""` and `patch=None`.
+        The provenance, with `snapshot=""`, `patch=None` and the absolute `path`
+        of the working tree.
     """
     state = _git_state(repo)
     return SourceProvenance(
@@ -192,6 +196,7 @@ def provenance(repo: Path, name: str) -> SourceProvenance:
         diff_sha256=_tree_hash(repo, state.files),
         snapshot="",
         patch=None,
+        path=str(repo.resolve()),
     )
 
 

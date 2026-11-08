@@ -57,7 +57,8 @@ def env_values(
         scratch: The scratch directory of the pod.
 
     Returns:
-        The variables by name; the caller adds the ones of its backend.
+        The variables by name, `PYTHONPATH` the root of the model
+        (`import_root`); the caller adds the ones of its backend.
 
     Raises:
         ValueError: The task stages a port which is no input.
@@ -67,7 +68,9 @@ def env_values(
         if port not in inputs:
             raise ValueError(f"task {task.id!r} stages {port!r}, which is no input")
     directory = task_dir(record, task.id, store)
+    root = import_root(record, store)
     return {
+        **({"PYTHONPATH": root} if root is not None else {}),
         "SIMRUN_TASK_DIR": directory,
         "SIMRUN_TASK_TYPE": task_type.name,
         "SIMRUN_MEMORY_BASE_GB": number(task_type.hint.memory_base_gb),
@@ -82,6 +85,29 @@ def env_values(
         "SIMRUN_SCRATCH": scratch,
         "SIMRUN_PROVENANCE": f"{directory}/{PROVENANCE_FILE}",
     }
+
+
+def import_root(record: RunRecord, store: str) -> str | None:
+    """The root of the model, which a task imports from first.
+
+    As `python -m` in a checkout puts the checkout first on the path, a task of a
+    model imports from the root of the model, e.g. `examples` at the root of a
+    checkout of sbmlsim, which no installed package has.
+
+    Args:
+        record: The run, its first source the model.
+        store: The root of the store as the pod sees it.
+
+    Returns:
+        The snapshot of the model, else its recorded working tree, None for a run
+        without sources.
+    """
+    if not record.sources:
+        return None
+    model = record.sources[0]
+    if model.snapshot:
+        return f"{store}/{model.snapshot}"
+    return model.path
 
 
 def image(record: RunRecord, task: TaskSpec, task_type: TaskType) -> str:

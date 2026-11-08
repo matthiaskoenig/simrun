@@ -656,6 +656,11 @@ class LocalBackend:
             }
         # the variables of the service, e.g. of a shell, are no business of a task
         env = {k: v for k, v in os.environ.items() if not k.startswith("SIMRUN_")}
+        if "PYTHONPATH" in values and env.get("PYTHONPATH"):
+            # the root of the model first, the path of the service after it
+            values = values | {
+                "PYTHONPATH": os.pathsep.join([values["PYTHONPATH"], env["PYTHONPATH"]])
+            }
         env |= values
         argv = node.command
         with (log / f"{node.name}-{node.attempt}.log").open("ab") as out:

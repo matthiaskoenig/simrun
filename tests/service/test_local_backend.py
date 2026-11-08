@@ -225,6 +225,51 @@ def test_a_plugin_command_finds_the_python_of_the_service(
     assert Path((out / "python").read_text()).parent == Path(sys.executable).parent
 
 
+def test_a_plugin_command_imports_from_the_root_of_the_model(
+    backends, tmp_path, monkeypatch
+):
+    # the working tree of the model, recorded without a snapshot, comes first on
+    # the path of the task, before the PYTHONPATH of the service
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "simrun_root_probe.py").write_text("VALUE = 'from the root'\n")
+    code = (
+        "import os, pathlib, sys, simrun_root_probe; out = pathlib.Path(sys.argv[1]); "
+        "out.mkdir(parents=True, exist_ok=True); "
+        "(out / 'value').write_text(simrun_root_probe.VALUE); "
+        "(out / 'path').write_text(os.environ['PYTHONPATH'])"
+    )
+    monkeypatch.setitem(
+        TYPES,
+        "test.root",
+        TaskType(
+            name="test.root",
+            settings=_Spec,
+            outputs=("out",),
+            command=f"python -c {shlex.quote(code)} {{out}}",
+        ),
+    )
+    monkeypatch.setenv("PYTHONPATH", "/service/path")
+    model = SourceProvenance(
+        name="model",
+        branch="main",
+        commit="c" * 40,
+        dirty=False,
+        changed_files=[],
+        diff_sha256="0" * 64,
+        snapshot="",
+        patch=None,
+        path=str(root),
+    )
+    backend = backends(cores=2)
+    run, name = _submit(backend, [{"id": "r", "type": "test.root"}], sources=[model])
+    status = _wait(backend, name)
+    assert status.phase == "Succeeded", (status, _log(backend, name, "r"))
+    out = tmp_path / "store" / "runs" / run.id / "tasks" / "r" / "out"
+    assert (out / "value").read_text() == "from the root"
+    assert (out / "path").read_text() == os.pathsep.join([str(root), "/service/path"])
+
+
 def test_a_process_reads_its_memory_from_its_process_tree(backends):
     backend = backends()
     code = "import os; print('source', os.environ['SIMRUN_MEMORY_SOURCE'])"
