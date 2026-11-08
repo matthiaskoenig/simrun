@@ -26,6 +26,8 @@ A `--local` command starts the service in the background when none runs, waits f
 
 The service serves the web app at `/ui/`: the Executions with live updates, and the Editor (`simrun edit --local`). The wheel ships the built app (`simrun/web`); a checkout serves `frontend/dist` once it is built, see [Development](development.md). The app asks for a token: the one in `.simrun/service.json`. The server strip shows this machine as the one server.
 
+![The web app of the local service: a run of three tasks on this machine](images/executions-running.png)
+
 ## How tasks run
 
 The `LocalBackend` of the service runs the pods of a run as processes of this machine:

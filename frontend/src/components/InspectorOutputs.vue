@@ -72,7 +72,7 @@ const total = computed(() => (files.value ?? []).reduce((sum, f) => sum + f.byte
     </div>
     <div v-else-if="files.length === 0" data-outputs-empty class="text-xs text-gray-400 italic">Nothing written yet.</div>
     <template v-else>
-      <div class="mb-2 text-xs text-gray-500">In the store of the cluster, from its root:</div>
+      <div class="mb-2 text-xs text-gray-500">In the store of the service, from its root:</div>
       <div data-out-dir class="truncate-start mb-3 rounded-md bg-gray-50 px-2 py-1.5 font-mono text-[11px] text-gray-700" :title="dir">
         <bdi>{{ dir }}</bdi>
       </div>

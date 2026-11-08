@@ -8,7 +8,9 @@ The app asks for a token of the tokens file of the service (see [Authentication]
 
 ## Executions
 
-The view has the runs on the left, the canvas of the selected run in the center with the run bar above it and the servers below it, and the inspector on the right. Everything is live: the app reads the event streams `GET /events` (the runs and the servers) and `GET /runs/{run}/events` (the record, the progress and the workers of the selected run). When a stream drops, e.g. while the service restarts, the top bar shows **reconnecting** and the app connects again, waiting 1 s, doubling up to 10 s, and keeps the selected run.
+The view has the runs on the left, the canvas of the selected run in the center with the run bar above it and the servers below it, and the inspector on the right.
+
+![The Executions: a running run with its task selected](images/executions-running.png) Everything is live: the app reads the event streams `GET /events` (the runs and the servers) and `GET /runs/{run}/events` (the record, the progress and the workers of the selected run). When a stream drops, e.g. while the service restarts, the top bar shows **reconnecting** and the app connects again, waiting 1 s, doubling up to 10 s, and keeps the selected run.
 
 - **Top bar**: where you are (the workflow of the selected run), the capacity of the cluster (the cores the pods of all servers request out of all cores, and the number of queued runs) and the identity of the token.
 - **Runs**: a card per run, the 200 most recent, with the workflow, the run, who submitted it (an agent with its owner), its state, its progress and, for a failed run, its message. The chips **All**, **Mine** (the runs of the person of the token and of the person's agents), **Agents** and **Active** (submitting, queued or running) filter them, a menu selects a group. A click selects the run; the address `/ui/#/runs/<run>` keeps it on a reload.
@@ -16,6 +18,10 @@ The view has the runs on the left, the canvas of the selected run in the center 
 - **Canvas**: a card per task, in columns by the depth of the task in the graph of its inputs, with the edges of the inputs. A card shows the type, the task, its state, its settings, the units of its ledger with a progress bar and the workers of a split task on their servers; a task split over several workers is drawn as a stack. A task without a ledger shows its state without a progress bar.
 - **Servers**: a tile per server of the cluster with the cores and memory the pods of runs on it request, out of what the scheduler gives them (the allocatable cores and memory less the requests of other pods, e.g. of DaemonSets), a segment per pod, those of the selected run in blue; a reserved server says by which run.
 - **Inspector**: without a selected task, the run: its message, who submitted it with which priority and when, its kills for memory and its sources (the snapshots with branch, commit and changed files). With a task selected on the canvas, the tabs **Overview** (why a failed task failed, the exit of its last pod; the units, the elapsed and the remaining time, or the phase, `starting` or `merging`; the numeric fields of the last progress line, the workers with their servers, processes and memory, and the resources its plan requested), **Outputs** (the output files of the task) and **Logs** (the last lines of every pod, read again every 5 s while the task runs; tracebacks and errors in red, the lines of the Argo executor hidden unless asked for). A server is named by the last two parts of its host name everywhere, `agent-0` for `k3d-simrun-test-agent-0`, the full name in a tooltip.
+
+![A failed task: the message names the pod and its exit](images/executions-failed.png)
+
+![The outputs of a task](images/executions-outputs.png)
 
 ## The Editor { #the-editor }
 
@@ -39,10 +45,14 @@ A session lives in the store under `edits/<id>/`, so a restart of the service ke
 
 The Editor has the palette of the task types of the service on the left, the canvas in the middle with the bar floating above it, and the inspector on the right.
 
+![The Editor: the palette, the canvas with the estimate on the cards, and the settings and resources of the selected task](images/editor.png)
+
 - **Palette**: the task types installed in the service, grouped by the part of their name before the first `.` (`demo.squares` under "Demo", `command` under "General"), with the `description` of the type (see [Plugins](plugins.md#the-contract)) and a search; its footer says which file a save writes on which machine. A click adds a task right of the right-most one and pans the canvas to show it, a drag drops it where it is let go. A new task is named by the last part of its type, with `-2`, `-3` for further ones.
 - **Canvas**: a card per task with a handle per output port on the right and per input port of its type on the left; a `command` has a handle per input it reads and a `+`, where a connection adds an input named after the task it reads. Dragging from an output to an input connects them; a connection which closes a cycle or reaches a port which is already connected is refused with a note under the bar. Delete or Backspace removes the selected task (and the inputs which read it) or edge. The tasks are laid out when the session opens and when the workflow comes from disk; afterwards they stay where they are dragged. Positions are not saved in the file.
 - **Inspector**: with a task selected, its type and id, its settings as a form of the JSON Schema of the settings of its type (numbers, choices and switches in two columns; an empty field is not written, so the default of the type applies; what the form cannot edit is edited as JSON), its inputs and the ports staged to local scratch, its resources (workers and memory per worker overriding the learned ones, its split; a `command` has the resources of its settings and stages nothing) and the estimate: memory per worker of the plan, duration and placement (the pods, the worker processes of a pod and the memory of a pod). Without a selected task, the workflow: its name, its split, the reservation of a server, the group of the run and the sources.
 - **Validation and estimate**: every change is validated by the service 400 ms after the last one; the errors of a task show on its card and in the inspector, an error of a setting under its field, the others in the inspector of the workflow. A valid workflow is estimated with the last snapshots of the sources, and the cards show the chips of the estimate (workers, memory per worker, duration, pods). The estimate is of the workflow as edited: a task type which plans its settings does so only when the workflow runs.
+
+![A `command` task in the Editor: its args one per line, the inputs it reads and a `+` handle for another](images/editor-command.png)
 
 ### Save and Run
 

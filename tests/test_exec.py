@@ -85,7 +85,8 @@ def test_failing_command_is_an_analysis_error(
     exec_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     assert run_exec(monkeypatch, *python("raise SystemExit(1)")) == 3
-    assert (exec_env / "workers" / "report-1.json").is_file()
+    report = json.loads((exec_env / "workers" / "report-1.json").read_text())
+    assert report["failed"] is True
 
 
 def test_killed_command_is_a_kill_for_memory(

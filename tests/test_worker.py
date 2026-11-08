@@ -201,6 +201,9 @@ def test_unit_error_exit_code(worker_env: Path) -> None:
     with pytest.raises(SystemExit) as raised:
         worker.main()
     assert raised.value.code == 3
+    # the report says the worker failed, so its view shows it as failed
+    (report,) = (worker_env / "workers").glob("*.json")
+    assert json.loads(report.read_text())["failed"] is True
     assert "3" in os.listdir(worker_env / "units" / "pending")
     assert os.listdir(worker_env / "units" / "claimed") == []
     assert all(os.environ[name] == "1" for name in worker.THREAD_VARIABLES)
@@ -213,6 +216,8 @@ def test_main_done(worker_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         worker.main()
     assert raised.value.code == 0
     assert os.listdir(worker_env / "workers") == ["squares-w0-2.json"]
+    report = json.loads((worker_env / "workers" / "squares-w0-2.json").read_text())
+    assert report["failed"] is False
     report = read_report(worker_env, "squares-w0", attempt=2)
     assert sorted(report["units_done"]) == list(range(5))
 

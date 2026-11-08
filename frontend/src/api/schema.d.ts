@@ -1477,7 +1477,8 @@ export interface components {
          *         state: `running` while a pod of an attempt without a report lives (a
          *             retry after an eviction, a preemption, a lost node or a kill for
          *             memory, as a worker reports also when it is stopped), else from the
-         *             last report: `failed` when it was killed for memory, else `done`.
+         *             last report: `failed` when it was killed for memory or failed (a unit
+         *             or its command failed), else `done`.
          *         attempts: The attempts of the worker: one more than the highest attempt
          *             of its reports and of its live pod.
          *         processes: The processes of its pool, None before a report.

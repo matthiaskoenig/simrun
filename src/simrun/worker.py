@@ -125,6 +125,8 @@ class WorkerReport:
             summed: `unit_seconds / len(units_done)` is the time of a unit in one
             process, without the waits of the worker (for the units of other
             workers, a coordinator) and the processes idle at its end.
+        failed: Whether the worker failed: a unit failed (exit 3), or the command
+            of `simrun-exec` exited with an error; a stop or a kill is no failure.
     """
 
     worker: str
@@ -137,6 +139,7 @@ class WorkerReport:
     per_worker_gb: float = 0.0
     oom_kills: int = 0
     unit_seconds: float = 0.0
+    failed: bool = False
 
 
 def processes(
@@ -733,6 +736,7 @@ def run_worker(
                 per_worker_gb=per_worker_gb,
                 oom_kills=oom_kills.since(),
                 unit_seconds=units.seconds,
+                failed=units.failed is not None,
             )
             write_report(report, paths.task_dir, attempt)
     if units.failed is not None:
@@ -1247,6 +1251,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
         logger.error("configuration error: the command cannot start: %s", error)
         return EXIT_CONFIGURATION
     sampler = MemorySampler(source)
+    returncode: int | None = None
     try:
         with _heartbeats(None, worker, HEARTBEAT_S, sampler):
             returncode = _wait_for(process, stop, GRACE_S)
@@ -1260,6 +1265,9 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
             memory_limit_bytes=exec_memory,
             per_worker_gb=per_worker_gb,
             oom_kills=oom_kills.since(),
+            # an error of the command; a stop and a kill (137) are retried instead
+            failed=returncode not in (None, 0, -signal.SIGKILL, EXIT_POOL_BROKEN)
+            and not stop.is_set(),
         )
         write_report(report, paths.task_dir, attempt)
     if stop.is_set():

@@ -240,6 +240,19 @@ def test_workers_failed_by_oom(service):
     assert view["oom_killed"] is True
 
 
+def test_workers_failed_by_their_units_or_command(service):
+    # a worker whose unit failed (exit 3) is failed, not done, as its task
+    run_id = service.submit()["id"]
+    task_dir = service.run_dir(run_id) / "tasks" / "squares"
+    write_report(
+        WorkerReport(worker="squares-w0", node="srv-01", processes=2, failed=True),
+        task_dir,
+    )
+    (view,) = service.get(f"/runs/{run_id}/tasks/squares/workers").json()
+    assert view["state"] == "failed"
+    assert view["oom_killed"] is False
+
+
 def test_workers_retried_after_an_eviction(service):
     run_id = service.submit()["id"]
     task_dir = service.run_dir(run_id) / "tasks" / "squares"
