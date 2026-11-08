@@ -1,3 +1,4 @@
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -7,8 +8,10 @@ import yaml
 from kubernetes import client
 from kubernetes.client.exceptions import ApiException
 
+from simrun.argo import RUN_LABEL
 from simrun.config import ClusterConfig
 from simrun.planner import Node
+from simrun.service import argo_backend
 from simrun.service.argo_backend import (
     LOG_LIMIT_BYTES,
     WORKER_LABEL,
@@ -423,6 +426,8 @@ ACCESS = {
     "read_namespaced_job_status": ("batch", "jobs/status", "get"),
     "delete_namespaced_job": ("batch", "jobs", "delete"),
     "create_namespaced_config_map": ("", "configmaps", "create"),
+    # the list of `Watch.stream` with `watch=True`
+    "watch_namespaced_custom_object": ("argoproj.io", "workflows", "watch"),
 }
 
 
@@ -544,7 +549,7 @@ def test_the_service_account_may_do_what_the_backend_does(
     created.unreserve("n1", "r1")
     (tmp_path / "Dockerfile").write_text("FROM scratch\n")
     created.build_image(tmp_path, "k3d-simrun-registry:5000/x:1")
-    used = set(_names(calls))
+    used = set(_names(calls)) | {"watch_namespaced_custom_object"}
     assert used <= set(ACCESS), used - set(ACCESS)
     granted = _granted()
     cluster = {ACCESS[name] for name in used & CLUSTER_CALLS}
@@ -795,3 +800,82 @@ def test_placements_of_run_pods() -> None:
     assert listing[2]["field_selector"] == (
         "status.phase!=Succeeded,status.phase!=Failed"
     )
+
+
+class FakeWatch:
+    """A `Watch` whose streams are the given rounds: events, or an exception."""
+
+    def __init__(self, rounds: list[Any], streams: list[tuple[tuple, dict]]) -> None:
+        self.rounds = rounds
+        self.streams = streams
+        self.stopped = False
+
+    def stream(self, func: Any, *args: Any, **kw: Any) -> Any:
+        self.streams.append((args, kw))
+        events = self.rounds.pop(0)
+        if isinstance(events, Exception):
+            raise events
+        yield from events
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
+def test_subscribe_wakes_the_controller_on_every_change_of_a_workflow(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created, _ = _fake_backend()
+    streams: list[tuple[tuple, dict]] = []
+    done = threading.Event()
+
+    def last_round() -> Any:
+        yield {"type": "MODIFIED"}
+        created.close()
+        done.set()
+
+    # a watch which ends, one which fails (e.g. the API is restarted), then one
+    # whose event comes as the backend is closed
+    rounds: list[Any] = [
+        [{"type": "ADDED"}, {"type": "MODIFIED"}],
+        ApiException(status=500),
+        last_round(),
+    ]
+    monkeypatch.setattr(argo_backend, "Watch", lambda: FakeWatch(rounds, streams))
+    monkeypatch.setattr(argo_backend, "WATCH_RETRY_S", 0.01)
+    woken: list[int] = []
+    created.subscribe(lambda: woken.append(1))
+    assert done.wait(5)
+    created.join_watch(5)
+    assert len(woken) == 3
+    assert rounds == []
+    args, kw = streams[0]
+    assert args == ("argoproj.io", "v1alpha1", "simrun", "workflows")
+    # the workflows of the runs only, every one of them
+    assert kw["label_selector"] == RUN_LABEL
+    assert kw["timeout_seconds"] == argo_backend.WATCH_TIMEOUT_S
+
+
+def test_a_second_subscription_shares_the_watch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created, _ = _fake_backend()
+    streams: list[tuple[tuple, dict]] = []
+    done = threading.Event()
+    subscribed = threading.Event()
+
+    def events() -> Any:
+        assert subscribed.wait(5)  # both subscribed before the first event
+        yield {"type": "MODIFIED"}
+        created.close()
+        done.set()
+
+    rounds: list[Any] = [events()]
+    monkeypatch.setattr(argo_backend, "Watch", lambda: FakeWatch(rounds, streams))
+    first: list[int] = []
+    second: list[int] = []
+    created.subscribe(lambda: first.append(1))
+    created.subscribe(lambda: second.append(1))
+    subscribed.set()
+    assert done.wait(5)
+    created.join_watch(5)
+    assert (first, second, len(streams)) == ([1], [1], 1)

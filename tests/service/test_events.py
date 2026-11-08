@@ -46,6 +46,26 @@ def test_events_send_changes_only(live):
     assert seen.count("runs") == 2
 
 
+def test_events_follow_the_store_between_the_polls_of_the_controller(live):
+    # the controller reconciles when woken (the watch of the workflows), so a
+    # stream checks the store more often than the controller polls
+    web = live(events_max_s=5, poll_s=30, events_poll_s=0.1)
+    run_id = web.submit()
+    states: list[str] = []
+    started = time.monotonic()
+    for name, data in web.stream("/events"):
+        if name != "runs":
+            continue
+        states.append(json.loads(data)[0]["state"])
+        if len(states) == 1:
+            web.backend.start(web.name(run_id))
+            web.app.state.controller.wake()
+        else:
+            break
+    assert len(states) == 2 and states[1] != states[0]
+    assert time.monotonic() - started < 3
+
+
 def test_run_events_end_with_a_terminal_run(live):
 
     web = live(events_max_s=30, poll_s=0.2)
