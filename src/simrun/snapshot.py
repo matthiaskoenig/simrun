@@ -81,7 +81,9 @@ def _git(repo: Path, *args: str) -> bytes:
 def _tree_hash(root: Path, files: list[str]) -> str:
     """Hash the files of a tree as a snapshot holds them.
 
-    Per file in sorted order: path, type, mode bits without the write bits (a
+    Per file in the order of `os.walk` (a directory's own entries sorted, then its
+    subdirectories in sorted order, as releases before this one hashed, so a hash
+    stays the same): path, type, mode bits without the write bits (a
     snapshot is read-only), content or link target. A file which is gone is left
     out, as a snapshot leaves it out.
 
@@ -90,7 +92,7 @@ def _tree_hash(root: Path, files: list[str]) -> str:
         files: Paths below `root`.
     """
     digest = hashlib.sha256()
-    for name in sorted(files):
+    for name in sorted(files, key=lambda f: (Path(f).parts[:-1], Path(f).name)):
         path = root / name
         try:
             st = path.lstat()
