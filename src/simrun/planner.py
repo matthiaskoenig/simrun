@@ -134,6 +134,15 @@ class TaskPlan:
     coordinator_merges: bool = False
 
 
+def _whole_gib(gib: float) -> int:
+    """GiB rounded up to whole GiB, ignoring floating point noise.
+
+    `0.5 + 15 * 0.30000000000000004` is 5.000000000000001, which `math.ceil` makes 6:
+    a pod of a node of 5 GiB which no node could admit.
+    """
+    return math.ceil(round(gib, 6))
+
+
 def _usable(nodes: list[Node], gpus: int) -> list[Node]:
     return [n for n in nodes if n.reserved_by is None and n.gpus >= gpus]
 
@@ -203,7 +212,7 @@ def shape(
         retry_n = _fit(retry_node, base, retry_per_worker)
     if retry_n is not None:
         retry_n = min(retry_n, n)
-        retry_memory = math.ceil(base + retry_per_worker * retry_n)
+        retry_memory = _whole_gib(base + retry_per_worker * retry_n)
     else:
         logger.warning(
             "a retry with %s GiB per worker fits on no node, "
@@ -215,7 +224,7 @@ def shape(
         retry_per_worker = max(0.0, retry_memory - base)
     return PodShape(
         cores=n,
-        memory_gb=math.ceil(base + per_worker * n),
+        memory_gb=_whole_gib(base + per_worker * n),
         processes=n,
         per_worker_gb=per_worker,
         retry_memory_gb=retry_memory,
@@ -226,7 +235,7 @@ def shape(
 
 
 def _command_shape(settings: CommandSettings, nodes: list[Node]) -> PodShape:
-    memory = math.ceil(settings.memory_gb)
+    memory = _whole_gib(settings.memory_gb)
     fitting = [
         n
         for n in _usable(nodes, settings.gpus)
@@ -241,7 +250,7 @@ def _command_shape(settings: CommandSettings, nodes: list[Node]) -> PodShape:
         )
     node_memory = max(n.memory_gb for n in fitting)
     retry = max(
-        memory, min(math.ceil(settings.memory_gb * RETRY_FACTOR), int(node_memory))
+        memory, min(_whole_gib(settings.memory_gb * RETRY_FACTOR), int(node_memory))
     )
     return PodShape(
         cores=settings.cores,

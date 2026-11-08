@@ -258,3 +258,15 @@ def test_a_pod_has_no_more_processes_than_units():
     single = _plan(mode=SplitMode.SINGLE_SERVER, units=3)
     assert (single.shape.processes, single.shape.cores) == (3, 3)
     assert _plan(units=400).shape.processes == 36
+
+
+def test_the_retry_of_a_pod_fits_its_node_despite_the_rounding():
+    # 0.2 GiB learned per process, 1.5 times for a retry: 0.30000000000000004 GiB;
+    # 15 processes of it besides 0.5 GiB base are 5.000000000000001 GiB, which must
+    # not round up to 6 GiB on a node of 5: Kueue would never admit the retry
+    resources = ResolvedResources(0.5, 0.2, 0.0, 0, None, 3, "learned")
+    nodes = [Node(f"agent-{i}", 19, 5.0) for i in range(3)]
+    pod = shape(resources, nodes)
+    assert pod.memory_gb <= 5
+    assert pod.retry_memory_gb <= 5
+    assert pod.retry_memory_gb >= 0.5 + pod.retry_per_worker_gb * 15 - 1e-9
