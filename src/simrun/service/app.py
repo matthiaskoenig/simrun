@@ -1205,7 +1205,7 @@ class _Service:
         reports: dict[str, dict[int, WorkerReport]] = {}
         for path in sorted((task_dir / WORKERS_DIR).glob("*.json")):
             try:
-                report = WorkerReport(**json.loads(path.read_text()))
+                report = WorkerReport.from_json(path.read_text())
             except (OSError, ValueError, TypeError) as error:
                 logger.warning("report %s of run %s: %s", path.name, record.id, error)
                 continue

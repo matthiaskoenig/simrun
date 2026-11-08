@@ -52,7 +52,6 @@ one before stopped; a record which cannot be read is logged and skipped.
 """
 
 import dataclasses
-import json
 import logging
 import os
 import re
@@ -605,7 +604,7 @@ class Controller:
             / f"{key}-{attempt}.json"
         )
         try:
-            report = WorkerReport(**json.loads(path.read_text()))
+            report = WorkerReport.from_json(path.read_text())
         except FileNotFoundError:
             return False
         except (OSError, ValueError, TypeError) as error:
@@ -1009,7 +1008,7 @@ class Controller:
             if (marks / name).exists():
                 continue
             try:
-                report = WorkerReport(**json.loads((reports_dir / name).read_text()))
+                report = WorkerReport.from_json((reports_dir / name).read_text())
             except (ValueError, TypeError) as error:
                 logger.warning("report %s of run %s: %s", name, record.id, error)
                 (marks / name).touch()

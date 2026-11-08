@@ -1076,3 +1076,44 @@ def test_sampling_without_a_ledger_waits_between_samples(
     with worker._heartbeats(None, "report", 0.01, sampler):
         time.sleep(0.5)
     assert 5 <= len(calls) <= 15
+
+
+def test_report_carries_when_the_worker_started_and_its_cpu(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the harness started 3 s before its work (an install of the sources and the
+    # restart keep `SIMRUN_HARNESS_STARTED`): the report has its start, the seconds
+    # it prepared and the cpu of the worker and its pool
+    started = time.time() - 3.0
+    monkeypatch.setenv(worker.HARNESS_STARTED, str(started))
+    (worker_env / "settings.json").write_text(
+        SquaresSettings(n=4, sleep_s=0.05).model_dump_json()
+    )
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == 0
+    report = read_report(worker_env, "squares-w0")
+    assert report["started"] == pytest.approx(started)
+    assert 3.0 <= report["prepare_seconds"] < 30.0
+    assert report["cpu_seconds"] > 0.0
+    assert report["seconds"] > 0.0
+
+
+def test_exec_report_carries_when_the_command_started_and_its_cpu(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delenv(worker.HARNESS_STARTED, raising=False)
+    before = time.time()
+    burn = "import time; t = time.process_time(); exec('while time.process_time() - t < 0.3: pass')"
+    assert worker._exec([sys.executable, "-c", burn], threading.Event()) == 0
+    report = read_report(worker_env, "squares-w0")
+    assert before <= report["started"] <= time.time()
+    assert report["prepare_seconds"] >= 0.0
+    # the cpu of the command, a child of the harness
+    assert report["cpu_seconds"] >= 0.3
+
+
+def test_a_report_of_a_newer_harness_is_read() -> None:
+    text = json.dumps({"worker": "w0", "node": "n", "processes": 2, "new": 1})
+    report = worker.WorkerReport.from_json(text)
+    assert (report.worker, report.processes, report.started) == ("w0", 2, None)

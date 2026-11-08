@@ -16,6 +16,7 @@ import logging
 import math
 import multiprocessing
 import os
+import resource
 import shutil
 import signal
 import site
@@ -30,7 +31,7 @@ from collections.abc import Generator, Mapping
 from concurrent.futures import FIRST_COMPLETED, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import UTC, datetime
 from multiprocessing import forkserver
 from pathlib import Path
@@ -69,6 +70,8 @@ PROC = Path("/proc")
 SOURCES_DIR = "simrun-sources"
 # set once the snapshots are installed, in the interpreter `install_sources` restarts
 SOURCES_INSTALLED = "SIMRUN_SOURCES_INSTALLED"
+# when the harness started, seconds since the epoch, kept across its restart
+HARNESS_STARTED = "SIMRUN_HARNESS_STARTED"
 # seconds a command of `simrun-exec` gets after SIGTERM, the grace of a worker
 GRACE_S = 60.0
 COORDINATOR_POLL_S = 0.5
@@ -127,6 +130,14 @@ class WorkerReport:
             workers, a coordinator) and the processes idle at its end.
         failed: Whether the worker failed: a unit failed (exit 3), or the command
             of `simrun-exec` exited with an error; a stop or a kill is no failure.
+        started: When the harness started, in seconds since the epoch, before it
+            installed the sources (`HARNESS_STARTED`); None in a report of simrun
+            0.3.0 and before.
+        prepare_seconds: The seconds from the start of the harness to the start of
+            its work: the install of the sources, the restart, the imports and the
+            staging of the inputs.
+        cpu_seconds: The user and system seconds of the harness and of its children
+            (the processes of the pool, the command of `simrun-exec`) which ended.
     """
 
     worker: str
@@ -140,6 +151,47 @@ class WorkerReport:
     oom_kills: int = 0
     unit_seconds: float = 0.0
     failed: bool = False
+    started: float | None = None
+    prepare_seconds: float = 0.0
+    cpu_seconds: float = 0.0
+
+    @classmethod
+    def from_json(cls, text: str) -> WorkerReport:
+        """Read a report; a field this version does not know is ignored.
+
+        Args:
+            text: The JSON of `write_report`, possibly of a newer harness.
+
+        Returns:
+            The report.
+        """
+        known = {f.name for f in fields(cls)}
+        return cls(**{k: v for k, v in json.loads(text).items() if k in known})
+
+
+def harness_started() -> float:
+    """When the harness started, set in `HARNESS_STARTED` by its first call.
+
+    The variable survives the restart after the install of the sources, so the
+    start is the one before the install.
+
+    Returns:
+        Seconds since the epoch.
+    """
+    return float(os.environ.setdefault(HARNESS_STARTED, repr(time.time())))
+
+
+def _started(work_started: float) -> float:
+    """The start of the harness, else the start of the work (a call without it)."""
+    value = os.environ.get(HARNESS_STARTED)
+    return work_started if value is None else min(float(value), work_started)
+
+
+def cpu_seconds() -> float:
+    """The user and system seconds of this process and of its ended children."""
+    own = resource.getrusage(resource.RUSAGE_SELF)
+    children = resource.getrusage(resource.RUSAGE_CHILDREN)
+    return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
 
 
 def processes(
@@ -692,6 +744,7 @@ def run_worker(
         Terminated: The worker stopped on SIGTERM.
     """
     start = time.monotonic()
+    work_started = time.time()
     if not task_type.splittable:
         raise ValueError(f"task type {task_type.name!r} is not splittable")
     assert task_type.count_units is not None
@@ -737,6 +790,9 @@ def run_worker(
                 oom_kills=oom_kills.since(),
                 unit_seconds=units.seconds,
                 failed=units.failed is not None,
+                started=_started(work_started),
+                prepare_seconds=work_started - _started(work_started),
+                cpu_seconds=cpu_seconds(),
             )
             write_report(report, paths.task_dir, attempt)
     if units.failed is not None:
@@ -919,7 +975,12 @@ def install_sources(env: Mapping[str, str], stop: threading.Event) -> None:
         OSError: A shadow tree cannot be created.
     """
     snapshots = [] if env.get(SOURCES_INSTALLED) else _editable(env)
+    began = time.monotonic()
     install_editable(snapshots)
+    if snapshots:
+        logger.info(
+            "installed %d sources in %.1f s", len(snapshots), time.monotonic() - began
+        )
     if snapshots and not stop.is_set():
         os.environ[SOURCES_INSTALLED] = "1"
         restart()
@@ -1079,6 +1140,7 @@ def main() -> None:
     error, 137 a process of the pool died (retried with more memory), 143 stopped on
     SIGTERM (retried).
     """
+    harness_started()
     stop = threading.Event()
     with _stop_on_sigterm(stop):
         sys.exit(_worker(stop))
@@ -1212,6 +1274,7 @@ def exec_main() -> None:
     memory killer, retried with more memory) or exited 137, 143 stopped on SIGTERM
     (retried).
     """
+    harness_started()
     stop = threading.Event()
     with _stop_on_sigterm(stop):
         sys.exit(_exec(sys.argv[1:], stop))
@@ -1244,6 +1307,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
         os.environ[name] = "1"
     worker = env.get("SIMRUN_WORKER") or paths.task_dir.name
     start = time.monotonic()
+    work_started = time.time()
     oom_kills = _OomKills(source)
     try:
         process = subprocess.Popen(argv)
@@ -1268,6 +1332,9 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
             # an error of the command; a stop and a kill (137) are retried instead
             failed=returncode not in (None, 0, -signal.SIGKILL, EXIT_POOL_BROKEN)
             and not stop.is_set(),
+            started=_started(work_started),
+            prepare_seconds=work_started - _started(work_started),
+            cpu_seconds=cpu_seconds(),
         )
         write_report(report, paths.task_dir, attempt)
     if stop.is_set():
