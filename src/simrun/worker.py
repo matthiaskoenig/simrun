@@ -900,6 +900,28 @@ def _editable(env: Mapping[str, str]) -> list[str]:
     return [path.strip() for path in value.split(",") if path.strip()]
 
 
+def cores(env: Mapping[str, str]) -> int:
+    """The cores of a worker: the quota of its cgroup, else the CPUs of the process.
+
+    `SIMRUN_CORES` caps them, e.g. the cores of the plan of a task on the local
+    backend, which has no cgroup per task.
+
+    Raises:
+        ConfigurationError: `SIMRUN_CORES` is not a positive integer.
+    """
+    available = cgroup.cpu_quota() or os.process_cpu_count() or 1
+    value = env.get("SIMRUN_CORES")
+    if not value:
+        return available
+    try:
+        cap = int(value)
+    except ValueError:
+        cap = 0
+    if cap < 1:
+        raise ConfigurationError(f"SIMRUN_CORES is not a positive integer: {value!r}")
+    return min(cap, available)
+
+
 def _gb(env: Mapping[str, str], name: str, default: float) -> float:
     value = env.get(name)
     if not value:
@@ -961,6 +983,7 @@ def _worker(stop: threading.Event) -> int:
         per_worker_gb = _gb(
             env, "SIMRUN_MEMORY_PER_WORKER_GB", task_type.hint.memory_per_worker_gb
         )
+        worker_cores = cores(env)
     except CONFIGURATION_ERRORS as error:
         logger.error("configuration error: %s", error)
         return EXIT_CONFIGURATION
@@ -975,7 +998,7 @@ def _worker(stop: threading.Event) -> int:
             settings,
             paths,
             worker,
-            cores=cgroup.cpu_quota() or os.process_cpu_count() or 1,
+            cores=worker_cores,
             memory_bytes=cgroup.memory_limit(),
             base_gb=base_gb,
             per_worker_gb=per_worker_gb,
@@ -1086,6 +1109,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
         attempt = _attempt(env)
         stage(_pairs(env.get("SIMRUN_STAGE", "")), paths.store, paths.scratch)
         per_worker_gb = _gb(env, "SIMRUN_MEMORY_PER_WORKER_GB", 0.0)
+        exec_cores = cores(env)
     except CONFIGURATION_ERRORS as error:
         logger.error("configuration error: %s", error)
         return EXIT_CONFIGURATION
@@ -1110,7 +1134,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
         report = WorkerReport(
             worker=worker,
             node=os.environ.get("SIMRUN_NODE") or socket.gethostname(),
-            processes=cgroup.cpu_quota() or os.process_cpu_count() or 1,
+            processes=exec_cores,
             seconds=time.monotonic() - start,
             peak_memory_bytes=sampler.peak,
             memory_limit_bytes=cgroup.memory_limit(),

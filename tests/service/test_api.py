@@ -536,6 +536,22 @@ def test_usage(service):
     assert usage["groups"][""] == usage["runs"][b]
 
 
+def test_the_run_records_how_the_local_backend_runs_its_commands(service):
+    response = service.post(
+        "/runs",
+        {"workflow": service.workflow(), "sources": [], "local_commands": "docker"},
+    )
+    assert response.status_code == 201, response.text
+    assert service.submitted(response.json()["id"])["local_commands"] == "docker"
+    response = service.post("/runs", {"workflow": service.workflow(), "sources": []})
+    assert service.submitted(response.json()["id"])["local_commands"] is None
+    response = service.post(
+        "/runs",
+        {"workflow": service.workflow(), "sources": [], "local_commands": "podman"},
+    )
+    assert response.status_code == 422
+
+
 def test_reserved_node_must_be_free(service):
     service.submit(reserve="srv-02")
     response = service.post(

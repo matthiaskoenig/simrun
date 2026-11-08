@@ -10,7 +10,7 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -77,6 +77,9 @@ class RunRecord(BaseModel):
             may have been created by a submission that failed.
         pending_logs: Whether the logs of the pods of an ended run must still be
             kept in the store (`simrun.service.logs`).
+        local_commands: How the local backend runs the `command` tasks of the run:
+            `direct` its args, `docker` in its image; None the choice of the
+            backend. The Argo backend ignores it.
     """
 
     id: str
@@ -101,6 +104,7 @@ class RunRecord(BaseModel):
     pending_release: str | None = None
     pending_cancel: bool = False
     pending_logs: bool = False
+    local_commands: Literal["direct", "docker"] | None = None
 
 
 class RunSummary(BaseModel):
