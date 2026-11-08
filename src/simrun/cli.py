@@ -8,6 +8,7 @@ import json
 import signal
 import sys
 import threading
+import time
 from collections.abc import Callable, Sequence
 from functools import wraps
 from pathlib import Path
@@ -19,6 +20,7 @@ import typer
 import uvicorn
 from pydantic import BaseModel
 from rich.console import Console
+from rich.live import Live
 from rich.table import Column, Table
 
 from simrun.client import Client, ClientError
@@ -32,9 +34,9 @@ from simrun.local import (
     serve_local,
     web_dir,
 )
-from simrun.service.app import RunSummary
+from simrun.service.app import RunSummary, TaskProgress
 from simrun.service.logs import DEFAULT_TAIL_LINES
-from simrun.store import RunState
+from simrun.store import RunRecord, RunState, TaskState
 from simrun.workflow import SplitMode
 
 app = typer.Typer(help="Submit and follow simulation workflows.", no_args_is_help=True)
@@ -154,6 +156,103 @@ def _runs_table(runs: Sequence[RunSummary]) -> Table:
     return table
 
 
+def _exit_for(summary: RunSummary) -> None:
+    """Exit 0 for a succeeded run, 1 for a failed or cancelled one, else 2."""
+    if summary.state == RunState.SUCCEEDED:
+        return
+    ended = summary.state in (RunState.FAILED, RunState.CANCELLED)
+    raise typer.Exit(EXIT_FAILED if ended else EXIT_TIMEOUT)
+
+
+class _RunView:
+    """The state of the tasks of a run as the waiting shows it."""
+
+    def __init__(self) -> None:
+        self.started = time.monotonic()
+        self.run: RunRecord | None = None
+        self.progress: dict[str, TaskProgress] = {}
+        self._since: dict[str, float] = {}
+        self._until: dict[str, float] = {}
+
+    def update(self, data: dict[str, Any]) -> None:
+        """Take the latest run and progress, and time the tasks."""
+        self.run = data.get("run", self.run)
+        self.progress = data.get("progress", self.progress)
+        now = time.monotonic()
+        if self.run is None:
+            return
+        for task, state in self.run.tasks.items():
+            if state not in (TaskState.WAITING, TaskState.QUEUED):
+                self._since.setdefault(task, now)
+            if state in (TaskState.DONE, TaskState.FAILED, TaskState.SKIPPED):
+                self._until.setdefault(task, now)
+
+    def units(self, task: str) -> str:
+        """Units done/total of a task, empty for a task without a ledger."""
+        counts = self.progress[task].counts if task in self.progress else None
+        return f"{counts.done}/{counts.total}" if counts and counts.total else ""
+
+    def elapsed(self, task: str) -> str:
+        """Seconds since the task left the queue, empty before."""
+        if task not in self._since:
+            return ""
+        end = self._until.get(task, time.monotonic())
+        return f"{end - self._since[task]:.0f} s"
+
+    def table(self) -> Table:
+        """A row per task: id, state, units, elapsed."""
+        table = Table("task", "state", "units", "elapsed", title=self.title())
+        for task, state in (self.run.tasks if self.run else {}).items():
+            table.add_row(task, state.value, self.units(task), self.elapsed(task))
+        return table
+
+    def title(self) -> str:
+        """The run and its state."""
+        return f"{self.run.id}: {self.run.state.value}" if self.run else "waiting"
+
+    def lines(self) -> dict[str, str]:
+        """One line per task, and the run, for a log."""
+        if self.run is None:
+            return {}
+        lines = {"": f"{self.run.id}: {self.run.state.value}"}
+        for task, state in self.run.tasks.items():
+            parts = [task, state.value, self.units(task)]
+            lines[task] = " ".join(p for p in parts if p)
+        return lines
+
+
+def _follow(
+    client: Client, run_id: str, timeout: float | None, as_json: bool
+) -> RunSummary:
+    """Follow a run to its end, showing it; the summary of the run at the end."""
+    view = _RunView()
+    if not as_json and console.is_terminal:
+        with Live(view.table(), console=console, refresh_per_second=4) as live:
+
+            def show(data: dict[str, Any]) -> None:
+                view.update(data)
+                live.update(view.table())
+
+            client.wait_live(run_id, show, timeout)
+            live.update(view.table())
+    else:
+        printed: dict[str, str] = {}
+
+        def log(data: dict[str, Any]) -> None:
+            view.update(data)
+            if as_json:
+                return
+            for key, line in view.lines().items():
+                if printed.get(key) != line:
+                    printed[key] = line
+                    console.print(line)
+
+        client.wait_live(run_id, log, timeout)
+    if view.run is None:
+        return client.wait(run_id, 0)
+    return RunSummary.of(view.run)
+
+
 @app.command()
 @_guarded
 def submit(
@@ -179,6 +278,17 @@ def submit(
             "instead of recording their provenance only.",
         ),
     ] = False,
+    wait_: Annotated[
+        bool | None,
+        typer.Option(
+            "--wait/--no-wait",
+            help="Follow the run to its end: exit 0 if it succeeded, 1 if not, 2 "
+            "on --timeout. The default with --local, else --no-wait.",
+        ),
+    ] = None,
+    timeout: Annotated[
+        float | None, typer.Option(help="With --wait: seconds to wait.")
+    ] = None,
     as_json: AS_JSON = False,
 ) -> None:
     """Snapshot the sources and submit a workflow."""
@@ -192,10 +302,23 @@ def submit(
         reserve,
         "docker" if docker else None,
     )
+    follow = local if wait_ is None else wait_
+    if not follow:
+        if as_json:
+            _json(summary)
+        else:
+            console.print(
+                f"submitted [bold]{summary.id}[/bold] ({summary.state.value})"
+            )
+        return
+    if not as_json:
+        console.print(f"submitted [bold]{summary.id}[/bold]")
+    final = _follow(client, summary.id, timeout, as_json)
     if as_json:
-        _json(summary)
-    else:
-        console.print(f"submitted [bold]{summary.id}[/bold] ({summary.state.value})")
+        typer.echo(final.model_dump_json())  # one line, the last
+    elif final.message:
+        console.print(final.message)
+    _exit_for(final)
 
 
 @app.command()
@@ -214,10 +337,38 @@ def wait(
         console.print(f"{summary.id}: {summary.state.value}")
         if summary.message:
             console.print(summary.message)
-    if summary.state == RunState.SUCCEEDED:
+    _exit_for(summary)
+
+
+@app.command()
+@_guarded
+def outputs(
+    run: Annotated[str, typer.Argument(help="The run id.")],
+    task: Annotated[str, typer.Argument(help="The task id.")],
+    to: Annotated[
+        Path | None, typer.Option(help="Extract the files into this directory.")
+    ] = None,
+    local: LOCAL = False,
+    as_json: AS_JSON = False,
+) -> None:
+    """List the output files of a task, or extract them with --to."""
+    client = _client(local)
+    if to is not None:
+        written = client.output_archive(run, task, to)
+        if as_json:
+            _json([str(p) for p in written])
+        else:
+            console.print(f"{len(written)} files into {to}")
         return
-    ended = summary.state in (RunState.FAILED, RunState.CANCELLED)
-    raise typer.Exit(EXIT_FAILED if ended else EXIT_TIMEOUT)
+    prefix = f"runs/{run}/tasks/{task}/out/"
+    files = [(f.path.removeprefix(prefix), f.bytes) for f in client.outputs(run, task)]
+    if as_json:
+        _json([{"path": path, "bytes": size} for path, size in files])
+        return
+    table = Table("path", Column("bytes", justify="right"))
+    for path, size in files:
+        table.add_row(path, str(size))
+    console.print(table)
 
 
 @app.command()

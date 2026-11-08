@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import shutil
+import tarfile
 import tempfile
 import time
 from collections.abc import AsyncGenerator, Callable, Iterable
@@ -31,7 +32,7 @@ from typing import Annotated, Any, Literal
 
 import yaml
 from fastapi import Body, Depends, FastAPI, HTTPException, Query, Request
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import FileResponse, PlainTextResponse, StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from fastapi.staticfiles import StaticFiles
 from pydantic import (
@@ -41,6 +42,7 @@ from pydantic import (
     TypeAdapter,
     ValidationError,
 )
+from starlette.background import BackgroundTask
 
 from simrun.argo import workflow_name
 from simrun.config import ClusterConfig
@@ -852,6 +854,56 @@ class _Service:
             )
         return result
 
+    def output_file(self, record: RunRecord, task_id: str, path: str) -> Path:
+        """A file of the output of a task; 404 when it is none inside the output.
+
+        Args:
+            record: The record of the run.
+            task_id: The task.
+            path: The path relative to the output directory.
+
+        Returns:
+            The resolved path of a regular file inside the output directory, not
+            the marker of a merge.
+        """
+        out = self.task_dir(record, task_id) / "out"
+        try:
+            root = out.resolve(strict=True)
+            file = (out / path).resolve(strict=True)
+        except OSError, ValueError:
+            raise HTTPException(404, f"no output file {path!r}") from None
+        if (
+            not file.is_relative_to(root)
+            or not file.is_file()
+            or file.name == MERGED_MARKER
+        ):
+            raise HTTPException(404, f"no output file {path!r}")
+        return file
+
+    def output_archive(self, record: RunRecord, task_id: str) -> Path:
+        """A temporary tar of the output of a task, to delete after sending.
+
+        The files inside the output directory, named relative to it; a link which
+        leads out of it and the marker of a merge are left out.
+        """
+        out = self.task_dir(record, task_id) / "out"
+        handle, name = tempfile.mkstemp(prefix="simrun-outputs-", suffix=".tar")
+        with os.fdopen(handle, "wb") as raw, tarfile.open(fileobj=raw, mode="w") as tar:
+            if out.is_dir():
+                root = out.resolve()
+                for path in sorted(out.rglob("*")):
+                    try:
+                        real = path.resolve(strict=True)
+                    except OSError:
+                        continue
+                    if (
+                        real.is_relative_to(root)
+                        and real.is_file()
+                        and path.name != MERGED_MARKER
+                    ):
+                        tar.add(real, arcname=path.relative_to(out).as_posix())
+        return Path(name)
+
     def outputs(self, record: RunRecord, task_id: str) -> list[OutputFile]:
         """The files of the output of a task, relative to the store."""
         out = self.task_dir(record, task_id) / "out"
@@ -1655,6 +1707,23 @@ def create_app(
     @app.get("/runs/{run_id}/outputs/{task_id}")
     def outputs(run_id: str, task_id: str) -> list[OutputFile]:
         return service.outputs(service.read(run_id), task_id)
+
+    @app.get("/runs/{run_id}/outputs/{task_id}/file")
+    def output_file(run_id: str, task_id: str, path: str) -> FileResponse:
+        """The bytes of an output file; 404 for a path outside the output directory."""
+        file = service.output_file(service.read(run_id), task_id, path)
+        return FileResponse(file, media_type="application/octet-stream")
+
+    @app.get("/runs/{run_id}/outputs/{task_id}/archive")
+    def output_archive(run_id: str, task_id: str) -> FileResponse:
+        """The output directory of a task as a tar, without the marker of a merge."""
+        archive = service.output_archive(service.read(run_id), task_id)
+        return FileResponse(
+            archive,
+            media_type="application/x-tar",
+            filename=f"{run_id}-{task_id}.tar",
+            background=BackgroundTask(archive.unlink, missing_ok=True),
+        )
 
     @app.post("/runs/{run_id}/cancel")
     def cancel(run_id: str) -> RunSummary:

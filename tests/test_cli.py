@@ -113,3 +113,57 @@ def test_cli_bad_source_prints_only_message(cli, tmp_path: Path) -> None:
     result = cli("submit", str(_workflow(tmp_path / "wf.yaml")), "--source", "model")
     assert result.exit_code == 1
     assert result.output == "--source must be NAME=PATH, got 'model'\n"
+
+
+def test_cli_submit_wait_follows_to_the_end(
+    service_factory, make_client, monkeypatch, tmp_path: Path
+) -> None:
+    with service_factory(FakeBackend(finish_after=0.3), poll_s=0.05) as service:
+        monkeypatch.setattr(simrun.cli, "make_client", lambda: make_client(service))
+        wf = _workflow(tmp_path / "wf.yaml")
+        result = runner.invoke(simrun.cli.app, ["submit", str(wf), "--wait"])
+        assert result.exit_code == 0, result.output
+        assert "succeeded" in result.output
+        assert "squares" in result.output
+        as_json = runner.invoke(simrun.cli.app, ["submit", str(wf), "--wait", "--json"])
+        assert as_json.exit_code == 0, as_json.output
+        last = json.loads(as_json.output.strip().splitlines()[-1])
+        assert last["state"] == "succeeded"
+
+
+def test_cli_submit_wait_timeout_exits_2_over_ended_streams(
+    service_factory, make_client, monkeypatch, tmp_path: Path
+) -> None:
+    # the streams end every 0.3 s (events_max_s), the waiting opens them again
+    with service_factory(poll_s=0.05, events_max_s=0.3) as service:
+        monkeypatch.setattr(simrun.cli, "make_client", lambda: make_client(service))
+        wf = _workflow(tmp_path / "wf.yaml")
+        result = runner.invoke(
+            simrun.cli.app, ["submit", str(wf), "--wait", "--timeout", "2"]
+        )
+        assert result.exit_code == 2, result.output
+
+
+def test_cli_submit_no_wait_by_default(cli, tmp_path: Path) -> None:
+    result = cli("submit", str(_workflow(tmp_path / "wf.yaml")))
+    assert result.exit_code == 0
+    assert "submitted" in result.output
+
+
+def test_cli_outputs_lists_and_extracts(cli, service, tmp_path: Path) -> None:
+    run_id = service.submit()["id"]
+    out = service.run_dir(run_id) / "tasks/squares/out"
+    (out / "squares").mkdir(parents=True)
+    (out / "summary.json").write_text("{}")
+    (out / "squares/0.json").write_text('{"i": 0}')
+    listed = json.loads(cli("outputs", run_id, "squares", "--json").output)
+    assert listed == [
+        {"path": "squares/0.json", "bytes": 8},
+        {"path": "summary.json", "bytes": 2},
+    ]
+    assert "summary.json" in cli("outputs", run_id, "squares").output
+    to = tmp_path / "got"
+    result = cli("outputs", run_id, "squares", "--to", str(to))
+    assert result.exit_code == 0, result.output
+    assert (to / "squares/0.json").read_text() == '{"i": 0}'
+    assert cli("outputs", run_id, "nope").exit_code == 1

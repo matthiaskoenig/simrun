@@ -246,3 +246,17 @@ def test_client_records_provenance_only_without_a_store(
     assert not (tmp_path / "snapshots").exists()
     with pytest.raises(RuntimeError, match="not available"):
         Client("http://x", "t", None, "upload").source(repo, "model")
+
+
+def test_output_archive_extracts_and_file_reads(service, make_client, tmp_path):
+    run_id = service.submit()["id"]
+    out = service.run_dir(run_id) / "tasks/squares/out"
+    (out / "squares").mkdir(parents=True)
+    (out / "squares/0.json").write_text('{"i": 0}')
+    (out / ".simrun-merged").touch()
+    client = make_client(service)
+    assert client.output_file(run_id, "squares", "squares/0.json") == b'{"i": 0}'
+    to = tmp_path / "dest"
+    written = client.output_archive(run_id, "squares", to)
+    assert written == [to / "squares/0.json"]
+    assert (to / "squares/0.json").read_text() == '{"i": 0}'

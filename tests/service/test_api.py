@@ -976,3 +976,69 @@ def test_a_run_the_backend_refuses_fails_with_its_message(service, monkeypatch):
     summary = service.submit()
     assert summary["state"] == "failed"
     assert summary["message"] == "no image for task x"
+
+
+def _outputs(service):
+    run_id = service.submit()["id"]
+    out = service.run_dir(run_id) / "tasks/squares/out"
+    (out / "squares").mkdir(parents=True)
+    (out / "summary.json").write_text("{}")
+    (out / "squares/0.json").write_text('{"i": 0}')
+    (out / ".simrun-merged").touch()
+    return run_id, out
+
+
+def test_output_file_and_archive(service):
+    import io
+    import tarfile
+
+    run_id, _ = _outputs(service)
+    base = f"/runs/{run_id}/outputs/squares"
+    got = service.get(f"{base}/file", params={"path": "squares/0.json"})
+    assert got.status_code == 200 and got.content == b'{"i": 0}'
+    archive = service.get(f"{base}/archive")
+    assert archive.status_code == 200
+    assert archive.headers["content-type"] == "application/x-tar"
+    with tarfile.open(fileobj=io.BytesIO(archive.content)) as tar:
+        assert sorted(m.name for m in tar.getmembers() if m.isfile()) == [
+            "squares/0.json",
+            "summary.json",
+        ]
+
+
+def test_output_file_refuses_paths_outside_the_output(service, tmp_path):
+    run_id, out = _outputs(service)
+    (out / "link").symlink_to(service.run_dir(run_id) / "run.json")
+    (out / "dirlink").symlink_to(tmp_path)
+    base = f"/runs/{run_id}/outputs/squares/file"
+    for path in (
+        "../run.json",
+        "../../../run.json",
+        "/etc/passwd",
+        "link",
+        "dirlink/x",
+        "nope.json",
+        "squares",
+        ".simrun-merged",
+        "a\0b",
+    ):
+        assert service.get(base, params={"path": path}).status_code == 404, path
+    assert (
+        service.get(
+            f"/runs/{run_id}/outputs/nope/file", params={"path": "x"}
+        ).status_code
+        == 404
+    )
+    assert service.get(f"/runs/{run_id}/outputs/nope/archive").status_code == 404
+
+
+def test_output_archive_leaves_out_escaping_links(service):
+    import io
+    import tarfile
+
+    run_id, out = _outputs(service)
+    (out / "link").symlink_to(service.run_dir(run_id) / "run.json")
+    archive = service.get(f"/runs/{run_id}/outputs/squares/archive")
+    with tarfile.open(fileobj=io.BytesIO(archive.content)) as tar:
+        assert "link" not in tar.getnames()
+        assert ".simrun-merged" not in tar.getnames()
