@@ -984,8 +984,6 @@ def _worker(stop: threading.Event) -> int:
             coordinator=coordinator,
             stale_s=stale_s,
         )
-        if coordinator and env.get("SIMRUN_MERGE") == "1":
-            _merge_once(task_type, settings, paths)
     except UnitError:
         return EXIT_ANALYSIS
     except BrokenProcessPool:
@@ -996,9 +994,12 @@ def _worker(stop: threading.Event) -> int:
     except ValueError as error:
         logger.error("configuration error: %s", error)
         return EXIT_CONFIGURATION
-    except Exception:
-        logger.exception("the merge of %s failed", paths.task_dir)
-        return EXIT_ANALYSIS
+    if coordinator and env.get("SIMRUN_MERGE") == "1":
+        try:
+            _merge_once(task_type, settings, paths)
+        except Exception:
+            logger.exception("the merge of %s failed", paths.task_dir)
+            return EXIT_ANALYSIS
     return EXIT_DONE
 
 
