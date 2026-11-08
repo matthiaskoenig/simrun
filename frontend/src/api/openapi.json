@@ -351,49 +351,6 @@
         "title": "EditState",
         "type": "object"
       },
-      "FileEntry": {
-        "description": "A file of a working tree as a snapshot holds it.\n\nAttributes:\n    path: Path below the tree, with `/`.\n    mode: Mode bits without the write bits (a snapshot is read-only); the ones\n        of the link for a symbolic link.\n    sha256: Hash of the content of a regular file, None for a link.\n    link: Target of a symbolic link, None for a regular file.",
-        "properties": {
-          "link": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Link"
-          },
-          "mode": {
-            "title": "Mode",
-            "type": "integer"
-          },
-          "path": {
-            "title": "Path",
-            "type": "string"
-          },
-          "sha256": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Sha256"
-          }
-        },
-        "required": [
-          "path",
-          "mode",
-          "sha256",
-          "link"
-        ],
-        "title": "FileEntry",
-        "type": "object"
-      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -3524,7 +3481,7 @@
     },
     "/snapshots/{name}/missing": {
       "post": {
-        "description": "The paths of the files whose content the store lacks.\n\nThe files whose content the latest snapshot of `name` has are linked to it\nby the upload; the client sends the others. 422 for a name or a path which\nis not one of a tree.",
+        "description": "The paths of the files whose content the store lacks.\n\nThe body is the list of the `FileEntry` of a scan. The files whose content\nthe latest snapshot of `name` has are linked to it by the upload; the\nclient sends the others. 422 for a name or a path which is not one of a\ntree, 413 for a list above `FILE_LIST_MAX_BYTES`.",
         "operationId": "snapshot_missing_snapshots__name__missing_post",
         "parameters": [
           {
@@ -3542,9 +3499,48 @@
             "application/json": {
               "schema": {
                 "items": {
-                  "$ref": "#/components/schemas/FileEntry"
+                  "description": "A file of a working tree as a snapshot holds it.\n\nAttributes:\n    path: Path below the tree, with `/`.\n    mode: Mode bits without the write bits (a snapshot is read-only), special\n        bits kept as release 0.1.0 kept them; the ones of the link for a\n        symbolic link.\n    sha256: Hash of the content of a regular file, None for a link.\n    link: Target of a symbolic link, None for a regular file.",
+                  "properties": {
+                    "link": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Link"
+                    },
+                    "mode": {
+                      "title": "Mode",
+                      "type": "integer"
+                    },
+                    "path": {
+                      "title": "Path",
+                      "type": "string"
+                    },
+                    "sha256": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "title": "Sha256"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "mode",
+                    "sha256",
+                    "link"
+                  ],
+                  "title": "FileEntry",
+                  "type": "object"
                 },
-                "title": "Files",
                 "type": "array"
               }
             }

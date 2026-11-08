@@ -301,3 +301,46 @@ def test_upload_retries_when_the_store_lost_a_file(
     second = client.source(repo, "model")
     assert removed
     assert (service.settings.store / second.snapshot / "model.txt").exists()
+
+
+def _change_after_missing(client: Client, repo: Path, times: int) -> list[str]:
+    """Change model.txt after each of the first `times` answers of `missing`."""
+    real = client._call
+    changed: list[str] = []
+
+    def call(method, path, **kw):
+        response = real(method, path, **kw)
+        if path.endswith("/missing") and len(changed) < times:
+            (repo / "model.txt").write_text(f"saved {len(changed)}\n")
+            changed.append(path)
+        return response
+
+    client._call = call
+    return changed
+
+
+def test_upload_scans_again_once_after_a_file_changed(
+    service, make_client, repo: Path
+) -> None:
+    client = make_client(service, sources="upload")
+    (repo / "model.txt").write_text("edited\n")
+    changed = _change_after_missing(client, repo, 1)
+    prov = client.source(repo, "model")
+    assert len(changed) == 1
+    assert (service.settings.store / prov.snapshot / "model.txt").read_text() == (
+        "saved 0\n"
+    )
+
+
+def test_upload_fails_when_a_file_changes_twice(
+    service, make_client, repo: Path
+) -> None:
+    client = make_client(service, sources="upload")
+    (repo / "model.txt").write_text("edited\n")
+    changed = _change_after_missing(client, repo, 2)
+    with pytest.raises(ClientError) as error:
+        client.source(repo, "model")
+    assert (
+        error.value.status == 422 and "changed during the upload" in error.value.detail
+    )
+    assert len(changed) == 2

@@ -499,9 +499,10 @@ export interface paths {
          * Snapshot Missing
          * @description The paths of the files whose content the store lacks.
          *
-         *     The files whose content the latest snapshot of `name` has are linked to it
-         *     by the upload; the client sends the others. 422 for a name or a path which
-         *     is not one of a tree.
+         *     The body is the list of the `FileEntry` of a scan. The files whose content
+         *     the latest snapshot of `name` has are linked to it by the upload; the
+         *     client sends the others. 422 for a name or a path which is not one of a
+         *     tree, 413 for a list above `FILE_LIST_MAX_BYTES`.
          */
         post: operations["snapshot_missing_snapshots__name__missing_post"];
         delete?: never;
@@ -785,27 +786,6 @@ export interface components {
             /** Tree */
             tree: components["schemas"]["TreeState"][];
             workflow: components["schemas"]["Workflow"];
-        };
-        /**
-         * FileEntry
-         * @description A file of a working tree as a snapshot holds it.
-         *
-         *     Attributes:
-         *         path: Path below the tree, with `/`.
-         *         mode: Mode bits without the write bits (a snapshot is read-only); the ones
-         *             of the link for a symbolic link.
-         *         sha256: Hash of the content of a regular file, None for a link.
-         *         link: Target of a symbolic link, None for a regular file.
-         */
-        FileEntry: {
-            /** Link */
-            link: string | null;
-            /** Mode */
-            mode: number;
-            /** Path */
-            path: string;
-            /** Sha256 */
-            sha256: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2519,7 +2499,16 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["FileEntry"][];
+                "application/json": {
+                    /** Link */
+                    link: string | null;
+                    /** Mode */
+                    mode: number;
+                    /** Path */
+                    path: string;
+                    /** Sha256 */
+                    sha256: string | null;
+                }[];
             };
         };
         responses: {

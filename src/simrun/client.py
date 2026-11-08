@@ -41,7 +41,13 @@ from simrun.service.edits import (
     OpenEdit,
 )
 from simrun.service.logs import DEFAULT_TAIL_LINES
-from simrun.snapshot import SourceProvenance, provenance, scan, snapshot
+from simrun.snapshot import (
+    CHANGED_DURING_UPLOAD,
+    SourceProvenance,
+    provenance,
+    scan,
+    snapshot,
+)
 from simrun.store import RunRecord, RunState
 from simrun.workflow import SplitMode, Workflow, load_workflow
 
@@ -245,9 +251,12 @@ class Client:
     def _upload(self, repo: Path, name: str) -> SourceProvenance:
         """Upload a snapshot: the scan, and a tar of the files the store lacks.
 
-        Sent again with a new scan when the store lost a content meanwhile (409).
+        Sent again with a new scan when the store lost a content meanwhile (409),
+        and once when a file changed between the scan and the tar (422), e.g. an
+        editor saved it.
         """
         timeout = httpx.Timeout(REQUEST_TIMEOUT_S, read=UPLOAD_READ_TIMEOUT_S)
+        changed = False
         for attempt in range(1, UPLOAD_ATTEMPTS + 1):
             found = scan(repo)
             files = [entry.model_dump(mode="json") for entry in found.files]
@@ -269,8 +278,15 @@ class Client:
                         "POST", f"/snapshots/{name}", files=parts, timeout=timeout
                     )
                 except ClientError as error:
-                    if error.status != 409 or attempt == UPLOAD_ATTEMPTS:
+                    lost = error.status == 409
+                    again = (
+                        error.status == 422
+                        and CHANGED_DURING_UPLOAD in error.detail
+                        and not changed
+                    )
+                    if not (lost or again) or attempt == UPLOAD_ATTEMPTS:
                         raise
+                    changed = changed or again
                     logger.info("upload of %s again: %s", name, error.detail)
                     continue
             return SourceProvenance.model_validate(response.json())

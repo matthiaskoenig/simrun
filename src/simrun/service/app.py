@@ -113,7 +113,20 @@ EDIT_POLL_MAX_S = 30.0
 NOT_CONNECTED = "the machine of the session is not connected"
 # a snapshot younger than this is kept by a cleanup: a client may be submitting it
 SNAPSHOT_GRACE_S = 3600.0
-# the multipart body of `POST /snapshots/{name}`, which the route reads itself
+# the largest file list of `POST /snapshots/{name}/missing`, read into memory
+FILE_LIST_MAX_BYTES = 64 * 1024**2
+FILE_LIST = TypeAdapter(list[FileEntry])
+# the bodies of the routes of the snapshots, which they read themselves
+FILE_LIST_BODY: dict[str, Any] = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "application/json": {
+                "schema": {"type": "array", "items": FileEntry.model_json_schema()}
+            }
+        },
+    }
+}
 SNAPSHOT_UPLOAD_BODY: dict[str, Any] = {
     "requestBody": {
         "required": True,
@@ -146,28 +159,38 @@ PROGRESS_TAIL_BYTES = 8192
 UNFINISHED_TASK_MAX = 0.99
 
 
+def _bounded(request: Request, limit: int) -> AsyncGenerator[bytes]:
+    """The body of a request, refused with 413 once it is above `limit` bytes."""
+    length = request.headers.get("content-length", "")
+    if length.isdigit() and int(length) > limit:
+        raise HTTPException(413, f"the body is larger than {limit} bytes")
+
+    async def chunks() -> AsyncGenerator[bytes]:
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > limit:
+                raise HTTPException(413, f"the body is larger than {limit} bytes")
+            yield chunk
+
+    return chunks()
+
+
 async def _read_upload(request: Request, limit: int) -> Any:
     """The multipart form of an upload, its files spooled to disk.
+
+    The spooled files are closed when the body ends early or is too large
+    (`MultiPartParser` closes them on every error); the caller closes the form.
 
     Raises:
         HTTPException: 413 for a body above `limit` bytes, 422 for a body which is
             not multipart.
     """
-    length = request.headers.get("content-length", "")
-    if length.isdigit() and int(length) > limit:
-        raise HTTPException(413, f"the upload is larger than {limit} bytes")
-
-    async def bounded() -> AsyncGenerator[bytes]:
-        size = 0
-        async for chunk in request.stream():
-            size += len(chunk)
-            if size > limit:
-                raise HTTPException(413, f"the upload is larger than {limit} bytes")
-            yield chunk
-
     if not request.headers.get("content-type", "").startswith("multipart/form-data"):
         raise HTTPException(422, "the body is not multipart/form-data")
-    parser = MultiPartParser(request.headers, bounded(), max_files=2, max_fields=2)
+    parser = MultiPartParser(
+        request.headers, _bounded(request, limit), max_files=2, max_fields=2
+    )
     try:
         return await parser.parse()
     except MultiPartException as error:
@@ -1668,20 +1691,28 @@ def create_app(
 
         return _event_response(_stream(request, settings, compute))
 
-    @app.post("/snapshots/{name}/missing")
-    def snapshot_missing(name: str, files: list[FileEntry]) -> list[str]:
+    @app.post("/snapshots/{name}/missing", openapi_extra=FILE_LIST_BODY)
+    async def snapshot_missing(name: str, request: Request) -> list[str]:
         """The paths of the files whose content the store lacks.
 
-        The files whose content the latest snapshot of `name` has are linked to it
-        by the upload; the client sends the others. 422 for a name or a path which
-        is not one of a tree.
+        The body is the list of the `FileEntry` of a scan. The files whose content
+        the latest snapshot of `name` has are linked to it by the upload; the
+        client sends the others. 422 for a name or a path which is not one of a
+        tree, 413 for a list above `FILE_LIST_MAX_BYTES`.
         """
         try:
             check_name(name)
-            check_files(files)
         except SnapshotError as error:
             raise HTTPException(422, str(error)) from error
-        return missing(settings.store, name, files)
+        body = bytearray()
+        async for chunk in _bounded(request, FILE_LIST_MAX_BYTES):
+            body += chunk
+        try:
+            files = FILE_LIST.validate_json(body)
+            check_files(files)
+        except (ValidationError, SnapshotError) as error:
+            raise HTTPException(422, str(error)) from error
+        return await asyncio.to_thread(missing, settings.store, name, files)
 
     @app.post("/snapshots/{name}", openapi_extra=SNAPSHOT_UPLOAD_BODY)
     async def snapshot_upload(name: str, request: Request) -> SourceProvenance:
