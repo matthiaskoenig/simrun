@@ -20,6 +20,7 @@ import httpx
 import pytest
 import yaml
 
+import simrun
 from simrun import local
 from simrun.config import ClusterConfig
 from simrun.local import (
@@ -190,6 +191,8 @@ def test_ensure_local_starts_one_service(root):
         "port": service.port,
         "token": service.token,
         "url": service.url,
+        "background": True,
+        **local.environment(),
     }
     assert ensure_local(root) == service
     assert (root / LOCAL_DIR / ".gitignore").read_text() == "*\n"
@@ -379,6 +382,7 @@ def test_serve_local_in_the_foreground(root, signum):
         [sys.executable, "-m", "simrun", "serve", "--local"],
         cwd=root,
         stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True,
     )
     try:
@@ -396,9 +400,11 @@ def test_serve_local_in_the_foreground(root, signum):
         assert data["port"] == int(match[2])
         task = _start_sleeper(LocalService(**data), root)
         process.send_signal(signum)
-        process.wait(DEADLINE_S)
+        _, errors = process.communicate(timeout=DEADLINE_S)
         assert not _service_file(root).exists()
         assert not _alive(task)
+        # what the end waits for
+        assert "cancelling 1 runs: waiting up to 60 s for their 1 processes" in errors
     finally:
         process.kill()
         process.wait()
@@ -418,3 +424,85 @@ def test_requests_to_the_web_app_are_no_activity():
     activity.last -= 100
     asyncio.run(activity({"type": "http", "path": "/me"}, None, None))
     assert activity.idle_s() < 100
+
+
+def _other_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Let this process have another simrun than the services it starts."""
+    own = local.environment()
+    monkeypatch.setattr(local, "environment", lambda: {**own, "version": "9.9.9"})
+
+
+def test_a_service_with_another_environment_is_restarted_when_idle(root, monkeypatch):
+    service = ensure_local(root)
+    _other_environment(monkeypatch)
+    warnings: list[str] = []
+    again = ensure_local(root, warn=warnings.append)
+    assert again.pid != service.pid
+    assert not _alive(service.pid)
+    assert _get(again, "/me").status_code == 200
+    assert warnings == []
+
+
+def test_a_busy_service_with_another_environment_keeps_running(root, monkeypatch):
+    service = ensure_local(root)
+    _start_sleeper(service, root)
+    _other_environment(monkeypatch)
+    warnings: list[str] = []
+    assert ensure_local(root, warn=warnings.append) == service
+    [warning] = warnings
+    assert f"simrun {simrun.__version__} (not 9.9.9)" in warning
+    assert "simrun serve --local --stop" in warning
+
+
+def test_a_foreground_service_with_another_environment_is_kept(root, monkeypatch):
+    process = subprocess.Popen(
+        [sys.executable, "-m", "simrun", "serve", "--local"],
+        cwd=root,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        _wait_until(_service_file(root).is_file)
+        _other_environment(monkeypatch)
+        warnings: list[str] = []
+        assert ensure_local(root, warn=warnings.append).pid == process.pid
+        assert "runs in the foreground" in warnings[0]
+    finally:
+        process.terminate()
+        process.wait(DEADLINE_S)
+
+
+def test_the_stop_route_needs_the_token_and_post(root):
+    service = ensure_local(root)
+    url = f"{service.url}{local.STOP_PATH}"
+    assert httpx.post(url, timeout=10).status_code == 401
+    bearer = {"Authorization": "Bearer nope"}
+    assert httpx.post(url, headers=bearer, timeout=10).status_code == 401
+    assert _get(service, local.STOP_PATH).status_code == 405
+    assert _alive(service.pid)
+
+
+def test_stop_local_cancels_the_runs_and_waits(root):
+    service = ensure_local(root)
+    task = _start_sleeper(service, root)
+    with pytest.raises(local.ServiceBusy):
+        local.stop_local(root, idle=True)
+    seen: list[LocalService] = []
+    assert local.stop_local(root, stopping=seen.append) == service
+    assert seen == [service]
+    assert not _alive(service.pid)
+    assert not _alive(task)
+    assert not _service_file(root).exists()
+    assert local.stop_local(root) is None
+
+
+def test_a_new_service_kills_the_processes_a_dead_one_left(root):
+    service = ensure_local(root)
+    task = _start_sleeper(service, root)
+    os.kill(service.pid, signal.SIGKILL)  # no cleanup: the task runs on
+    _wait_until(lambda: not _alive(service.pid))
+    assert _alive(task)
+    ensure_local(root)
+    _wait_until(lambda: not _alive(task))
+    store = root / LOCAL_DIR / "store"
+    assert list(store.glob("runs/*/tasks/*/logs/*.pid")) == []
