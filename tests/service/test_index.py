@@ -214,3 +214,13 @@ def test_reindex_does_not_rewrite_the_record(
     assert store.reindex() == []
     monkeypatch.undo()
     assert store.read("r1").pending_cancel
+
+
+def test_any_unended(tmp_path: Path) -> None:
+    index = RunIndex(tmp_path / "index.sqlite")
+    assert not index.any_unended()
+    index.put(_record("a", state=RunState.SUCCEEDED))
+    index.put(_record("b", state=RunState.CANCELLED))
+    assert not index.any_unended()
+    index.put(_record("c", state=RunState.QUEUED))
+    assert index.any_unended()

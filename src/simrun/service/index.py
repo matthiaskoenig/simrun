@@ -127,6 +127,16 @@ class RunIndex:
             con.execute("DELETE FROM runs WHERE id = ?", (run_id,))
             con.commit()
 
+    def any_unended(self) -> bool:
+        """Whether a run has not ended, without reading its row."""
+        terminal = ", ".join("?" for _ in TERMINAL)
+        with self._connect() as con:
+            row = con.execute(
+                f"SELECT 1 FROM runs WHERE state NOT IN ({terminal}) LIMIT 1",
+                [s.value for s in TERMINAL],
+            ).fetchone()
+        return row is not None
+
     def live_ids(self) -> list[str]:
         """The ids of the runs the controller follows, sorted.
 
