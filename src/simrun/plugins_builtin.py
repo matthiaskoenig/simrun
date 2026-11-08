@@ -1,6 +1,6 @@
 """The built-in task types."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from simrun.plugins import TaskType
 
@@ -17,17 +17,20 @@ class CommandSettings(BaseModel):
         scratch_gb: Local scratch in GiB.
     """
 
-    image: str
-    args: list[str]
-    cores: int
-    memory_gb: float
-    gpus: int = 0
-    scratch_gb: float = 0
+    image: str = Field(title="Image")
+    args: list[str] = Field(
+        title="Args",
+        description="The argv; {input}, {out} and {settings} as in a plugin command",
+    )
+    cores: int = Field(title="Cores")
+    memory_gb: float = Field(title="Memory (GB)")
+    gpus: int = Field(0, title="GPUs")
+    scratch_gb: float = Field(0, title="Scratch (GB)")
 
 
 # `command` is None: the settings carry the image and the args.
 COMMAND = TaskType(
     name="command",
     settings=CommandSettings,
-    description="A command in the image of the run",
+    description="A command in an image of its own",
 )

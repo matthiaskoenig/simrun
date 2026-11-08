@@ -65,12 +65,12 @@ The service writes the settings as submitted to `tasks/<task>/settings.json`, an
 
 ## The type `command`
 
-The built-in type `command` runs a command in an image of its own. It does not split, and its resources are its settings:
+The built-in type `command` runs a command in an image of its own, without the harness of simrun: it does not split, it cannot stage its inputs, and its resources are its settings:
 
 | setting | meaning |
 | --- | --- |
 | `image` | the image, from the registry of the cluster |
-| `args` | the argv of the command |
+| `args` | the argv of the command; as in the command of a [plugin](plugins.md), `{out}` is the output directory of the task, `{settings}` the path of its settings and a part with `{input}` is repeated once per input port, sorted by port, as `<port>=<path>`, e.g. `--input={input}` |
 | `cores` | the cores of the pod |
 | `memory_gb` | the memory of the pod |
 | `scratch_gb` | the local scratch of the pod |

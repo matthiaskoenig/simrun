@@ -87,6 +87,21 @@ def test_validate(service):
     assert "cycle" in service.post("/validate", cycle).json()["errors"][0]
 
 
+def test_a_command_cannot_stage(service):
+    workflow = service.workflow()
+    workflow["tasks"].append(
+        {
+            "id": "sum",
+            "type": "command",
+            "settings": {"image": "t:1", "args": ["sum"], "cores": 1, "memory_gb": 1},
+            "inputs": {"a": "squares.squares"},
+            "stage": ["a"],
+        }
+    )
+    result = service.post("/validate", workflow).json()
+    assert result["errors"] == ["task 'sum': a command cannot stage 'a'"]
+
+
 def test_unknown_settings_are_errors(service):
     misspelled = service.workflow()
     misspelled["tasks"][0]["settings"] = {"n": 4, "sleep": 2}
@@ -569,6 +584,23 @@ def test_image_built_once(service_factory, tmp_path, monkeypatch):
     assert (
         'name = "pydantic"' in (service.run_dir(first) / "environment.lock").read_text()
     )
+
+
+def test_a_new_wheel_of_the_same_version_builds_a_new_image(
+    service_factory, tmp_path, monkeypatch
+):
+    # the local test system builds the wheel of a working tree under one version:
+    # its images must not keep the harness of the wheel before
+    monkeypatch.setenv("UV_OFFLINE", "1")
+    wheel = _wheel(tmp_path)
+    with service_factory(simrun_wheel=wheel, default_image=None) as service:
+        source = _model(service.settings.store)
+        first = service.submit(sources=[source])["id"]
+        wheel.write_bytes(wheel.read_bytes() + b"\0")
+        second = service.submit(sources=[source])["id"]
+    builds = [c for c in service.backend.calls if c[0] == "build_image"]
+    assert len(builds) == 2
+    assert service.store.read(first).image != service.store.read(second).image
 
 
 class _SlowBuild(FakeBackend):

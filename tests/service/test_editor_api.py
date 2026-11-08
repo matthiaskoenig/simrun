@@ -33,7 +33,7 @@ def test_builtin_types_describe_themselves():
     from simrun.plugins import TaskType
     from simrun.plugins_builtin import COMMAND
 
-    assert COMMAND.description == "A command in the image of the run"
+    assert COMMAND.description == "A command in an image of its own"
     assert SQUARES.description == "Squares of numbers, split over servers"
     assert TaskType(name="x", settings=COMMAND.settings).description == ""
 

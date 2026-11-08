@@ -66,7 +66,14 @@ from simrun.service.backend import (
 )
 from simrun.service.index import IndexedRunStore
 from simrun.store import RunRecord, RunState, TaskState
-from simrun.worker import EXIT_POOL_BROKEN, MERGED_MARKER, WORKERS_DIR, WorkerReport
+from simrun.worker import (
+    EXIT_ANALYSIS,
+    EXIT_CONFIGURATION,
+    EXIT_POOL_BROKEN,
+    MERGED_MARKER,
+    WORKERS_DIR,
+    WorkerReport,
+)
 from simrun.workflow import TaskSpec, Workflow
 
 logger = logging.getLogger(__name__)
@@ -85,6 +92,11 @@ SUBMIT_GRACE_S = 120.0
 SUBMIT_WORKERS = 8
 # a marker per report of a task recorded as an observation
 RECORDED_DIR = "recorded"
+# what an exit of the harness means, in the message of a failed run
+EXIT_MEANINGS = {
+    EXIT_ANALYSIS: "the analysis failed",
+    EXIT_CONFIGURATION: "a configuration error",
+}
 # seconds after the end of a run after which the logs of its pods are kept even
 # when a pod has not terminated
 LOGS_WAIT_S = 600.0
@@ -547,6 +559,33 @@ class Controller:
                         )
         return None
 
+    def _failure(
+        self,
+        record: RunRecord,
+        task_id: str,
+        failed: dict[str, list[FailedAttempt]],
+    ) -> str:
+        """Why a task failed: the exit of its last failed pod, for the run message.
+
+        Exit 3 and 4 are the analysis and a configuration error of the harness
+        (`simrun.worker`); a `command` task exits as its command does.
+        """
+        task = next(t for t in record.workflow.tasks if t.id == task_id)
+        last: tuple[str, FailedAttempt] | None = None
+        for key, attempts in sorted(failed.items()):
+            if not attempts or self._task_of(record, key) is not task:
+                continue
+            attempt = max(attempts, key=lambda a: a.attempt)
+            if last is None or attempt.attempt >= last[1].attempt:
+                last = (key, attempt)
+        if last is None or last[1].exit_code is None:
+            return f"task {task_id} failed"
+        key, attempt = last
+        reason = f"{key} exited {attempt.exit_code}"
+        if task.type != COMMAND.name and attempt.exit_code in EXIT_MEANINGS:
+            reason += f", {EXIT_MEANINGS[attempt.exit_code]}"
+        return f"task {task_id} failed: {reason} (see its logs)"
+
     def _next(self, record: RunRecord, status: BackendStatus) -> RunRecord:
         """The record after a status of its workflow."""
         tasks = task_states(record.workflow, self.types, status)
@@ -560,7 +599,9 @@ class Controller:
             )
         failed = [t for t, s in tasks.items() if s == TaskState.FAILED]
         if failed:
-            message = f"task {', '.join(failed)} failed"
+            message = "; ".join(
+                self._failure(record, task_id, status.failed) for task_id in failed
+            )
             return closed(record, RunState.FAILED, tasks, message)
         if all(s == TaskState.DONE for s in tasks.values()):
             return closed(record, RunState.SUCCEEDED, tasks, None)

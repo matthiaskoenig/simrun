@@ -18,6 +18,7 @@ cancelled as an orphan.
 """
 
 import dataclasses
+import hashlib
 import logging
 import shutil
 import tempfile
@@ -146,7 +147,7 @@ class Submitter:
                 model,
                 libraries,
                 python=self.python,
-                simrun_version=simrun.__version__,
+                simrun_version=self._harness(),
                 build_constraints=self.build_constraints,
             )
         except (ValueError, RuntimeError) as error:
@@ -164,6 +165,19 @@ class Submitter:
             if missing:
                 self._build(env, ref)
         return ref, env.lock
+
+    def _harness(self) -> str:
+        """The simrun of the images: its version and the hash of the wheel they install.
+
+        Part of the identity of an image (`resolve_environment`), so a wheel built
+        anew without a new version, e.g. of a working tree in the local test system,
+        gives new images instead of the ones with the harness of the old wheel.
+        """
+        wheel = self.simrun_wheel
+        if wheel is None or not wheel.is_file():
+            return simrun.__version__
+        digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
+        return f"{simrun.__version__}+{digest[:16]}"
 
     def _build(self, env: Environment, ref: str) -> None:
         wheel = self.simrun_wheel

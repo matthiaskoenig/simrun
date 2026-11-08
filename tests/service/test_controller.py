@@ -167,6 +167,20 @@ def test_reservation_released(service):
     assert record.state == "succeeded"
 
 
+def test_failed_task_names_the_exit_of_its_pod(service):
+    run_id = service.submit()["id"]
+    name = service.name(run_id)
+    service.backend.start(name)
+    service.backend.fail_attempt(name, "squares-w0", exit_code=4)
+    service.backend.fail(name, "squares")
+    service.controller.reconcile()
+    record = service.store.read(run_id)
+    assert record.state == "failed"
+    assert record.message == (
+        "task squares failed: squares-w0 exited 4, a configuration error (see its logs)"
+    )
+
+
 def test_failed_task_fails_run(service):
     run_id = service.submit()["id"]
     name = service.name(run_id)

@@ -71,11 +71,7 @@ from simrun.config import ClusterConfig
 from simrun.planner import PodShape, TaskPlan
 from simrun.plugins import TaskType
 from simrun.store import RunRecord
-from simrun.worker import (
-    EXIT_ANALYSIS,
-    EXIT_CONFIGURATION,
-    EXIT_POOL_BROKEN,
-)
+from simrun.worker import EXIT_POOL_BROKEN, EXIT_TERMINATED
 from simrun.workflow import TaskSpec
 
 QUEUE_LABEL = "kueue.x-k8s.io/queue-name"
@@ -90,14 +86,15 @@ LABEL_MAX = 63
 LABEL_HASH = 8
 # The retries of a pod: an eviction by Kueue (a preemption, a take-back) counts as
 # one, and a pod of a long run of low priority on a busy cluster is evicted many
-# times. A second kill for memory ends the run in the controller (Ruling 35), exits 3
-# and 4 are not retried, so the limit bounds only failures of other kinds (a crash,
-# a lost node) at a hundred attempts.
+# times. Only a pod which was stopped is retried: without an exit code ("-1", e.g. a
+# lost node or a pod deleted before it ran), killed (137: a kill for memory, or after
+# the grace) or stopped on SIGTERM (143). Any other exit is a failure of the task or
+# its configuration (3, 4, also 1 of a crash of the harness or of a command), which
+# fails again when retried. A second kill for memory ends the run in the controller
+# (Ruling 35), so the limit bounds the evictions at a hundred attempts.
 RETRY_LIMIT = 100
-RETRY_EXPRESSION = (
-    f"lastRetry.exitCode != '{EXIT_ANALYSIS}' "
-    f"&& lastRetry.exitCode != '{EXIT_CONFIGURATION}'"
-)
+RETRY_EXIT_CODES = ("-1", str(EXIT_POOL_BROKEN), str(EXIT_TERMINATED))
+RETRY_EXPRESSION = " || ".join(f"lastRetry.exitCode == '{c}'" for c in RETRY_EXIT_CODES)
 # seconds a pod gets beyond the grace of the worker, for the executor to finish
 GRACE_MARGIN_S = 30
 # seconds beyond the grace after which the coordinator takes a worker as gone

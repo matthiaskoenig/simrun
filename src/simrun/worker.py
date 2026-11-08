@@ -61,6 +61,8 @@ HEARTBEAT_S = 30.0
 SAMPLE_S = 1.0
 # the directory of the writable trees the snapshots are installed from
 SOURCES_DIR = "simrun-sources"
+# set once the snapshots are installed, in the interpreter `install_sources` restarts
+SOURCES_INSTALLED = "SIMRUN_SOURCES_INSTALLED"
 # seconds a command of `simrun-exec` gets after SIGTERM, the grace of a worker
 GRACE_S = 60.0
 COORDINATOR_POLL_S = 5.0
@@ -798,6 +800,38 @@ def install_editable(
     importlib.invalidate_caches()
 
 
+def install_sources(env: Mapping[str, str], stop: threading.Event) -> None:
+    """Install the snapshots of `SIMRUN_EDITABLE`, then restart in a fresh interpreter.
+
+    A source can be a package this process imported already, simrun itself when a
+    run has the simrun repository as a source: its editable install removes the
+    package directory the imported modules came from, so a later import in this
+    interpreter fails. The command therefore starts again (`restart`) with
+    `SOURCES_INSTALLED` set, and the new interpreter imports the installed sources.
+    A SIGTERM during the install (`stop`) skips the restart, so the caller exits.
+
+    Args:
+        env: The environment of the pod.
+        stop: Set on SIGTERM.
+
+    Raises:
+        subprocess.CalledProcessError: The installation failed.
+        OSError: A shadow tree cannot be created.
+    """
+    snapshots = [] if env.get(SOURCES_INSTALLED) else _editable(env)
+    install_editable(snapshots)
+    if snapshots and not stop.is_set():
+        os.environ[SOURCES_INSTALLED] = "1"
+        restart()
+
+
+def restart() -> None:
+    """Replace the process with a new interpreter of the same command line."""
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.execv(sys.executable, [sys.executable, *sys.orig_argv[1:]])
+
+
 def stage(pairs: list[tuple[str, str]], store: Path, scratch: Path) -> None:
     """Copy inputs to the scratch directory.
 
@@ -878,6 +912,7 @@ def _gb(env: Mapping[str, str], name: str, default: float) -> float:
 
 CONFIGURATION_ERRORS = (
     ConfigurationError,
+    ImportError,  # a task type which cannot be loaded
     ValueError,
     OSError,
     subprocess.CalledProcessError,
@@ -913,7 +948,7 @@ def _worker(stop: threading.Event) -> int:
     _logging()
     env = os.environ
     try:
-        install_editable(_editable(env))
+        install_sources(env, stop)
         task_type, settings, paths = _task(env)
         worker = env.get("SIMRUN_WORKER")
         if not worker:
@@ -981,7 +1016,7 @@ def _merge(stop: threading.Event) -> int:
     _logging()
     env = os.environ
     try:
-        install_editable(_editable(env))
+        install_sources(env, stop)
         task_type, settings, paths = _task(env)
     except CONFIGURATION_ERRORS as error:
         logger.error("configuration error: %s", error)
@@ -1029,7 +1064,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
     try:
         if not argv:
             raise ConfigurationError("simrun-exec needs a command")
-        install_editable(_editable(env))
+        install_sources(env, stop)
         paths = paths_from_env(env)
         attempt = _attempt(env)
         stage(_pairs(env.get("SIMRUN_STAGE", "")), paths.store, paths.scratch)

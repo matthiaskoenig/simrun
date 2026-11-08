@@ -428,6 +428,9 @@ def validate_workflow(workflow: Workflow, types: dict[str, TaskType]) -> list[st
         for port in task.stage:
             if port not in task.inputs:
                 errors.append(f"task {task.id!r} stages {port!r}, which is no input")
+            elif task_type.name == COMMAND.name:
+                # a command runs without the harness, which would stage it
+                errors.append(f"task {task.id!r}: a command cannot stage {port!r}")
         for port, ref in task.inputs.items():
             source, _, output = ref.partition(".")
             source_type = types.get(workflow.task(source).type)
