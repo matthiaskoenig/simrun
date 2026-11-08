@@ -1,11 +1,21 @@
+import json
 import os
+import stat
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
-from simrun.snapshot import provenance, snapshot
+from simrun.snapshot import (
+    Scan,
+    _tree_hash,
+    assemble,
+    manifest_path,
+    provenance,
+    scan,
+    snapshot,
+)
 from simrun.worker import shadow_tree
 
 
@@ -155,7 +165,7 @@ def test_vanished_file_is_left_out(
         return out + b"ghost.py\0" if args[0] == "ls-files" else out
 
     monkeypatch.setattr(mod, "_git", listing)
-    # the existence check drops the name; make rsync see it anyway
+    # the existence check drops the name; keep it, so the scan meets a gone file
     monkeypatch.setattr(mod.os.path, "lexists", lambda p: True)
     store = tmp_path / "store"
     prov = snapshot(repo, store, "proj")
@@ -261,3 +271,127 @@ def test_hash_of_a_tree_is_the_one_of_release_0_1_0(tmp_path: Path) -> None:
     git(repo, "commit", "-q", "-m", "init")
     assert provenance(repo, "pin").diff_sha256 == pinned
     assert snapshot(repo, tmp_path / "store", "pin").diff_sha256 == pinned
+
+
+def _rsync_copy(repo: Path, dest: Path) -> str:
+    """The copy of release 0.1.0 (rsync), the reference of the snapshot of today."""
+    files = [
+        line
+        for line in git(
+            repo, "ls-files", "-z", "--cached", "--others", "--exclude-standard"
+        ).split("\0")
+        if line and os.path.lexists(repo / line)
+    ]
+    dest.mkdir(parents=True)
+    subprocess.run(
+        [
+            *("rsync", "-a", "--checksum", "--chmod=F-w", "--files-from=-"),
+            *("--from0", f"{repo}/", f"{dest}/"),
+        ],
+        input="\0".join(files).encode(),
+        check=True,
+    )
+    return _tree_hash(dest, files)
+
+
+def _tree(root: Path) -> dict[str, tuple[str, int, bytes]]:
+    found = {}
+    for path in sorted(root.rglob("*")):
+        st = path.lstat()
+        if stat.S_ISLNK(st.st_mode):
+            found[path.relative_to(root).as_posix()] = (
+                "l",
+                0,
+                os.fsencode(os.readlink(path)),
+            )
+        elif stat.S_ISREG(st.st_mode):
+            found[path.relative_to(root).as_posix()] = (
+                "f",
+                stat.S_IMODE(st.st_mode),
+                path.read_bytes(),
+            )
+    return found
+
+
+def test_snapshot_equals_the_rsync_copy_of_0_1_0(repo: Path, tmp_path: Path) -> None:
+    (repo / "a.py").write_text("a = 2\n")
+    (repo / "sub" / "deep").mkdir(parents=True)
+    (repo / "sub" / "deep" / "n.py").write_text("n\n")
+    (repo / "run.sh").write_text("#!/bin/sh\n")
+    (repo / "run.sh").chmod(0o755)
+    (repo / "l").symlink_to("a.py")
+    (repo / "dl").symlink_to("sub")
+    (repo / "gone.py").unlink()
+    reference = tmp_path / "reference"
+    diff = _rsync_copy(repo, reference)
+    prov = snapshot(repo, tmp_path / "store", "proj")
+    commit = git(repo, "rev-parse", "HEAD").strip()
+    assert prov.diff_sha256 == diff
+    assert Path(prov.snapshot).name == f"{commit[:12]}-{diff[:12]}"
+    assert _tree(tmp_path / "store" / prov.snapshot) == _tree(reference)
+
+
+def test_scan_lists_files_hashes_and_links(repo: Path) -> None:
+    (repo / "a.py").write_text("a = 2\n")
+    (repo / "run.sh").write_text("#!/bin/sh\n")
+    (repo / "run.sh").chmod(0o775)
+    (repo / "l").symlink_to("a.py")
+    found = scan(repo)
+    assert found.dirty and found.branch == "main"
+    assert b"a = 2" in found.patch
+    by_path = {f.path: f for f in found.files}
+    assert sorted(by_path) == [
+        ".gitignore",
+        "a.py",
+        "gone.py",
+        "l",
+        "run.sh",
+        "same.txt",
+    ]
+    assert by_path["run.sh"].mode == 0o555  # as a snapshot holds it
+    assert by_path["a.py"].mode == 0o444
+    assert by_path["a.py"].link is None
+    assert by_path["l"].link == "a.py" and by_path["l"].sha256 is None
+    import hashlib
+
+    assert by_path["a.py"].sha256 == hashlib.sha256(b"a = 2\n").hexdigest()
+    assert Scan.model_validate_json(found.model_dump_json()) == found
+
+
+def test_snapshot_writes_a_manifest_the_next_one_links_by(
+    repo: Path, tmp_path: Path
+) -> None:
+    store = tmp_path / "store"
+    p1 = snapshot(repo, store, "proj")
+    manifest = json.loads(manifest_path(store / p1.snapshot).read_text())
+    assert manifest == {f.path: f.sha256 for f in scan(repo).files}
+    assert not manifest_path(store / p1.snapshot).stat().st_mode & 0o222
+    (repo / "renamed.txt").write_text("same\n")  # the content of same.txt
+    p2 = snapshot(repo, store, "proj")
+    s1, s2 = store / p1.snapshot, store / p2.snapshot
+    assert os.stat(s1 / "same.txt").st_ino == os.stat(s2 / "renamed.txt").st_ino
+
+
+def test_snapshot_without_a_manifest_links_nothing(repo: Path, tmp_path: Path) -> None:
+    store = tmp_path / "store"
+    p1 = snapshot(repo, store, "proj")
+    manifest_path(store / p1.snapshot).unlink()  # as 0.1.0 made it
+    (repo / "a.py").write_text("a = 3\n")
+    p2 = snapshot(repo, store, "proj")
+    s1, s2 = store / p1.snapshot, store / p2.snapshot
+    assert os.stat(s1 / "same.txt").st_ino != os.stat(s2 / "same.txt").st_ino
+    assert (s2 / "same.txt").read_text() == "same\n"
+
+
+def test_assemble_takes_bytes_and_copies_a_known_hash_of_another_mode(
+    repo: Path, tmp_path: Path
+) -> None:
+    store = tmp_path / "store"
+    first = snapshot(repo, store, "proj")
+    (repo / "same.txt").chmod(0o755)  # same content, other mode: a copy, no link
+    found = scan(repo)
+    prov = assemble(store, "proj", found, lambda p: (repo / p).read_bytes())
+    assert prov == snapshot(repo, store, "proj")
+    same = store / prov.snapshot / "same.txt"
+    assert stat.S_IMODE(same.stat().st_mode) == 0o555
+    assert same.stat().st_ino != (store / first.snapshot / "same.txt").stat().st_ino

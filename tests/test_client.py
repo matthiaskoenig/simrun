@@ -245,7 +245,7 @@ def test_client_records_provenance_only_without_a_store(
     assert prov.snapshot == "" and prov.patch is None
     assert not (tmp_path / "snapshots").exists()
     with pytest.raises(RuntimeError, match="not available"):
-        Client("http://x", "t", None, "upload").source(repo, "model")
+        Client("http://x", "t", None, "store").source(repo, "model")
 
 
 def test_output_archive_extracts_and_file_reads(service, make_client, tmp_path):
@@ -260,3 +260,44 @@ def test_output_archive_extracts_and_file_reads(service, make_client, tmp_path):
     written = client.output_archive(run_id, "squares", to)
     assert written == [to / "squares/0.json"]
     assert (to / "squares/0.json").read_text() == '{"i": 0}'
+
+
+def test_from_env_without_a_store_uploads(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SIMRUN_URL", "http://x")
+    monkeypatch.setenv("SIMRUN_TOKEN", "t")
+    monkeypatch.delenv("SIMRUN_STORE", raising=False)
+    client = Client.from_env()
+    assert (client.store, client.sources) == (None, "upload")
+    monkeypatch.setenv("SIMRUN_STORE", "/mnt/cluster")
+    client = Client.from_env()
+    assert (client.store, client.sources) == (Path("/mnt/cluster"), "store")
+    monkeypatch.delenv("SIMRUN_TOKEN")
+    with pytest.raises(RuntimeError, match="SIMRUN_TOKEN"):
+        Client.from_env()
+
+
+def test_upload_retries_when_the_store_lost_a_file(
+    service, make_client, tmp_path: Path, repo: Path
+) -> None:
+    import shutil
+
+    client = make_client(service, sources="upload")
+    first = client.source(repo, "model")
+    # the latest snapshot is gone between `missing` and the upload: a conflict, sent
+    # again with the files the store then lacks
+    real = client._call
+    removed = []
+
+    def call(method, path, **kw):
+        response = real(method, path, **kw)
+        if path.endswith("/missing") and not removed:
+            store = service.settings.store
+            shutil.rmtree(store / first.snapshot)
+            removed.append(path)
+        return response
+
+    client._call = call
+    (repo / "extra.txt").write_text("x\n")
+    second = client.source(repo, "model")
+    assert removed
+    assert (service.settings.store / second.snapshot / "model.txt").exists()

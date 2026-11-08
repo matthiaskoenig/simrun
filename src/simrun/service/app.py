@@ -43,6 +43,8 @@ from pydantic import (
     ValidationError,
 )
 from starlette.background import BackgroundTask
+from starlette.datastructures import UploadFile
+from starlette.formparsers import MultiPartException, MultiPartParser
 
 from simrun.argo import workflow_name
 from simrun.config import ClusterConfig
@@ -75,7 +77,20 @@ from simrun.service.edits import (
 from simrun.service.index import IndexedRunStore, RunIndex
 from simrun.service.logs import DEFAULT_TAIL_LINES, read_kept, render
 from simrun.service.submission import Submitter, has_model_project
-from simrun.snapshot import SourceProvenance
+from simrun.snapshot import (
+    LATEST_LINK,
+    FileEntry,
+    MissingContent,
+    Scan,
+    SnapshotError,
+    SourceProvenance,
+    check_files,
+    check_name,
+    check_scan,
+    manifest_path,
+    missing,
+    upload,
+)
 from simrun.store import RunRecord, RunState, RunSummary, TaskState
 from simrun.worker import (
     MERGED_MARKER,
@@ -98,12 +113,65 @@ EDIT_POLL_MAX_S = 30.0
 NOT_CONNECTED = "the machine of the session is not connected"
 # a snapshot younger than this is kept by a cleanup: a client may be submitting it
 SNAPSHOT_GRACE_S = 3600.0
-LATEST_LINK = "latest"
+# the multipart body of `POST /snapshots/{name}`, which the route reads itself
+SNAPSHOT_UPLOAD_BODY: dict[str, Any] = {
+    "requestBody": {
+        "required": True,
+        "content": {
+            "multipart/form-data": {
+                "schema": {
+                    "type": "object",
+                    "required": ["scan", "files"],
+                    "properties": {
+                        "scan": {
+                            "type": "string",
+                            "format": "binary",
+                            "description": "the Scan of the tree as JSON",
+                        },
+                        "files": {
+                            "type": "string",
+                            "format": "binary",
+                            "description": "a tar of the files the store lacks",
+                        },
+                    },
+                }
+            }
+        },
+    }
+}
 # an ended run is moved to `runs/<prefix><id>-<pid>` under the lock, then removed
 TRASH_PREFIX = ".trash-"
 PROGRESS_TAIL_BYTES = 8192
 # the most a task which is not over counts towards the progress of its run
 UNFINISHED_TASK_MAX = 0.99
+
+
+async def _read_upload(request: Request, limit: int) -> Any:
+    """The multipart form of an upload, its files spooled to disk.
+
+    Raises:
+        HTTPException: 413 for a body above `limit` bytes, 422 for a body which is
+            not multipart.
+    """
+    length = request.headers.get("content-length", "")
+    if length.isdigit() and int(length) > limit:
+        raise HTTPException(413, f"the upload is larger than {limit} bytes")
+
+    async def bounded() -> AsyncGenerator[bytes]:
+        size = 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > limit:
+                raise HTTPException(413, f"the upload is larger than {limit} bytes")
+            yield chunk
+
+    if not request.headers.get("content-type", "").startswith("multipart/form-data"):
+        raise HTTPException(422, "the body is not multipart/form-data")
+    parser = MultiPartParser(request.headers, bounded(), max_files=2, max_fields=2)
+    try:
+        return await parser.parse()
+    except MultiPartException as error:
+        raise HTTPException(422, error.message) from error
 
 
 def _web_dir() -> Path | None:
@@ -137,6 +205,8 @@ class ServiceSettings(BaseModel):
         web: Directory of the built web app, served at `/ui/` without a token; the
             app itself talks to the API with the token of the user. The one of the
             installation by default (`simrun.local.web_dir`), None serves none.
+        max_upload_bytes: The largest body of an upload of a snapshot; a larger
+            one is refused with 413.
     """
 
     store: Path
@@ -152,6 +222,7 @@ class ServiceSettings(BaseModel):
     build_constraints: Path | None = None
     backend: str | None = None
     web: Path | None = Field(default_factory=_web_dir)
+    max_upload_bytes: int = 2 * 1024**3
 
 
 class SubmitRequest(BaseModel):
@@ -1199,7 +1270,10 @@ class _Service:
         }
         snapshots = self._unreferenced_snapshots(referenced, cutoff)
         patches = [
-            p for s in snapshots if (p := s.with_name(f"{s.name}.patch")).is_file()
+            p
+            for s in snapshots
+            for p in (s.with_name(f"{s.name}.patch"), manifest_path(s))
+            if p.is_file()
         ]
         if request.dry_run:
             runs = [self.store.run_dir(run_id) for run_id in chosen]
@@ -1593,6 +1667,57 @@ def create_app(
             return {"edit": session.model_dump_json()}, False
 
         return _event_response(_stream(request, settings, compute))
+
+    @app.post("/snapshots/{name}/missing")
+    def snapshot_missing(name: str, files: list[FileEntry]) -> list[str]:
+        """The paths of the files whose content the store lacks.
+
+        The files whose content the latest snapshot of `name` has are linked to it
+        by the upload; the client sends the others. 422 for a name or a path which
+        is not one of a tree.
+        """
+        try:
+            check_name(name)
+            check_files(files)
+        except SnapshotError as error:
+            raise HTTPException(422, str(error)) from error
+        return missing(settings.store, name, files)
+
+    @app.post("/snapshots/{name}", openapi_extra=SNAPSHOT_UPLOAD_BODY)
+    async def snapshot_upload(name: str, request: Request) -> SourceProvenance:
+        """Write a snapshot from a scan and a tar of the files the store lacks.
+
+        The multipart body has `scan`, the `Scan` as JSON, and `files`, the tar.
+        422 for a name, a path, a member or a hash which is not the one of a tree,
+        409 for a file whose content neither the tar nor the store has (ask again
+        which are missing), 413 for a body above `max_upload_bytes`.
+        """
+        try:
+            check_name(name)
+        except SnapshotError as error:
+            raise HTTPException(422, str(error)) from error
+        form = await _read_upload(request, settings.max_upload_bytes)
+        try:
+            scan_part, files_part = form.get("scan"), form.get("files")
+            if not isinstance(files_part, UploadFile) or scan_part is None:
+                raise HTTPException(422, "the body needs the parts scan and files")
+            raw = (
+                await scan_part.read()
+                if isinstance(scan_part, UploadFile)
+                else scan_part
+            )
+            try:
+                scan = Scan.model_validate_json(raw)
+                check_scan(scan)
+                return await asyncio.to_thread(
+                    upload, settings.store, name, scan, files_part.file
+                )
+            except (ValidationError, SnapshotError) as error:
+                raise HTTPException(422, str(error)) from error
+            except MissingContent as error:
+                raise HTTPException(409, str(error)) from error
+        finally:
+            await form.close()
 
     @app.post("/estimate")
     def estimate(request: SubmitRequest, caller: Caller) -> dict[str, TaskEstimate]:

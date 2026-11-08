@@ -44,6 +44,8 @@ dependencies = [
 	# the service: the API and its server
 	"fastapi>=0.162",
 	"uvicorn>=0.54.0",
+	# the multipart body of an upload of a snapshot
+	"python-multipart>=0.0.33",
 	# the MCP server of the agents
 	"fastmcp>=4.1",
 	# the cluster: Argo workflows and the API of Kubernetes

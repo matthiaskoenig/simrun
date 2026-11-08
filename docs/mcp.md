@@ -1,6 +1,6 @@
 # Agents and MCP
 
-`simrun-mcp` is an [MCP](https://modelcontextprotocol.io) server on stdio, a local process of an agent: it runs on the machine of the working trees, takes the snapshots of the sources the agent names and calls the service with the token of the agent. It reads `SIMRUN_URL`, `SIMRUN_TOKEN` and `SIMRUN_STORE` like the [command line](command-line.md).
+`simrun-mcp` is an [MCP](https://modelcontextprotocol.io) server on stdio, a local process of an agent: it runs on the machine of the working trees, takes the snapshots of the sources the agent names and calls the service with the token of the agent. It reads `SIMRUN_URL`, `SIMRUN_TOKEN` and the optional `SIMRUN_STORE` like the [command line](command-line.md).
 
 ## Setup
 

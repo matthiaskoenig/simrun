@@ -461,6 +461,55 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/snapshots/{name}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Snapshot Upload
+         * @description Write a snapshot from a scan and a tar of the files the store lacks.
+         *
+         *     The multipart body has `scan`, the `Scan` as JSON, and `files`, the tar.
+         *     422 for a name, a path, a member or a hash which is not the one of a tree,
+         *     409 for a file whose content neither the tar nor the store has (ask again
+         *     which are missing), 413 for a body above `max_upload_bytes`.
+         */
+        post: operations["snapshot_upload_snapshots__name__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/snapshots/{name}/missing": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Snapshot Missing
+         * @description The paths of the files whose content the store lacks.
+         *
+         *     The files whose content the latest snapshot of `name` has are linked to it
+         *     by the upload; the client sends the others. 422 for a name or a path which
+         *     is not one of a tree.
+         */
+        post: operations["snapshot_missing_snapshots__name__missing_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/task-types": {
         parameters: {
             query?: never;
@@ -736,6 +785,27 @@ export interface components {
             /** Tree */
             tree: components["schemas"]["TreeState"][];
             workflow: components["schemas"]["Workflow"];
+        };
+        /**
+         * FileEntry
+         * @description A file of a working tree as a snapshot holds it.
+         *
+         *     Attributes:
+         *         path: Path below the tree, with `/`.
+         *         mode: Mode bits without the write bits (a snapshot is read-only); the ones
+         *             of the link for a symbolic link.
+         *         sha256: Hash of the content of a regular file, None for a link.
+         *         link: Target of a symbolic link, None for a regular file.
+         */
+        FileEntry: {
+            /** Link */
+            link: string | null;
+            /** Mode */
+            mode: number;
+            /** Path */
+            path: string;
+            /** Sha256 */
+            sha256: string | null;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -2388,6 +2458,87 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ServerUsage"][];
+                };
+            };
+        };
+    };
+    snapshot_upload_snapshots__name__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": {
+                    /**
+                     * Format: binary
+                     * @description a tar of the files the store lacks
+                     */
+                    files: string;
+                    /**
+                     * Format: binary
+                     * @description the Scan of the tree as JSON
+                     */
+                    scan: string;
+                };
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SourceProvenance"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    snapshot_missing_snapshots__name__missing_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                name: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["FileEntry"][];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": string[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

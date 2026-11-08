@@ -2,6 +2,7 @@ import json
 import os
 import threading
 import time
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -490,6 +491,8 @@ def test_cleanup_dry_run_and_delete(service, monkeypatch):
     store_root = service.settings.store
     _snapshot(store_root, "snapshots/model/shared", 100)
     _snapshot(store_root, "snapshots/model/own", 1000)
+    (store_root / "snapshots/model/own.files.json").write_text("{}")
+    (store_root / "snapshots/model/shared.files.json").write_text("{}")
     shared = provenance("model", "snapshots/model/shared")
     own = provenance("lib", "snapshots/model/own")
     failed = service.submit(workflow=service.workflow(), sources=[shared, own])["id"]
@@ -520,7 +523,9 @@ def test_cleanup_dry_run_and_delete(service, monkeypatch):
     assert result["bytes_freed"] >= 1000
     assert not service.run_dir(failed).exists()
     assert not (store_root / "snapshots/model/own").exists()
+    assert not (store_root / "snapshots/model/own.files.json").exists()
     assert (store_root / "snapshots/model/shared/data").exists()
+    assert (store_root / "snapshots/model/shared.files.json").exists()
     assert service.run_dir(succeeded).exists()
     assert service.run_dir(young).exists()
 
@@ -1042,3 +1047,246 @@ def test_output_archive_leaves_out_escaping_links(service):
     with tarfile.open(fileobj=io.BytesIO(archive.content)) as tar:
         assert "link" not in tar.getnames()
         assert ".simrun-merged" not in tar.getnames()
+
+
+# --- snapshots through the API ----------------------------------------------
+
+
+def _git_repo(path: Path) -> Path:
+    import subprocess
+
+    path.mkdir()
+    for args in (
+        ["init", "-q", "-b", "main"],
+        ["config", "user.email", "a@b.c"],
+        ["config", "user.name", "T"],
+    ):
+        subprocess.run(["git", "-C", str(path), *args], check=True)
+    (path / "model.txt").write_text("model\n")
+    (path / "sub").mkdir()
+    (path / "sub" / "x.py").write_text("x = 1\n")
+    (path / "run.sh").write_text("#!/bin/sh\n")
+    (path / "run.sh").chmod(0o755)
+    (path / "link").symlink_to("sub/x.py")
+    subprocess.run(["git", "-C", str(path), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(path), "commit", "-q", "-m", "i"], check=True)
+    (path / "model.txt").write_text("changed\n")
+    (path / "new.txt").write_text("new\n")
+    return path
+
+
+def _tar(members: Mapping[str, bytes | str]) -> bytes:
+    import io
+    import tarfile
+
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w") as tar:
+        for name, content in members.items():
+            info = tarfile.TarInfo(name)
+            if isinstance(content, str):
+                info.type = tarfile.SYMTYPE
+                info.linkname = content
+                tar.addfile(info)
+            else:
+                info.size = len(content)
+                tar.addfile(info, io.BytesIO(content))
+    return buffer.getvalue()
+
+
+def _post_snapshot(service, name: str, scan, tar: bytes, token: str = "t-mk"):
+    return service.client.post(
+        f"/snapshots/{name}",
+        files={
+            "scan": ("scan.json", scan.model_dump_json(), "application/json"),
+            "files": ("files.tar", tar, "application/x-tar"),
+        },
+        headers=service.auth(token),
+    )
+
+
+def _scan_of(files: dict[str, bytes], links: dict[str, str] | None = None):
+    import hashlib
+
+    from simrun.snapshot import FileEntry, Scan
+
+    entries = [
+        FileEntry(path=p, mode=0o444, sha256=hashlib.sha256(c).hexdigest(), link=None)
+        for p, c in files.items()
+    ]
+    entries += [
+        FileEntry(path=p, mode=0o777, sha256=None, link=t)
+        for p, t in (links or {}).items()
+    ]
+    return Scan(
+        branch="main",
+        commit="c" * 40,
+        dirty=False,
+        changed_files=[],
+        patch=b"",
+        files=entries,
+    )
+
+
+def test_upload_twice_transfers_the_files_once(
+    service, make_client, in_process, tmp_path: Path
+):
+    from simrun.snapshot import scan
+
+    repo = _git_repo(tmp_path / "model")
+    transport = in_process(service)
+    client = make_client(service, transport=transport, sources="upload")
+    entries = [f.model_dump() for f in scan(repo).files]
+    assert "model.txt" in service.post("/snapshots/model/missing", entries).json()
+    first = client.source(repo, "model")
+    assert service.post("/snapshots/model/missing", entries).json() == []
+    second = client.source(repo, "model")
+    assert first == second
+    # the second upload sent an empty tar
+    uploads = [r for r in transport.requests if r.url.path == "/snapshots/model"]
+    assert len(uploads) == 2
+    assert b"changed\n" in uploads[0].content
+    assert b"changed\n" not in uploads[1].content
+    assert (service.settings.store / first.snapshot / "model.txt").read_text() == (
+        "changed\n"
+    )
+
+
+def test_upload_equals_a_direct_snapshot(service, make_client, tmp_path: Path):
+    from simrun.snapshot import snapshot
+
+    repo = _git_repo(tmp_path / "model")
+    uploaded = make_client(service, sources="upload").source(repo, "model")
+    direct = snapshot(repo, tmp_path / "direct", "model")
+    assert uploaded.model_dump(exclude={"patch"}) == direct.model_dump(
+        exclude={"patch"}
+    )
+    assert uploaded.patch == direct.patch
+    assert uploaded.patch is not None and direct.patch is not None
+    store = service.settings.store
+    assert (store / uploaded.patch).read_bytes() == (
+        tmp_path / "direct" / direct.patch
+    ).read_bytes()
+    up, di = store / uploaded.snapshot, tmp_path / "direct" / direct.snapshot
+    paths = sorted(p.relative_to(di) for p in di.rglob("*"))
+    assert paths == sorted(p.relative_to(up) for p in up.rglob("*"))
+    for rel in paths:
+        a, b = (up / rel).lstat(), (di / rel).lstat()
+        assert (a.st_mode, a.st_size) == (b.st_mode, b.st_size), rel
+        if (di / rel).is_symlink():
+            assert os.readlink(up / rel) == os.readlink(di / rel)
+        elif (di / rel).is_file():
+            assert (up / rel).read_bytes() == (di / rel).read_bytes()
+
+
+def test_a_direct_snapshot_lets_an_upload_send_nothing(service, tmp_path: Path):
+    from simrun.snapshot import scan, snapshot
+
+    repo = _git_repo(tmp_path / "model")
+    snapshot(repo, service.settings.store, "model")
+    entries = [f.model_dump() for f in scan(repo).files]
+    assert service.post("/snapshots/model/missing", entries).json() == []
+
+
+def test_upload_refuses_a_member_outside_the_tree(service):
+    scan = _scan_of({"a.txt": b"a"})
+    response = _post_snapshot(service, "model", scan, _tar({"../x": b"a"}))
+    assert response.status_code == 422, response.text
+    assert not (service.settings.store / "x").exists()
+    assert not list((service.settings.store / "snapshots" / "model").glob("*"))
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["/abs", "a/../b", "../a", "a\0b", ".git/config", "a/.git/x", "./a", "", ".", "a/"],
+)
+def test_snapshot_routes_refuse_a_path_outside_the_tree(service, path):
+    scan = _scan_of({path: b"a"})
+    entries = [f.model_dump() for f in scan.files]
+    assert service.post("/snapshots/model/missing", entries).status_code == 422
+    assert _post_snapshot(service, "model", scan, _tar({})).status_code == 422
+
+
+@pytest.mark.parametrize(
+    "links",
+    [
+        {"l": "/etc/passwd"},
+        {"l": "../out"},
+        {"l": "sub/../../out"},
+        {"d/l": "../../out"},
+        {"l": ""},
+        # lexically inside, but `b` is the root: `b/..` is its parent
+        {"b": ".", "e": "b/../x"},
+        {"a": "b", "b": "a"},  # a loop
+        {"b": "/", "e": "b/x"},
+    ],
+)
+def test_upload_refuses_a_link_out_of_the_tree(service, links):
+    scan = _scan_of({}, links)
+    assert _post_snapshot(service, "model", scan, _tar({})).status_code == 422
+
+
+def test_upload_takes_links_within_the_tree(service):
+    links = {"d/l": "../a.txt", "b": ".", "e": "b/a.txt", "f": "d/../a.txt"}
+    scan = _scan_of({"a.txt": b"a"}, links)
+    response = _post_snapshot(service, "model", scan, _tar({"a.txt": b"a"}))
+    assert response.status_code == 200, response.text
+    root = service.settings.store / response.json()["snapshot"]
+    assert (root / "e").read_text() == "a" and (root / "d" / "l").read_text() == "a"
+
+
+def test_upload_refuses_a_hash_which_does_not_match(service):
+    scan = _scan_of({"a.txt": b"a"})
+    response = _post_snapshot(service, "model", scan, _tar({"a.txt": b"b"}))
+    assert response.status_code == 422
+    assert "hash" in response.json()["detail"]
+
+
+def test_upload_refuses_a_member_which_is_not_a_listed_file(service):
+    scan = _scan_of({"a.txt": b"a"}, {"l": "a.txt"})
+    for members in ({"a.txt": b"a", "b.txt": b"b"}, {"a.txt": b"a", "l": "a.txt"}):
+        assert _post_snapshot(service, "model", scan, _tar(members)).status_code == 422
+
+
+def test_upload_refuses_a_file_below_another_entry(service):
+    scan = _scan_of({"l/x": b"a"}, {"l": "."})
+    assert _post_snapshot(service, "model", scan, _tar({"l/x": b"a"})).status_code == (
+        422
+    )
+
+
+def test_upload_refuses_a_mode_with_write_or_special_bits(service):
+    scan = _scan_of({"a.txt": b"a"})
+    for mode in (0o644, 0o4555):
+        scan.files[0].mode = mode
+        response = _post_snapshot(service, "model", scan, _tar({"a.txt": b"a"}))
+        assert response.status_code == 422
+
+
+def test_upload_without_the_content_of_a_file_conflicts(service):
+    scan = _scan_of({"a.txt": b"a"})
+    response = _post_snapshot(service, "model", scan, _tar({}))
+    assert response.status_code == 409
+    assert "a.txt" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("name", ["..", ".hidden", "a b", "a%2Fb"])
+def test_snapshot_routes_refuse_a_bad_name(service, name):
+    assert service.post(f"/snapshots/{name}/missing", []).status_code in (404, 422)
+    response = _post_snapshot(service, name, _scan_of({}), _tar({}))
+    assert response.status_code in (404, 422)
+
+
+def test_snapshot_routes_need_a_token(service):
+    assert service.client.post("/snapshots/model/missing", json=[]).status_code == 401
+    assert _post_snapshot(
+        service, "model", _scan_of({}), _tar({}), "bad"
+    ).status_code == (401)
+
+
+def test_upload_is_bounded(service_factory):
+    with service_factory(max_upload_bytes=16384) as svc:  # a tar has 10240 bytes
+        scan = _scan_of({"a.bin": b"x" * 32768})
+        response = _post_snapshot(svc, "model", scan, _tar({"a.bin": b"x" * 32768}))
+        assert response.status_code == 413
+        small = _post_snapshot(svc, "model", _scan_of({"a": b"a"}), _tar({"a": b"a"}))
+        assert small.status_code == 200, small.text
