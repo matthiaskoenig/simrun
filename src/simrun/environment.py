@@ -37,6 +37,7 @@ import re
 import subprocess
 import tempfile
 import tomllib
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -339,12 +340,26 @@ def resolve_environment(
     )
 
 
-def image_ref(env: Environment, registry: str) -> str:
-    """Reference of the image of an environment in the registry."""
-    return f"{registry}/simrun-env:{env.lock_sha256[:16]}"
+def image_ref(env: Environment, registry: str, dockerfile_text: str) -> str:
+    """Reference of the image of an environment in the registry.
+
+    Args:
+        env: The environment.
+        registry: The registry of the cluster.
+        dockerfile_text: The Dockerfile of the image (`dockerfile`); with the lock it
+            is the identity of the image, so another base image or other system
+            packages give another image instead of the one built before.
+    """
+    digest = hashlib.sha256(f"{env.lock_sha256}\n{dockerfile_text}".encode())
+    return f"{registry}/simrun-env:{digest.hexdigest()[:16]}"
 
 
-def dockerfile(env: Environment, base_image: str, wheel: str) -> str:
+def dockerfile(
+    env: Environment,
+    base_image: str,
+    wheel: str,
+    system_packages: Sequence[str] = (),
+) -> str:
     """Dockerfile of the image: the dependencies, build backends and `simrun`, no source.
 
     The pinned requirements are written with a heredoc, so no source is copied from the
@@ -355,10 +370,19 @@ def dockerfile(env: Environment, base_image: str, wheel: str) -> str:
         base_image: The base image, with uv and the python of the environment, in
             the registry of the cluster (`ClusterConfig.base_image_ref`).
         wheel: File name of the simrun wheel in the build context, the only file
-            copied; simrun is unpublished, so it is never installed by name.
+            copied; the harness of the service, never installed by name.
+        system_packages: Debian packages installed before the requirements, the
+            shared libraries their wheels link (`ClusterConfig.system_packages`).
     """
+    system = ""
+    if system_packages:
+        system = (
+            "RUN apt-get update && apt-get install -y --no-install-recommends "
+            f"{' '.join(system_packages)} && rm -rf /var/lib/apt/lists/*\n"
+        )
     return (
         f"FROM {base_image}\n"
+        f"{system}"
         "ENV UV_PYTHON_DOWNLOADS=never UV_LINK_MODE=copy VIRTUAL_ENV=/opt/venv "
         'PATH="/opt/venv/bin:$PATH"\n'
         f"RUN uv venv /opt/venv --python {env.python}\n"

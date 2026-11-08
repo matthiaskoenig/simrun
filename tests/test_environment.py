@@ -157,7 +157,29 @@ def test_image_ref(tmp_path: Path) -> None:
     env = Environment(
         lock="l", lock_sha256="ab" * 32, python="3.14", simrun_version="1", editable=[]
     )
-    assert image_ref(env, "reg:5000") == f"reg:5000/simrun-env:{'ab' * 8}"
+    ref = image_ref(env, "reg:5000", "FROM a\n")
+    assert ref.startswith("reg:5000/simrun-env:")
+    assert len(ref.rpartition(":")[2]) == 16
+    assert ref == image_ref(env, "reg:5000", "FROM a\n")
+    # the image of another Dockerfile, e.g. another base image or other system
+    # packages, is another image, not the one built before
+    assert ref != image_ref(env, "reg:5000", "FROM b\n")
+    other = Environment(
+        lock="l", lock_sha256="cd" * 32, python="3.14", simrun_version="1", editable=[]
+    )
+    assert ref != image_ref(other, "reg:5000", "FROM a\n")
+
+
+def test_dockerfile_installs_the_system_packages(tmp_path: Path) -> None:
+    store, model, libs = _make(tmp_path, [])
+    env = _resolve(store, model, libs)
+    text = dockerfile(env, "reg:5000/uv:1", "simrun-0.1.0.whl", ["libexpat1", "zlib1g"])
+    install = next(line for line in text.splitlines() if "apt-get" in line)
+    assert "apt-get install -y --no-install-recommends libexpat1 zlib1g" in install
+    assert "rm -rf /var/lib/apt/lists/*" in install
+    # before the requirements, whose wheels link the libraries
+    assert text.index("apt-get") < text.index("uv pip install")
+    assert "apt-get" not in dockerfile(env, "reg:5000/uv:1", "simrun-0.1.0.whl")
 
 
 def test_dockerfile_has_no_source(tmp_path: Path) -> None:

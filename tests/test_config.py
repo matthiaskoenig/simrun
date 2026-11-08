@@ -1,3 +1,6 @@
+import pytest
+from pydantic import ValidationError
+
 from simrun.config import DEFAULT_BASE_IMAGE, ClusterConfig
 
 
@@ -18,3 +21,12 @@ def test_base_image_of_the_environments() -> None:
         assert (
             ClusterConfig(registry="zot:5000", base_image=base).base_image_ref() == ref
         )
+
+
+def test_system_packages_of_the_environments() -> None:
+    # python-libsbml links the libexpat of the system, which the slim base lacks
+    assert ClusterConfig(registry="zot:5000").system_packages == ["libexpat1"]
+    assert ClusterConfig(registry="zot:5000", system_packages=[]).system_packages == []
+    for bad in ("libexpat1 && curl x", "-y", "Lib", ""):
+        with pytest.raises(ValidationError):
+            ClusterConfig(registry="zot:5000", system_packages=[bad])

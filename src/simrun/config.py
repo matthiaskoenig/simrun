@@ -1,6 +1,8 @@
 """The configuration of the cluster the runs are submitted to."""
 
-from pydantic import BaseModel
+from typing import Annotated
+
+from pydantic import BaseModel, StringConstraints
 
 # the base image of the images of the environments: uv with the python of the
 # service, pinned by the digest of its index, which the registry mirrors (the tag
@@ -9,6 +11,8 @@ DEFAULT_BASE_IMAGE = (
     "astral-sh/uv:0.13.7-python3.14-trixie-slim"
     "@sha256:e80c05a310400cfc90af00b5b7271ef9ad24816e3265e1162af8a678e1aad099"
 )
+# the name of a Debian package, as `apt-get install` takes it
+DebianPackage = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9+.-]+$")]
 
 
 class ClusterConfig(BaseModel):
@@ -33,6 +37,9 @@ class ClusterConfig(BaseModel):
             uv and the python of the service (`ServiceSettings.python`); a
             repository of `registry` (the mirror of an image of another registry)
             unless it names a registry host itself.
+        system_packages: The Debian packages the images of the environments install
+            on the base image: the shared libraries which wheels link but do not
+            bundle, `libexpat1` for python-libsbml.
         grace_s: Seconds a worker has to stop after SIGTERM.
         ttl_after_finished_s: Seconds a finished workflow is kept.
     """
@@ -48,6 +55,7 @@ class ClusterConfig(BaseModel):
     buildkit: str = "tcp://buildkitd.simrun:1234"
     buildctl_image: str = "moby/buildkit:v0.34.2-rootless"
     base_image: str = DEFAULT_BASE_IMAGE
+    system_packages: list[DebianPackage] = ["libexpat1"]
     grace_s: int = 60
     ttl_after_finished_s: int = 86400
 
