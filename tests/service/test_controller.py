@@ -1,4 +1,5 @@
 import shutil
+import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -327,8 +328,8 @@ class _Orphaning(FakeBackend):
 
     broken = True
 
-    def submit(self, manifest):
-        super().submit(manifest)
+    def submit(self, record, plans, types, cluster):
+        super().submit(record, plans, types, cluster)
         raise RuntimeError("timeout")
 
     def cancel(self, name):
@@ -456,9 +457,9 @@ def test_poll_during_submit(service):
     backend = service.backend
     original = FakeBackend.submit
 
-    def submit(self, manifest):
+    def submit(self, *args):
         service.controller.reconcile()  # a poll lands while the submission is in flight
-        return original(self, manifest)
+        return original(self, *args)
 
     backend.submit = submit.__get__(backend)
     summary = service.submit(reserve="srv-02")
@@ -471,9 +472,9 @@ def test_cancel_during_submit_cancels_the_workflow(service):
     backend = service.backend
     original = FakeBackend.submit
 
-    def submit(self, manifest):
-        service.controller.cancel(manifest["metadata"]["labels"]["simrun/run"])
-        return original(self, manifest)
+    def submit(self, record, *args):
+        service.controller.cancel(record.id)
+        return original(self, record, *args)
 
     backend.submit = submit.__get__(backend)
     summary = service.submit()
@@ -551,11 +552,11 @@ def test_cancel_and_delete_during_submit(service):
     backend = service.backend
     original = FakeBackend.submit
 
-    def submit(self, manifest):
-        run_id = manifest["metadata"]["labels"]["simrun/run"]
+    def submit(self, record, *args):
+        run_id = record.id
         service.controller.cancel(run_id)
         shutil.rmtree(service.run_dir(run_id))  # as DELETE does
-        return original(self, manifest)
+        return original(self, record, *args)
 
     backend.submit = submit.__get__(backend)
     run_id = service.submit(wait=False)["id"]
@@ -723,3 +724,35 @@ def test_cancel_and_delete_before_the_reservation_releases_the_node(service):
     assert ("cancel", name) in backend.calls
     (node,) = [n for n in backend.nodes() if n.name == "srv-02"]
     assert node.reserved_by is None
+
+
+def test_a_woken_controller_reconciles_before_the_poll(service_factory):
+    with service_factory(poll_s=30.0) as service:
+        run_id = service.submit()["id"]
+        name = service.name(run_id)
+        time.sleep(0.3)  # the loop waits for its next poll
+        service.backend.finish(name)
+        service.controller.wake()
+        deadline = time.monotonic() + 2
+        while service.store.read(run_id).state != "succeeded":
+            assert time.monotonic() < deadline
+            time.sleep(0.02)
+
+
+def test_wait_for_wake(service):
+    controller = service.controller
+    start = time.monotonic()
+    controller.wait_for_wake(0.1)
+    assert time.monotonic() - start >= 0.1
+    controller.wake()
+    start = time.monotonic()
+    controller.wait_for_wake(5)
+    assert time.monotonic() - start < 1
+    start = time.monotonic()  # the wake flag was cleared
+    controller.wait_for_wake(0.1)
+    assert time.monotonic() - start >= 0.1
+
+
+def test_the_app_subscribes_the_controller_to_the_backend(service_factory):
+    with service_factory() as service:
+        assert service.backend.subscribed == [service.controller.wake]

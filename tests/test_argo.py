@@ -566,3 +566,13 @@ def test_worker_roles() -> None:
         env = _env(_template(manifest, task))
         for name in ("SIMRUN_WORKER", "SIMRUN_ROLE", "SIMRUN_STALE_S"):
             assert name not in env
+
+
+def test_a_source_without_snapshot_is_not_editable() -> None:
+    record = _record()
+    record.sources.append(
+        record.sources[0].model_copy(update={"name": "plain", "snapshot": ""})
+    )
+    manifest = to_argo(record, PLANS, TYPES, CONFIG)
+    worker = _env(_template(manifest, "squares-w0"))
+    assert worker["SIMRUN_EDITABLE"] == "/store/snapshots/sbmlsim/00"

@@ -28,7 +28,6 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import simrun
-from simrun.argo import to_argo
 from simrun.config import ClusterConfig
 from simrun.environment import (
     BUILD_CONSTRAINTS,
@@ -133,7 +132,9 @@ class Submitter:
             SubmissionError: The environment cannot be resolved, the service has no
                 simrun wheel to build with, or the build fails.
         """
-        if not has_model_project(self.store.root, record.sources):
+        if not self.backend.runs_images or not has_model_project(
+            self.store.root, record.sources
+        ):
             return record.image, None
         model, *libraries = record.sources
         try:
@@ -215,17 +216,16 @@ class Submitter:
             record = built
             if lock is not None:
                 (self.store.run_dir(run_id) / ENVIRONMENT_LOCK).write_text(lock)
-            try:
-                manifest = to_argo(record, task_plans(record), self.types, self.cluster)
-            except ValueError as error:
-                raise SubmissionError(str(error)) from error
             if record.reserve is not None:
                 self._reserve(record.reserve, run_id)
         except SubmissionError as error:
             self._fail(record, str(error))
             return
         try:
-            self.backend.submit(manifest)
+            self.backend.submit(record, task_plans(record), self.types, self.cluster)
+        except ValueError as error:  # the run cannot be built: it fails with the reason
+            self._fail(record, str(error))
+            return
         except Exception as error:
             self._abort(record, error)
             return

@@ -15,6 +15,7 @@ from simrun.service import controller as controller_module
 from simrun.service.app import serve, unknown_settings
 from simrun.service.auth import Identity, load_tokens, priority_of
 from simrun.service.backend import Placement
+from simrun.service.controller import task_plans
 from simrun.snapshot import SourceProvenance
 from simrun.store import RunStore
 from simrun.testing import FakeBackend
@@ -722,7 +723,7 @@ def test_serve_reads_config(tmp_path, monkeypatch):
 
 
 class _FailingSubmit(FakeBackend):
-    def submit(self, manifest):
+    def submit(self, record, plans, types, cluster):
         raise RuntimeError("no cluster")
 
 
@@ -887,10 +888,12 @@ def test_a_restart_resumes_a_submission_in_flight(
 def test_a_workflow_submitted_twice_is_submitted_once(service):
     run_id = service.submit()["id"]
     name = service.name(run_id)
-    manifest = service.backend.manifests[name]
     service.backend.start(name)
     # a resumed submission submits the workflow of the run again
-    assert service.backend.submit(manifest) == name
+    record = service.store.read(run_id)
+    cluster = service.settings.cluster
+    submit = (record, task_plans(record), service.controller.types, cluster)
+    assert service.backend.submit(*submit) == name
     assert service.backend.status(name).phase == "Running"
 
 
@@ -926,3 +929,34 @@ def test_fake_placements_end_with_the_workflow(service):
     assert service.backend.placements() == [placement]
     service.backend.finish(name)
     assert service.backend.placements() == []
+
+
+class _NoImages(FakeBackend):
+    runs_images = False
+
+    def submit(self, record, plans, types, cluster):
+        self.calls.append(("image", record.image))
+        record = record.model_copy(update={"image": "x"})  # for the manifest
+        return super().submit(record, plans, types, cluster)
+
+
+def test_a_backend_without_images_does_not_build(service_factory, tmp_path):
+    with service_factory(_NoImages(), simrun_wheel=_wheel(tmp_path)) as service:
+        source = _model(service.settings.store)
+        run_id = service.submit(sources=[source])["id"]
+        record = service.store.read(run_id)
+    assert record.state == "queued"
+    assert record.image is None
+    assert ("image", None) in service.backend.calls
+    assert not [c for c in service.backend.calls if c[0] == "build_image"]
+    assert not (service.run_dir(run_id) / "environment.lock").exists()
+
+
+def test_a_run_the_backend_refuses_fails_with_its_message(service, monkeypatch):
+    def refuse(self, record, plans, types, cluster):
+        raise ValueError("no image for task x")
+
+    monkeypatch.setattr(FakeBackend, "submit", refuse)
+    summary = service.submit()
+    assert summary["state"] == "failed"
+    assert summary["message"] == "no image for task x"

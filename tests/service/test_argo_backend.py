@@ -24,6 +24,17 @@ from simrun.service.argo_backend import (
 from simrun.service.backend import FailedAttempt, Placement, PodLog
 
 WF = "simrun-r1"
+
+
+def _run(monkeypatch: pytest.MonkeyPatch) -> tuple[Any, Any, Any, Any]:
+    """The arguments of `submit` for a run whose manifest is a stub."""
+    monkeypatch.setattr(
+        "simrun.service.argo_backend.to_argo",
+        lambda *_: {"metadata": {"name": WF}},
+    )
+    return None, {}, {}, ClusterConfig(registry="localhost:5000")
+
+
 CONFIG = ClusterConfig(registry="k3d-simrun-registry:5000")
 
 
@@ -519,9 +530,11 @@ def _granted() -> dict[str, set[tuple[str, str, str]]]:
     return granted
 
 
-def test_the_service_account_may_do_what_the_backend_does(tmp_path: Path) -> None:
+def test_the_service_account_may_do_what_the_backend_does(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     created, calls = _fake_backend()
-    created.submit({"metadata": {"name": WF}})
+    created.submit(*_run(monkeypatch))
     created.status(WF)
     created.cancel(WF)
     created.stop(WF)
@@ -688,19 +701,21 @@ def test_the_infrastructure_stays_off_the_worker_nodes() -> None:
         ]
 
 
-def test_a_workflow_which_exists_is_taken_as_submitted() -> None:
+def test_a_workflow_which_exists_is_taken_as_submitted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     def exists(*args: Any, **kw: Any) -> None:
         raise ApiException(status=409)
 
     created, _ = _fake_backend(create_namespaced_custom_object=exists)
-    assert created.submit({"metadata": {"name": WF}}) == WF
+    assert created.submit(*_run(monkeypatch)) == WF
 
     def forbidden(*args: Any, **kw: Any) -> None:
         raise ApiException(status=403)
 
     created, _ = _fake_backend(create_namespaced_custom_object=forbidden)
     with pytest.raises(ApiException):
-        created.submit({"metadata": {"name": WF}})
+        created.submit(*_run(monkeypatch))
 
 
 def test_attempt_of_a_pod() -> None:

@@ -294,6 +294,20 @@ class Controller:
         # resolves, builds and submits a run from its record (`Submitter.run`); a
         # submission a stopped service left is resumed with it
         self.resume: Callable[[str], None] | None = None
+        self._woken = threading.Event()
+
+    def wake(self) -> None:
+        """Make the control loop reconcile now instead of at its next poll."""
+        self._woken.set()
+
+    def wait_for_wake(self, timeout_s: float) -> None:
+        """Block until woken or `timeout_s` passed; clears the wake.
+
+        Args:
+            timeout_s: The longest time to wait, in seconds.
+        """
+        self._woken.wait(timeout_s)
+        self._woken.clear()
 
     def start_submission(self, run_id: str, job: Callable[[str], None]) -> None:
         """Run the submission of a run in the background, see `in_flight`.

@@ -1,11 +1,15 @@
 """The backend the service runs workflows on: Argo Workflows, or a fake in tests."""
 
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Protocol
 
 from pydantic import BaseModel, Field
 
-from simrun.planner import Node
+from simrun.config import ClusterConfig
+from simrun.planner import Node, TaskPlan
+from simrun.plugins import TaskType
+from simrun.store import RunRecord
 
 # phases of an Argo workflow or node which do not change any more
 FINAL_PHASES = frozenset({"Succeeded", "Failed", "Error"})
@@ -104,8 +108,40 @@ class BackendStatus(BaseModel):
 class Backend(Protocol):
     """What the service needs of a cluster."""
 
-    def submit(self, manifest: dict[str, Any]) -> str:
-        """Submit a workflow manifest and return the name of the workflow."""
+    runs_images: bool
+    """Whether the runs of the backend are containers: the service resolves the
+    environment of a run and builds its image. False: it keeps the image of the record."""
+
+    def submit(
+        self,
+        record: RunRecord,
+        plans: dict[str, TaskPlan],
+        types: dict[str, TaskType],
+        cluster: ClusterConfig,
+    ) -> str:
+        """Submit a run and return the name of its workflow.
+
+        Args:
+            record: The run, with its image set when the backend `runs_images`.
+            plans: The plan of every task by id.
+            types: The task types by name.
+            cluster: The configuration of the cluster.
+
+        Returns:
+            The name of the workflow of the run (`argo.workflow_name`).
+
+        Raises:
+            ValueError: The run cannot be submitted (e.g. a task has no image); the
+                message is the one of the failed run.
+        """
+        ...
+
+    def subscribe(self, callback: Callable[[], None]) -> None:
+        """Register a callback the backend calls when the status of a run changed.
+
+        The service registers the wake of its controller, so a backend which knows
+        of a change makes it reconcile at once.
+        """
         ...
 
     def status(self, name: str) -> BackendStatus:

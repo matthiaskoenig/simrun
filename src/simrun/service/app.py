@@ -1270,7 +1270,7 @@ async def _control(controller: Controller, poll_s: float) -> None:
             await asyncio.to_thread(controller.reconcile)
         except Exception:
             logger.exception("the reconciliation failed")
-        await asyncio.sleep(poll_s)
+        await asyncio.to_thread(controller.wait_for_wake, poll_s)
 
 
 def create_app(
@@ -1289,6 +1289,7 @@ def create_app(
         The app; its lifespan runs the controller every `settings.poll_s` seconds.
     """
     service = _Service(settings, backend, types or load_task_types())
+    backend.subscribe(service.controller.wake)
     bearer = HTTPBearer(auto_error=False)
 
     def identity(
@@ -1312,6 +1313,7 @@ def create_app(
             yield
         finally:
             task.cancel()
+            service.controller.wake()  # frees the thread of the wait
             with suppress(asyncio.CancelledError):
                 await task
             await asyncio.to_thread(service.controller.close)
