@@ -4,6 +4,7 @@ import dataclasses
 import json
 import os
 import signal
+import subprocess
 import sys
 import threading
 import time
@@ -23,6 +24,7 @@ from simrun.resources import ResolvedResources
 from simrun.service import local_backend
 from simrun.service.backend import FailedAttempt
 from simrun.service.local_backend import LocalBackend
+from simrun.snapshot import SourceProvenance
 from simrun.store import RunRecord, RunState, RunStore, TaskState
 from simrun.worker import MERGED_MARKER, PROVENANCE_FILE, SETTINGS_FILE
 from simrun.workflow import Priority, SplitMode, Workflow
@@ -55,6 +57,7 @@ def _submit(
     store = RunStore(backend.store)
     workflow = Workflow(name="local", tasks=tasks)
     record.setdefault("id", store.new_run_id())
+    record.setdefault("sources", [])
     run = RunRecord(
         submitted_by="mk",
         owner="mk",
@@ -62,7 +65,6 @@ def _submit(
         priority=Priority.OWNER,
         group=None,
         workflow=workflow,
-        sources=[],
         image=None,
         reserve=None,
         state=RunState.SUBMITTING,
@@ -179,9 +181,20 @@ def test_a_split_task_then_a_command_run_to_their_end(backends, tmp_path):
         (task_dir / "squares" / "workers" / "squares-w0-0.json").read_text()
     )
     assert report["processes"] == 2
+    # the memory of its process tree, not the one of the cgroup of the machine
+    assert 0 < report["peak_memory_bytes"] < 4 * worker.GIB
+    assert report["oom_kills"] == 0
     logs = backend.logs(name, "squares")
     assert [(log.node, log.done) for log in logs] == [("squares-w0", True)]
     assert backend.placements() == []
+
+
+def test_a_process_reads_its_memory_from_its_process_tree(backends):
+    backend = backends()
+    code = "import os; print('source', os.environ['SIMRUN_MEMORY_SOURCE'])"
+    _, name = _submit(backend, [_command("a", code)])
+    assert _wait(backend, name).phase == "Succeeded"
+    assert "source process" in _log(backend, name, "a")
 
 
 def test_a_failed_task_omits_its_dependants(backends):
@@ -560,3 +573,132 @@ def test_a_closed_backend_refuses_a_run(backends):
     with pytest.raises(RuntimeError, match="closed"):
         _submit(backend, [_command("late", "print('late')")])
     assert backend.placements() == []
+
+
+def _snapshot_source(backend: LocalBackend) -> SourceProvenance:
+    """A snapshot in the store of the backend, an empty project."""
+    (backend.store / "snapshots" / "m" / "1").mkdir(parents=True)
+    return SourceProvenance(
+        name="m",
+        branch="main",
+        commit="0" * 40,
+        dirty=False,
+        changed_files=[],
+        diff_sha256="0" * 64,
+        snapshot="snapshots/m/1",
+        patch=None,
+    )
+
+
+def test_without_an_installer_a_snapshot_run_fails_with_the_cause(
+    backends, monkeypatch
+):
+    from simrun.service import local_env
+
+    monkeypatch.setattr(local_env.shutil, "which", lambda name, **kw: None)
+    monkeypatch.setattr(local_env.importlib.util, "find_spec", lambda name: None)
+    backend = backends()
+    source = _snapshot_source(backend)
+    _, name = _submit(
+        backend, [_command("a", "pass"), _command("b", "pass")], sources=[source]
+    )
+    status = _wait(backend, name)
+    assert status.tasks == {"a": "Failed", "b": "Failed"}
+    assert status.failed["a"][0].exit_code == worker.EXIT_CONFIGURATION
+    assert "neither uv nor pip is installed" in _log(backend, name, "a")
+    # the venv is created once: the other task names the log with the cause
+    assert "see the log of a" in _log(backend, name, "b")
+
+
+def test_a_kill_in_a_cancelled_run_is_not_retried(backends, tmp_path):
+    backend = backends(cores=1)
+    ready = tmp_path / "ready"
+    # exits 137 on SIGTERM, as a kill for memory would, which is retried otherwise
+    code = (
+        "import os, pathlib, signal, sys, time; "
+        "signal.signal(signal.SIGTERM, lambda *_: os._exit(137)); "
+        "pathlib.Path(sys.argv[1]).touch(); time.sleep(30)"
+    )
+    _, name = _submit(backend, [_command("a", code, str(ready))])
+    deadline = time.monotonic() + DEADLINE_S
+    while not ready.exists():
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    backend.cancel(name)
+    status = _wait(backend, name, lambda s: s.tasks.get("a") == "Failed")
+    assert status.failed == {"a": [FailedAttempt(attempt=0, exit_code=137)]}
+    time.sleep(0.2)  # no attempt follows
+    assert backend.status(name).tasks == {"a": "Failed"}
+    assert [log.pod for log in backend.logs(name, "a")] == [f"{name}-a-0"]
+    assert backend.placements() == []
+
+
+def test_ended_runs_leave_the_active_ones_and_only_the_latest_are_kept(
+    backends, monkeypatch
+):
+    monkeypatch.setattr(local_backend, "ENDED_KEPT", 1)
+    backend = backends()
+    _, first = _submit(backend, [_command("a", "print('first')")])
+    assert _wait(backend, first).phase == "Succeeded"
+    assert first not in backend._active
+    assert backend.status(first).phase == "Succeeded"
+    _, second = _submit(backend, [_command("a", "print('second')")])
+    assert _wait(backend, second).phase == "Succeeded"
+    assert backend._active == {}
+    with pytest.raises(KeyError):
+        backend.status(first)
+    # the logs of a run the backend forgot are read from the store
+    assert "first" in _log(backend, first, "a")
+
+
+def test_kill_orphans_kills_only_the_processes_of_their_files(backends, tmp_path):
+    backend = backends()
+    sleep = [PYTHON, "-c", "import time; time.sleep(60)"]
+    orphan = subprocess.Popen(sleep, start_new_session=True)
+    other = subprocess.Popen(sleep, start_new_session=True)
+    try:
+        logs = backend.store / "runs" / "r1" / "tasks" / "a" / "logs"
+        logs.mkdir(parents=True)
+        for name, process, argv in (
+            ("a-0", orphan, sleep),
+            # a reused pid: another command line
+            ("a-1", other, [PYTHON, "-c", "pass"]),
+        ):
+            record = {
+                "pid": process.pid,
+                "start": local_backend._start_time(process.pid),
+                "argv": argv,
+                "container": None,
+            }
+            (logs / f"{name}.pid").write_text(json.dumps(record))
+        (logs / "a-2.pid").write_text("not json")
+        assert backend.kill_orphans() == 1
+        assert orphan.wait(DEADLINE_S) == -signal.SIGKILL
+        assert other.poll() is None
+        assert list(logs.glob("*.pid")) == []
+    finally:
+        for process in (orphan, other):
+            process.kill()
+            process.wait()
+
+
+def test_a_running_process_is_named_by_its_pid_file(backends, tmp_path):
+    backend = backends()
+    ready = tmp_path / "ready"
+    code = (
+        "import pathlib, sys, time; pathlib.Path(sys.argv[1]).touch(); time.sleep(30)"
+    )
+    run, name = _submit(backend, [_command("a", code, str(ready))])
+    logs = backend.store / "runs" / run.id / "tasks" / "a" / "logs"
+    deadline = time.monotonic() + DEADLINE_S
+    while not (ready.exists() and (logs / "a-0.pid").exists()):
+        assert time.monotonic() < deadline
+        time.sleep(0.01)
+    record = json.loads((logs / "a-0.pid").read_text())
+    assert os.getpgid(record["pid"]) == record["pid"]
+    assert record["argv"][-2:] == [code, str(ready)]
+    # the backend's own runs are not orphans
+    assert backend.kill_orphans() == 0
+    backend.cancel(name)
+    _wait(backend, name, lambda s: s.tasks["a"] == "Failed")
+    assert not (logs / "a-0.pid").exists()  # removed before the end is recorded

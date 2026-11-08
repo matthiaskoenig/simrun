@@ -112,6 +112,10 @@ class Backend(Protocol):
     """Whether the runs of the backend are containers: the service resolves the
     environment of a run and builds its image. False: it keeps the image of the record."""
 
+    extra_workers: bool
+    """Whether a split task may run as several pods, its coordinator and extra
+    workers. False: the service plans one pod per split task, e.g. on one machine."""
+
     def submit(
         self,
         record: RunRecord,

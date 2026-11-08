@@ -816,6 +816,8 @@ class _Service:
             key = resource_key(task_type, task.settings, model)
             resources = self.resources.resolve(key, task_type.hint, task.resources)
             mode = request.split or task.split or workflow.split
+            if not self.backend.extra_workers:
+                mode = SplitMode.SINGLE_SERVER
             try:
                 plan = plan_task(
                     task, task_type, resources, nodes, mode, priority, units
