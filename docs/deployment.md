@@ -8,7 +8,7 @@
 | priorities | `priority-classes.yaml` | the six priority classes of simrun, each a Kueue `WorkloadPriorityClass` and a Kubernetes `PriorityClass` of the same value, see [Priorities and preemption](concepts.md#priorities-and-preemption) |
 | Kueue v0.20.5 | `kueue/` | the release manifests, committed unchanged, and the queue: a `Topology` by host, a `ResourceFlavor` over the nodes labelled `simrun/worker=true`, the `ClusterQueue` `simrun`, which preempts lower priorities, and the `LocalQueue` `simrun` |
 | Argo Workflows v4.1.6 | `argo/` | the release manifests of a namespace install, committed unchanged, the configuration of the controller, its requeue time of 2 s instead of 10 s (`requeue.yaml`, so a run shows running soon after its pods start) and the service account `simrun-workflow` of the pods |
-| run store | `store-settings.yaml`, `store.yaml` | the run store on NFS (csi-driver-nfs), mounted by the service and every pod |
+| run store | `store-settings.yaml`, `store.yaml` | the run store on NFS (csi-driver-nfs), mounted by the service and every pod with `nfsvers=4.2` and `lookupcache=positive` |
 | registry | `zot.yaml` | [Zot](https://zotregistry.dev), the image registry inside the network |
 | builds | `buildkit.yaml` | the BuildKit daemon, which builds the images of the environments |
 | service | `simrun.yaml` | the service: its settings, its tokens, its volumes and its rights |
@@ -20,6 +20,8 @@ kubectl apply --server-side -k deploy/cluster
 ```
 
 The resources of Kueue are accepted once its CRDs and its webhook are up, so the first apply may have to be repeated.
+
+The store is mounted with `lookupcache=positive`: the NFS client caches no negative lookups, so a file a pod wrote, e.g. the marker `out/.simrun-merged` of a merge, is seen by the service at once even when it looked for the file before. The mount options are the ones of the StorageClass when the volume of the claim was provisioned: an existing PersistentVolume keeps its options, so add the option to `spec.mountOptions` of that PersistentVolume (or provision it again) and restart the pods which mount it. Without the option the service waits up to two minutes for the marker of a merge before it fails the task.
 
 ## Nodes
 

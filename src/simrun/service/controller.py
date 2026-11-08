@@ -3,13 +3,17 @@
 The state of a run is the service's, not the one of Argo (Ruling 17b): a split task is
 done when its `<task>-merge` node succeeded (when its coordinator `<task>-w0` merges,
 `TaskPlan.coordinator_merges`, there is no such node and it is done when `<task>-w0`
-succeeded and wrote `out/.simrun-merged`; without the marker the harness of its image
-is one which does not merge, from simrun 0.1.0, and the task failed) and failed when
+succeeded and wrote `out/.simrun-merged`; without the marker it waits for it, running,
+up to `MERGE_MARKER_GRACE_S` from the first poll which saw the coordinator succeeded
+(`RunRecord.merge_pending`), and fails after it: the harness of its image is one which
+does not merge, from simrun 0.1.0) and failed when
 its `<task>-w0` or its merge failed (after the retries of Argo), an extra worker
 never fails a task; an
 unsplit task is its node `<task>`. When every task is done the run succeeded, when a
 task failed the run failed; in both cases the controller stops the workflow, so extra
-workers still waiting for admission go away, and releases the reserved node.
+workers still waiting for admission go away, and releases the reserved node. A run
+whose workflow ended is not failed for its phase while a task waits for the marker of
+its merge.
 
 A pod is retried once with the retry memory after a kill for memory: a worker, a
 merge or an unsplit task killed for memory again with the retry memory fails the run
@@ -21,8 +25,9 @@ memory killer in its cgroup; a pod killed after its grace period was evicted.
 The states of the tasks and the out of memory kills are stored in the record at every
 poll. When the workflow is gone (deleted by its time to live before the controller saw
 its end) the tasks are resolved from these states and from the store: a split task
-whose merge wrote `out/.simrun-merged` is done (Ruling 23); only the tasks still
-undetermined fail.
+whose merge wrote `out/.simrun-merged` is done (Ruling 23), one which waits for the
+marker of its merge keeps the run open until the marker is there or its wait is over;
+only the tasks still undetermined fail.
 
 The reports of the workers of a task (of `simrun-exec` for an unsplit plugin task,
 by the task id) are recorded as resource observations once the state of the task is
@@ -49,11 +54,13 @@ one before stopped; a record which cannot be read is logged and skipped.
 import dataclasses
 import json
 import logging
+import os
 import re
 import threading
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from pathlib import Path
 
 from simrun import podspec
 from simrun.planner import PodShape, TaskPlan
@@ -93,6 +100,11 @@ SKIPPED_PHASES = frozenset({"Skipped", "Omitted"})
 # when it has none yet) and while no submission of it runs in this process, before
 # the controller takes the submission as lost
 SUBMIT_GRACE_S = 120.0
+# seconds a split task whose coordinator merges and succeeded waits for the marker of
+# its merge before it fails: the service reads the store over NFS, whose client may
+# answer a lookup from its attribute cache (up to 60 s) or from a cached negative entry
+# for a while after a pod wrote the marker
+MERGE_MARKER_GRACE_S = 120.0
 # submissions which resolve, build and submit at the same time
 SUBMIT_WORKERS = 8
 # a marker per report of a task recorded as an observation
@@ -107,11 +119,33 @@ EXIT_MEANINGS = {
 LOGS_WAIT_S = 600.0
 
 
+def has_merge_marker(task_dir: Path) -> bool:
+    """Whether the output of a task has the marker of a merge, `out/.simrun-merged`.
+
+    The directories are listed instead of looking up the marker: on NFS a listing
+    revalidates the directory, while a lookup may answer from a cached negative entry
+    of a lookup before the pod wrote the file. The task directory is listed first, so
+    a cached negative entry of `out/` itself does not hide it either.
+
+    Args:
+        task_dir: The directory of the task in the run store.
+
+    Returns:
+        Whether the marker exists; not when `out/` does not exist.
+    """
+    try:
+        return "out" in os.listdir(task_dir) and MERGED_MARKER in os.listdir(
+            task_dir / "out"
+        )
+    except FileNotFoundError, NotADirectoryError:
+        return False
+
+
 def _split_state(
     task_id: str,
     nodes: dict[str, str],
     coordinator_merges: bool,
-    merged: Callable[[], bool],
+    merge_state: Callable[[], TaskState],
 ) -> TaskState:
     """The state of a split task from the phases of its nodes.
 
@@ -119,13 +153,13 @@ def _split_state(
         task_id: The task.
         nodes: The phases of the nodes of the workflow by name.
         coordinator_merges: Whether its coordinator merges (no merge node).
-        merged: Whether its output has the marker of a merge, asked only when its
-            coordinator which merges succeeded.
+        merge_state: The state of the task after its coordinator which merges
+            succeeded, asked only then.
     """
     w0 = nodes.get(f"{task_id}-w0")
     merge = nodes.get(f"{task_id}-merge")
     if coordinator_merges and w0 == "Succeeded":
-        return TaskState.DONE if merged() else TaskState.FAILED
+        return merge_state()
     extra = re.compile(rf"{re.escape(task_id)}-extra(\(\d+:\d+\))?")
     extras = [phase for node, phase in nodes.items() if extra.fullmatch(node)]
     if merge == "Succeeded":
@@ -179,7 +213,7 @@ def task_states(
     types: dict[str, TaskType],
     status: BackendStatus,
     plans: dict[str, TaskPlan],
-    merged: Callable[[str], bool],
+    merge_state: Callable[[str], TaskState],
 ) -> dict[str, TaskState]:
     """The state of every task of a workflow from the phases of its DAG nodes.
 
@@ -192,11 +226,12 @@ def task_states(
         workflow: The workflow of the run.
         types: The task types by name.
         status: The status of the workflow in the backend.
-        plans: The plans of the tasks, by id; a split task whose plan merges in the
-            coordinator is done when `<task>-w0` succeeded and `merged` holds.
-        merged: Whether the output of a task by id has the marker of a merge: a
-            coordinator which succeeded without it ran a harness which does not
-            merge, and its task failed.
+        plans: The plans of the tasks, by id; the state of a split task whose plan
+            merges in the coordinator is `merge_state` once `<task>-w0` succeeded.
+        merge_state: The state of a task by id whose coordinator which merges
+            succeeded: done with the marker of its merge, running while the marker
+            is awaited, failed when the coordinator ran a harness which does not
+            merge.
 
     Returns:
         The state of every task by id.
@@ -209,7 +244,7 @@ def task_states(
                 task.id,
                 status.tasks,
                 plan is not None and plan.coordinator_merges,
-                lambda task_id=task.id: merged(task_id),
+                lambda task_id=task.id: merge_state(task_id),
             )
         else:
             states[task.id] = _unsplit_state(status.tasks.get(task.id))
@@ -275,8 +310,18 @@ def closed(
             "pending_release": record.reserve,
             # the logs of its pods, kept once they ended (or the workflow is gone)
             "pending_logs": record.backend_name is not None,
+            "merge_pending": {},
             **update,
         }
+    )
+
+
+def _unmerged_message(task_id: str) -> str:
+    """The failure of a task whose coordinator succeeded without its merge."""
+    return (
+        f"task {task_id} failed: {task_id}-w0 ended without merging the units; the "
+        "harness of its image does not merge in the coordinator, it needs a simrun "
+        "newer than 0.1.0"
     )
 
 
@@ -632,8 +677,36 @@ class Controller:
 
     def _merged(self, record: RunRecord, task_id: str) -> bool:
         """Whether the output of a task has the marker of a merge."""
-        task_dir = self.store.run_dir(record.id) / "tasks" / task_id
-        return (task_dir / "out" / MERGED_MARKER).is_file()
+        return has_merge_marker(self.store.run_dir(record.id) / "tasks" / task_id)
+
+    def _merge_state(
+        self,
+        record: RunRecord,
+        task_id: str,
+        pending: dict[str, datetime],
+        now: datetime,
+    ) -> TaskState:
+        """The state of a split task whose coordinator which merges succeeded.
+
+        Done with the marker of its merge; without it running for
+        `MERGE_MARKER_GRACE_S` from the first time it was seen without it, failed
+        after: its coordinator ran a harness which does not merge.
+
+        Args:
+            record: The record of the run.
+            task_id: The task.
+            pending: Since when tasks wait for their marker, by id, updated: a task
+                seen without its marker for the first time is added, a task with
+                its marker removed.
+            now: The time of the poll.
+        """
+        if self._merged(record, task_id):
+            pending.pop(task_id, None)
+            return TaskState.DONE
+        since = pending.setdefault(task_id, now)
+        if (now - since).total_seconds() < MERGE_MARKER_GRACE_S:
+            return TaskState.RUNNING
+        return TaskState.FAILED
 
     def _unmerged(
         self, record: RunRecord, task: TaskSpec, nodes: dict[str, str]
@@ -663,11 +736,7 @@ class Controller:
         """
         task = next(t for t in record.workflow.tasks if t.id == task_id)
         if self._unmerged(record, task, status_tasks):
-            return (
-                f"task {task_id} failed: {task_id}-w0 ended without merging the "
-                "units; the harness of its image does not merge in the coordinator, "
-                "it needs a simrun newer than 0.1.0"
-            )
+            return _unmerged_message(task_id)
         last: tuple[str, FailedAttempt] | None = None
         for key, attempts in sorted(failed.items()):
             if not attempts or self._task_of(record, key) is not task:
@@ -685,15 +754,25 @@ class Controller:
 
     def _next(self, record: RunRecord, status: BackendStatus) -> RunRecord:
         """The record after a status of its workflow."""
+        now = datetime.now(UTC)
+        pending = dict(record.merge_pending)
         tasks = task_states(
             record.workflow,
             self.types,
             status,
             task_plans(record),
-            lambda task_id: self._merged(record, task_id),
+            lambda task_id: self._merge_state(record, task_id, pending, now),
         )
+        # only the tasks which still wait for their marker
+        merging = {
+            task_id: since
+            for task_id, since in pending.items()
+            if tasks.get(task_id) == TaskState.RUNNING
+        }
         kills = self._memory_kills(record, status.failed)
-        record = record.model_copy(update={"oom_kills": kills})
+        record = record.model_copy(
+            update={"oom_kills": kills, "merge_pending": merging}
+        )
         killed = self._killed_twice(record, status.failed, kills)
         if killed is not None:
             task_id, message = killed
@@ -709,7 +788,7 @@ class Controller:
             return closed(record, RunState.FAILED, tasks, message)
         if all(s == TaskState.DONE for s in tasks.values()):
             return closed(record, RunState.SUCCEEDED, tasks, None)
-        if status.phase in FINAL_PHASES:
+        if status.phase in FINAL_PHASES and not merging:
             message = f"the workflow ended with phase {status.phase}"
             return closed(record, RunState.FAILED, tasks, message)
         started = {
@@ -726,22 +805,42 @@ class Controller:
         return record.model_copy(update={"state": state, "tasks": tasks})
 
     def _gone(self, record: RunRecord, name: str) -> RunRecord:
-        """The record of a run whose workflow is gone, resolved from the store."""
+        """The record of a run whose workflow is gone, resolved from the store.
+
+        A task which waits for the marker of its merge (`RunRecord.merge_pending`)
+        keeps the run open while it waits and no other task failed.
+        """
+        now = datetime.now(UTC)
+        pending = dict(record.merge_pending)
         tasks: dict[str, TaskState] = {}
         undetermined: list[str] = []
+        unmerged: list[str] = []
         for task in record.workflow.tasks:
             last = record.tasks.get(task.id, TaskState.WAITING)
-            out = self.store.run_dir(record.id) / "tasks" / task.id / "out"
+            splittable = self.types[task.type].splittable
             if last in FINAL_TASK_STATES:
                 tasks[task.id] = last
-            elif self.types[task.type].splittable and (out / MERGED_MARKER).is_file():
+            elif splittable and task.id in pending:
+                tasks[task.id] = self._merge_state(record, task.id, pending, now)
+                if tasks[task.id] == TaskState.FAILED:
+                    unmerged.append(task.id)
+            elif splittable and self._merged(record, task.id):
                 tasks[task.id] = TaskState.DONE
             else:
                 tasks[task.id] = TaskState.FAILED
                 undetermined.append(task.id)
         failed = [t for t, s in tasks.items() if s == TaskState.FAILED]
+        if not failed and TaskState.RUNNING in tasks.values():
+            merging = {
+                t: pending[t] for t, s in tasks.items() if s == TaskState.RUNNING
+            }
+            return record.model_copy(update={"tasks": tasks, "merge_pending": merging})
+        causes = [_unmerged_message(t) for t in unmerged]
         if undetermined:
-            message = f"the workflow {name} is gone: {', '.join(undetermined)} unknown"
+            unknown = ", ".join(undetermined)
+            causes.insert(0, f"the workflow {name} is gone: {unknown} unknown")
+        if causes:
+            message = "; ".join(causes)
         elif failed:
             message = f"task {', '.join(failed)} failed"
         elif all(s == TaskState.DONE for s in tasks.values()):

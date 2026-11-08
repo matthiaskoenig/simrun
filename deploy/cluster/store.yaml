@@ -14,6 +14,10 @@ reclaimPolicy: Retain
 volumeBindingMode: Immediate
 mountOptions:
   - nfsvers=4.2
+  # negative lookups are not cached, so a file a pod wrote (e.g. the marker of a
+  # merge) is seen at once by the service and the other pods; a PersistentVolume
+  # provisioned before keeps the options it was created with
+  - lookupcache=positive
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
