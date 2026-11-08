@@ -4,7 +4,9 @@
   and nested models as a group; anything else is JSON text which keeps what is
   typed and says "not valid JSON" while it does not parse, without emitting.
   A field left empty is not written, so the default of the plugin applies; the
-  default of the schema shows as the placeholder. Scalar fields take one of two
+  default of the schema shows as the placeholder, none for a default of null,
+  and a field the schema marks `readOnly`, which the plan of the plugin sets,
+  is not in the form. Scalar fields take one of two
   columns, lists, groups, JSON and strings not known to be short both. The
   errors of the service for a field (`errors`, by dotted location) show under it.
 -->
@@ -163,7 +165,7 @@ const rows = (field: Field): number =>
           :wrap="field.kind === 'list' ? 'off' : 'soft'"
           :rows="rows(field)"
           :value="texts[field.key]"
-          :placeholder="field.default === undefined ? '' : JSON.stringify(field.default)"
+          :placeholder="field.default === undefined || field.default === null ? '' : JSON.stringify(field.default)"
           @input="(e) => onText(field, (e.target as HTMLTextAreaElement).value)"
         ></textarea>
         <span v-if="problems[field.key]" class="mt-0.5 block text-[11px] text-red-700">{{ problems[field.key] }}</span>

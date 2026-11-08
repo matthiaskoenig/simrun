@@ -53,6 +53,17 @@ describe("fields", () => {
     expect(byKey.inner).toMatchObject({ kind: "object", fields: [{ key: "depth", kind: "integer", default: 3 }] });
   });
 
+  it("leaves out a field the plan of the plugin sets, marked readOnly", () => {
+    const planned: JsonSchema = {
+      properties: {
+        units: { anyOf: [{ type: "integer" }, { type: "null" }], default: null, readOnly: true, title: "Units" },
+        seed: { anyOf: [{ type: "integer" }, { type: "null" }], default: null, title: "Seed" },
+      },
+      type: "object",
+    };
+    expect(fields(planned).map((f) => f.key)).toEqual(["seed"]);
+  });
+
   it("gives none for a schema without properties", () => {
     expect(fields({})).toEqual([]);
   });

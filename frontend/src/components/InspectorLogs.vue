@@ -4,7 +4,9 @@
   answer while the task is live and once more when it ends. The block stays at its bottom as
   lines come, unless the user scrolled up. The lines of Argo's executor
   (`argo=true`) are hidden unless asked for, errors and tracebacks stand out,
-  and lines keep their layout, scrolled sideways instead of wrapped.
+  and lines keep their layout, scrolled sideways instead of wrapped, unless
+  "wrap lines" breaks them at the width of the panel, e.g. to read a long line
+  of a narrow inspector without scrolling.
 -->
 <script setup lang="ts">
 import { computed, nextTick, onScopeDispose, ref, watch } from "vue";
@@ -88,6 +90,7 @@ const EXECUTOR = /\bargo=true\b/;
 const ERROR = /^(Traceback |[\w.]*(Error|Exception)\b.*:|Error: )|\b(ERROR|CRITICAL)\b/;
 
 const showExecutor = ref(false);
+const wrap = ref(false);
 
 /** Every line of the logs, the headers of the pods, the executor and the error lines marked. */
 const all = computed(() =>
@@ -108,10 +111,14 @@ function lineClass(l: { header: boolean; executor: boolean; error: boolean }): s
 
 <template>
   <div class="flex min-h-0 flex-1 flex-col bg-gray-950">
-    <div v-if="hidden > 0" data-logs-bar class="flex items-center justify-end border-b border-gray-800 px-3 py-1.5">
-      <label class="flex items-center gap-1.5 text-[11px] text-gray-400">
+    <div v-if="text" data-logs-bar class="flex items-center justify-end gap-4 border-b border-gray-800 px-3 py-1.5">
+      <label v-if="hidden > 0" class="flex items-center gap-1.5 text-[11px] text-gray-400">
         <input v-model="showExecutor" data-executor type="checkbox" class="size-3 accent-gray-400" />
         lines of the Argo executor ({{ hidden }})
+      </label>
+      <label class="flex items-center gap-1.5 text-[11px] text-gray-400">
+        <input v-model="wrap" data-wrap type="checkbox" class="size-3 accent-gray-400" />
+        wrap lines
       </label>
     </div>
     <div
@@ -123,7 +130,7 @@ function lineClass(l: { header: boolean; executor: boolean; error: boolean }): s
       <pre
         v-if="text"
         data-logs-text
-        class="w-max min-w-full font-mono whitespace-pre"
+        :class="['font-mono', wrap ? 'break-all whitespace-pre-wrap' : 'w-max min-w-full whitespace-pre']"
       ><template v-for="(l, i) in lines" :key="i"><span :class="lineClass(l)">{{ l.line }}</span>{{ i < lines.length - 1 ? "\n" : "" }}</template></pre>
       <div v-else-if="text === '' || (text === null && !error)" class="text-gray-500">
         {{ text === null ? "reading the logs" : "no output yet" }}

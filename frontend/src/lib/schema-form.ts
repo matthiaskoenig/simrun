@@ -164,7 +164,11 @@ function field(root: JsonSchema, key: string, raw: JsonSchema, required: boolean
 function fieldsOf(root: JsonSchema, node: JsonSchema): Field[] {
   if (!isRecord(node.properties)) return [];
   const required = new Set(Array.isArray(node.required) ? node.required : []);
-  return Object.entries(node.properties).flatMap(([key, raw]) => (isRecord(raw) ? [field(root, key, raw, required.has(key))] : []));
+  // a field marked `readOnly` is set by the plan of the plugin, e.g. the units
+  // of a split task, and is no setting of the form
+  return Object.entries(node.properties).flatMap(([key, raw]) =>
+    isRecord(raw) && raw.readOnly !== true ? [field(root, key, raw, required.has(key))] : [],
+  );
 }
 
 /** The fields of the settings model a schema describes; none for a schema without properties. */
