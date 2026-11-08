@@ -1,4 +1,5 @@
 import dataclasses
+import importlib
 import json
 import sys
 import time
@@ -361,3 +362,34 @@ def test_upload_to_a_service_without_uploads_names_the_cause(
     assert error.value.status == status
     assert "too old for uploads" in error.value.detail
     assert "SIMRUN_STORE" in error.value.detail
+
+
+def _plan_from_the_root(settings: SquaresSettings) -> SquaresSettings:
+    # a plan which imports the project of the model, e.g. `examples.<model>` at the
+    # root of a checkout of sbmlsim, which no installed package has
+    probe = importlib.import_module("simrun_root_probe")
+    return settings.model_copy(update={"sleep_s": probe.SLEEP_S})
+
+
+def test_the_plan_imports_from_the_root_of_the_model(
+    service, make_client, repo: Path, monkeypatch
+) -> None:
+    (repo / "simrun_root_probe.py").write_text("SLEEP_S = 2.5\n")
+    module = types.ModuleType("simrun_test_root_plan")
+    module.plan = _plan_from_the_root  # ty: ignore[unresolved-attribute]
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    planned = dataclasses.replace(SQUARES, plan=f"{module.__name__}:plan")
+    monkeypatch.setattr(
+        simrun.client, "load_task_types", lambda: {SQUARES.name: planned}
+    )
+    path = list(sys.path)
+    try:
+        body = make_client(service)._request(
+            Workflow(**WORKFLOW), {"model": repo}, None, None, None
+        )
+    finally:
+        sys.modules.pop("simrun_root_probe", None)
+    (task,) = body["workflow"]["tasks"]
+    assert task["settings"]["sleep_s"] == 2.5
+    # the root is importable while planning only
+    assert sys.path == path

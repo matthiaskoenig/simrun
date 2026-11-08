@@ -603,7 +603,8 @@ def test_reconcile_fails_old_submission(service):
 
 
 def test_second_memory_kill_of_a_worker_fails_the_run(service):
-    run_id = service.submit()["id"]
+    # units for whole pods of 40 processes
+    run_id = service.submit(workflow=service.workflow(n=400))["id"]
     name = service.name(run_id)
     service.backend.start(name)
     service.backend.oom_kill(name, "squares-w1")

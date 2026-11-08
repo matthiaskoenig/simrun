@@ -33,7 +33,7 @@ The service serves the web app at `/ui/`: the Executions with live updates, and 
 The `LocalBackend` of the service runs the pods of a run as processes of this machine:
 
 - a split task is one coordinator process (`simrun-worker`) with as many processes as the machine has cores, which computes the units and merges them itself; there are no extra workers, and the plan (also of `estimate --local`) has one pod
-- a task of a plugin type runs through `simrun-exec`
+- a task of a plugin type runs through `simrun-exec`, without an image: in the environment of the service, activated (its python first on `PATH`), and with the working tree of the model first on `PYTHONPATH`, as `python -m` in the checkout
 - a `command` task runs its args directly by default, or in its image with `docker run` when the run is submitted with `--docker`; the run records which. The store and the scratch directory are mounted at the same paths
 - a task starts when the tasks it reads from succeeded and its cores are free; the cores are shared by all runs of the service, in the order of submission, and a waiting task is `queued`
 - a process stopped from outside (no exit code, 137 or 143) is retried as on the cluster, after a kill (137) with the retry memory per process, so the harness runs fewer processes; there is no memory limit per task, a process which takes too much is killed by the out of memory killer of the machine

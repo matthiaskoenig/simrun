@@ -199,6 +199,21 @@ def _cmdline(pid: int) -> list[str] | None:
     return [os.fsdecode(part) for part in raw.split(b"\0")[:-1]]
 
 
+def _activate(env: dict[str, str], python: Path, venv: Path | None) -> None:
+    """Put the directory of `python` first on the `PATH` of `env`, as `activate` does.
+
+    Args:
+        env: The environment of a process, changed in place.
+        python: The python of the process.
+        venv: The virtual environment of `python`, None for a python without one.
+    """
+    if venv is not None:
+        env["VIRTUAL_ENV"] = str(venv)
+    env["PATH"] = os.pathsep.join(
+        [str(python.parent), *filter(None, [env.get("PATH")])]
+    )
+
+
 def _container(run_id: str, node: str, attempt: int) -> str:
     """The name of the container of an attempt, valid for docker."""
     return re.sub(r"[^a-zA-Z0-9_.-]", "-", f"simrun-{run_id}-{node}-{attempt}")
@@ -641,6 +656,11 @@ class LocalBackend:
             }
         # the variables of the service, e.g. of a shell, are no business of a task
         env = {k: v for k, v in os.environ.items() if not k.startswith("SIMRUN_")}
+        if "PYTHONPATH" in values and env.get("PYTHONPATH"):
+            # the root of the model first, the path of the service after it
+            values = values | {
+                "PYTHONPATH": os.pathsep.join([values["PYTHONPATH"], env["PYTHONPATH"]])
+            }
         env |= values
         argv = node.command
         with (log / f"{node.name}-{node.attempt}.log").open("ab") as out:
@@ -667,11 +687,12 @@ class LocalBackend:
                 else:
                     if argv[:1] == [sys.executable]:
                         argv = [str(python), *argv[1:]]
-                    venv_dir = python.parent.parent
-                    env["VIRTUAL_ENV"] = str(venv_dir)
-                    env["PATH"] = os.pathsep.join(
-                        [str(python.parent), *filter(None, [env.get("PATH")])]
-                    )
+                    _activate(env, python, python.parent.parent)
+            else:
+                # the environment of the service, activated as the one of an image
+                # is: a command of a plugin (`python -m ...`) finds its python
+                venv = Path(sys.prefix) if sys.prefix != sys.base_prefix else None
+                _activate(env, Path(sys.executable), venv)
             if error is None:
                 try:
                     process = subprocess.Popen(

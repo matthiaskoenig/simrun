@@ -3,6 +3,7 @@
 import dataclasses
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -188,6 +189,85 @@ def test_a_split_task_then_a_command_run_to_their_end(backends, tmp_path):
     logs = backend.logs(name, "squares")
     assert [(log.node, log.done) for log in logs] == [("squares-w0", True)]
     assert backend.placements() == []
+
+
+class _Spec(pydantic.BaseModel):
+    pass
+
+
+def test_a_plugin_command_finds_the_python_of_the_service(
+    backends, tmp_path, monkeypatch
+):
+    # a command template names `python` (`python -m sbmlsim.run ...`): it is the
+    # python of the service, as in a pod the python of the image, also when the
+    # service runs from a virtual environment which is not activated
+    code = (
+        "import pathlib, sys; out = pathlib.Path(sys.argv[1]); "
+        "out.mkdir(parents=True, exist_ok=True); "
+        "(out / 'python').write_text(sys.executable)"
+    )
+    monkeypatch.setitem(
+        TYPES,
+        "test.python",
+        TaskType(
+            name="test.python",
+            settings=_Spec,
+            outputs=("out",),
+            command=f"python -c {shlex.quote(code)} {{out}}",
+        ),
+    )
+    monkeypatch.setenv("PATH", "/nonexistent")
+    backend = backends(cores=2)
+    run, name = _submit(backend, [{"id": "py", "type": "test.python"}])
+    status = _wait(backend, name)
+    assert status.phase == "Succeeded", (status, _log(backend, name, "py"))
+    out = tmp_path / "store" / "runs" / run.id / "tasks" / "py" / "out"
+    assert Path((out / "python").read_text()).parent == Path(sys.executable).parent
+
+
+def test_a_plugin_command_imports_from_the_root_of_the_model(
+    backends, tmp_path, monkeypatch
+):
+    # the working tree of the model, recorded without a snapshot, comes first on
+    # the path of the task, before the PYTHONPATH of the service
+    root = tmp_path / "model"
+    root.mkdir()
+    (root / "simrun_root_probe.py").write_text("VALUE = 'from the root'\n")
+    code = (
+        "import os, pathlib, sys, simrun_root_probe; out = pathlib.Path(sys.argv[1]); "
+        "out.mkdir(parents=True, exist_ok=True); "
+        "(out / 'value').write_text(simrun_root_probe.VALUE); "
+        "(out / 'path').write_text(os.environ['PYTHONPATH'])"
+    )
+    monkeypatch.setitem(
+        TYPES,
+        "test.root",
+        TaskType(
+            name="test.root",
+            settings=_Spec,
+            outputs=("out",),
+            command=f"python -c {shlex.quote(code)} {{out}}",
+        ),
+    )
+    monkeypatch.setenv("PYTHONPATH", "/service/path")
+    model = SourceProvenance(
+        name="model",
+        branch="main",
+        commit="c" * 40,
+        dirty=False,
+        changed_files=[],
+        diff_sha256="0" * 64,
+        snapshot="",
+        patch=None,
+        path=str(root),
+    )
+    backend = backends(cores=2)
+    run, name = _submit(backend, [{"id": "r", "type": "test.root"}], sources=[model])
+    status = _wait(backend, name)
+    assert status.phase == "Succeeded", (status, _log(backend, name, "r"))
+    out = tmp_path / "store" / "runs" / run.id / "tasks" / "r" / "out"
+    assert (out / "value").read_text() == "from the root"
+    assert (out / "path").read_text() == os.pathsep.join([str(root), "/service/path"])
 
 
 def test_a_process_reads_its_memory_from_its_process_tree(backends):
