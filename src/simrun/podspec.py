@@ -57,7 +57,8 @@ def env_values(
         scratch: The scratch directory of the pod.
 
     Returns:
-        The variables by name; the caller adds the ones of its backend.
+        The variables by name, `PYTHONPATH` the root of the model
+        (`import_root`); the caller adds the ones of its backend.
 
     Raises:
         ValueError: The task stages a port which is no input.
@@ -67,7 +68,9 @@ def env_values(
         if port not in inputs:
             raise ValueError(f"task {task.id!r} stages {port!r}, which is no input")
     directory = task_dir(record, task.id, store)
+    root = import_root(record, store)
     return {
+        **({"PYTHONPATH": root} if root is not None else {}),
         "SIMRUN_TASK_DIR": directory,
         "SIMRUN_TASK_TYPE": task_type.name,
         "SIMRUN_MEMORY_BASE_GB": number(task_type.hint.memory_base_gb),
@@ -82,6 +85,29 @@ def env_values(
         "SIMRUN_SCRATCH": scratch,
         "SIMRUN_PROVENANCE": f"{directory}/{PROVENANCE_FILE}",
     }
+
+
+def import_root(record: RunRecord, store: str) -> str | None:
+    """The root of the model, which a task imports from first.
+
+    As `python -m` in a checkout puts the checkout first on the path, a task of a
+    model imports from the root of the model, e.g. `examples` at the root of a
+    checkout of sbmlsim, which no installed package has.
+
+    Args:
+        record: The run, its first source the model.
+        store: The root of the store as the pod sees it.
+
+    Returns:
+        The snapshot of the model, else its recorded working tree, None for a run
+        without sources.
+    """
+    if not record.sources:
+        return None
+    model = record.sources[0]
+    if model.snapshot:
+        return f"{store}/{model.snapshot}"
+    return model.path
 
 
 def image(record: RunRecord, task: TaskSpec, task_type: TaskType) -> str:
@@ -119,15 +145,8 @@ def unsplit_command(
 ) -> tuple[str, list[str]]:
     """The image and argv of an unsplit task.
 
-    The command of a plugin type runs through `simrun-exec`, which installs the
-    snapshots, sets the thread variables and writes a report; a `command` task runs
-    its args in its image. In the command template of a type and in the args of a
-    `command` task, `{settings}` is the path of the settings file and `{out}` the
-    output directory of the task, and a part with `{input}` is repeated once per
-    input port of the task, sorted by port, with `{input}` replaced by
-    `<port>=<path>`, the output the port reads as the pod sees it, or
-    `<scratch>/<port>` for a staged port of a plugin type, the copy `simrun-exec`
-    stages; without inputs the part is dropped.
+    The image of a `command` task is the one of its settings, the image of a
+    plugin type the one of `image`; the argv is `unsplit_argv`.
 
     Args:
         record: The run.
@@ -140,6 +159,42 @@ def unsplit_command(
         The image and the argv.
 
     Raises:
+        ValueError: The type is neither splittable nor has a command, or it has
+            no image and the run has none.
+    """
+    argv = unsplit_argv(record, task, task_type, store, scratch)
+    if task_type.name == COMMAND.name:
+        return CommandSettings.model_validate(task.settings).image, argv
+    return image(record, task, task_type), argv
+
+
+def unsplit_argv(
+    record: RunRecord, task: TaskSpec, task_type: TaskType, store: str, scratch: str
+) -> list[str]:
+    """The argv of an unsplit task, without its image.
+
+    The command of a plugin type runs through `simrun-exec`, which installs the
+    snapshots, sets the thread variables and writes a report; a `command` task runs
+    its args. In the command template of a type and in the args of a `command`
+    task, `{settings}` is the path of the settings file and `{out}` the output
+    directory of the task, and a part with `{input}` is repeated once per input port
+    of the task, sorted by port, with `{input}` replaced by `<port>=<path>`, the
+    output the port reads as the pod sees it, or `<scratch>/<port>` for a staged
+    port of a plugin type, the copy `simrun-exec` stages; without inputs the part
+    is dropped. The local backend runs it without an image, which a run there
+    does not have.
+
+    Args:
+        record: The run.
+        task: The task.
+        task_type: Its type.
+        store: The root of the store as the pod sees it.
+        scratch: The scratch directory of the pod, as in `env_values`.
+
+    Returns:
+        The argv.
+
+    Raises:
         ValueError: The type is neither splittable nor has a command.
     """
     directory = task_dir(record, task.id, store)
@@ -149,7 +204,7 @@ def unsplit_command(
             f"{port}={store}/{output(record, task.inputs[port])}"
             for port in sorted(task.inputs)
         ]
-        return settings.image, _expand(settings.args, directory, inputs)
+        return _expand(settings.args, directory, inputs)
     if task_type.command is None:
         raise ValueError(
             f"task {task.id!r}: type {task_type.name!r} is neither splittable "
@@ -161,8 +216,7 @@ def unsplit_command(
         else f"{port}={store}/{output(record, task.inputs[port])}"
         for port in sorted(task.inputs)
     ]
-    argv = [EXEC_COMMAND, *_expand(shlex.split(task_type.command), directory, inputs)]
-    return image(record, task, task_type), argv
+    return [EXEC_COMMAND, *_expand(shlex.split(task_type.command), directory, inputs)]
 
 
 def _expand(template: list[str], directory: str, inputs: list[str]) -> list[str]:

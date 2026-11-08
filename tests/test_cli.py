@@ -201,3 +201,49 @@ def test_timeout_without_waiting_is_refused(cli, service, tmp_path: Path) -> Non
     assert result.exit_code == 1
     assert "--timeout needs --wait" in result.output
     assert service.get("/runs").json() == []
+
+
+def _screen(monkeypatch, width: int = 80):
+    import io
+
+    from rich.console import Console
+
+    screen = io.StringIO()
+    monkeypatch.setattr(simrun.cli, "console", Console(file=screen, width=width))
+    return screen
+
+
+def test_list_fits_80_columns_without_cutting_a_value(cli, service, monkeypatch):
+    # an agent's run in a group: on a terminal of 80 columns a long value wraps in
+    # its column, the run and its state stay whole
+    run_id = service.submit("t-mk-bot", group="hctz-variants-of-the-pk-fit")["id"]
+    screen = _screen(monkeypatch)
+    result = cli("list")
+    assert result.exit_code == 0, result.output
+    text = screen.getvalue()
+    assert "…" not in text
+    lines = text.splitlines()
+    assert max(len(line) for line in lines) <= 80
+    header = next(line for line in lines if "state" in line)
+    at = lines.index(header)
+    row, *rest = lines[at + 2 :]  # below the rule
+    assert run_id in row
+    for value in ("mk-bot", "owner", "queued"):
+        assert value in row
+    # the group wraps in its column: its lines give it whole
+    start, end = header.index("group"), header.index("by")
+    group = "".join(line[start:end].strip() for line in [row, *rest])
+    assert group == "hctz-variants-of-the-pk-fit"
+    # wide enough, one line per run
+    screen = _screen(monkeypatch, width=120)
+    assert cli("list").exit_code == 0
+    assert "hctz-variants-of-the-pk-fit" in screen.getvalue()
+
+
+def test_list_leaves_out_a_column_without_values(cli, service, monkeypatch):
+    service.submit()  # by a person, without a group
+    screen = _screen(monkeypatch)
+    assert cli("list").exit_code == 0
+    header = next(line for line in screen.getvalue().splitlines() if "state" in line)
+    assert "agent" not in header and "group" not in header
+    assert "state" in header and "priority" in header

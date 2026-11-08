@@ -19,6 +19,7 @@ import httpx
 import typer
 import uvicorn
 from pydantic import BaseModel
+from rich import box
 from rich.console import Console
 from rich.live import Live
 from rich.table import Column, Table
@@ -147,26 +148,55 @@ def _sources(items: Sequence[str] | None) -> dict[str, Path]:
     return sources
 
 
-def _runs_table(runs: Sequence[RunSummary]) -> Table:
-    table = Table(
-        Column("run", no_wrap=True, overflow="ignore"),
-        "state",
-        "group",
-        "by",
-        "agent",
-        "priority",
-        "created",
+def _table(*columns: str | Column, **options: Any) -> Table:
+    """A table of the command line which keeps every value whole on 80 columns.
+
+    A rule under the header instead of a frame and two spaces between the columns;
+    a value too long for its column wraps instead of being cut.
+
+    Args:
+        columns: The columns, a name for a column which wraps.
+        options: Further options of the `Table`, e.g. its title.
+    """
+    return Table(
+        *(Column(c, overflow="fold") if isinstance(c, str) else c for c in columns),
+        box=box.SIMPLE_HEAD,
+        show_edge=False,
+        pad_edge=False,
+        padding=(0, 1, 0, 0),
+        **options,
     )
+
+
+def _whole(name: str) -> Column:
+    """A column whose values never wrap, e.g. an id or a state."""
+    return Column(name, no_wrap=True, overflow="ignore")
+
+
+def _number(name: str) -> Column:
+    """A column of numbers: right-aligned, never wrapped."""
+    return Column(name, justify="right", no_wrap=True)
+
+
+def _runs_table(runs: Sequence[RunSummary]) -> Table:
+    """A row per run; the group only when a run has one.
+
+    The id of a run begins with the time of its creation, so the time has no column
+    of its own, and the submitter of a run of an agent is the agent (`agent` of the
+    record).
+    """
+    grouped = any(r.group for r in runs)
+    columns: list[str | Column] = [_whole("run"), _whole("state")]
+    if grouped:
+        columns.append("group")
+    columns += ["by", _whole("priority")]
+    table = _table(*columns)
     for r in runs:
-        table.add_row(
-            r.id,
-            r.state.value,
-            r.group or "",
-            r.submitted_by,
-            r.agent or "",
-            r.priority.value,
-            f"{r.created:%Y-%m-%d %H:%M}",
-        )
+        row = [r.id, r.state.value]
+        if grouped:
+            row.append(r.group or "")
+        row += [r.submitted_by, r.priority.value]
+        table.add_row(*row)
     return table
 
 
@@ -215,7 +245,9 @@ class _RunView:
 
     def table(self) -> Table:
         """A row per task: id, state, units, elapsed."""
-        table = Table("task", "state", "units", "elapsed", title=self.title())
+        table = _table(
+            "task", "state", _number("units"), _number("elapsed"), title=self.title()
+        )
         for task, state in (self.run.tasks if self.run else {}).items():
             table.add_row(task, state.value, self.units(task), self.elapsed(task))
         return table
@@ -372,7 +404,7 @@ def outputs(
     if as_json:
         _json([{"path": path, "bytes": size} for path, size in files])
         return
-    table = Table("path", Column("bytes", justify="right"))
+    table = _table("path", _number("bytes"))
     for path, size in files:
         table.add_row(path, str(size))
     console.print(table)
@@ -395,7 +427,7 @@ def status(
     console.print(_runs_table([RunSummary.of(record)]))
     if record.message:
         console.print(record.message)
-    table = Table("task", "state", "done", "total")
+    table = _table("task", "state", _number("done"), _number("total"))
     for task_id, state in record.tasks.items():
         counts = progress[task_id].counts if task_id in progress else None
         done = "" if counts is None else str(counts.done)
@@ -436,11 +468,13 @@ def compare(
     if as_json:
         _json(result)
         return
-    table = Table(*result.columns)
+    # a column without a value in any run, e.g. `agent` for people, is left out
+    columns = [
+        c for c in result.columns if any(row.get(c) is not None for row in result.rows)
+    ]
+    table = _table(*(_whole(c) if c in ("run", "state") else c for c in columns))
     for row in result.rows:
-        table.add_row(
-            *("" if row.get(c) is None else str(row[c]) for c in result.columns)
-        )
+        table.add_row(*("" if row.get(c) is None else str(row[c]) for c in columns))
     console.print(table)
 
 
@@ -489,8 +523,14 @@ def estimate(
     if as_json:
         _json(plans)
         return
-    table = Table(
-        "task", "pods", "cores", "memory GiB", "units", "seconds", "resources"
+    table = _table(
+        "task",
+        _number("pods"),
+        _number("cores"),
+        _number("memory GiB"),
+        _number("units"),
+        _number("seconds"),
+        "resources",
     )
     for task_id, e in plans.items():
         table.add_row(
@@ -570,11 +610,11 @@ def usage(local: LOCAL = False, as_json: AS_JSON = False) -> None:
     if as_json:
         _json(result)
         return
-    table = Table("group", "GiB")
+    table = _table("group", _number("GiB"))
     for group, size in sorted(result.groups.items(), key=lambda kv: -kv[1]):
         table.add_row(group or "(none)", f"{size / 2**30:.2f}")
     console.print(table)
-    runs = Table("run", "GiB")
+    runs = _table(_whole("run"), _number("GiB"))
     for run, size in sorted(result.runs.items(), key=lambda kv: -kv[1])[:20]:
         runs.add_row(run, f"{size / 2**30:.2f}")
     console.print(runs)

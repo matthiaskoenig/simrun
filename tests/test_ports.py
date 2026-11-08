@@ -12,6 +12,7 @@ from simrun.demo import SQUARES, SquaresSettings
 from simrun.planner import PodShape
 from simrun.plugins import TaskType
 from simrun.service.app import validate_workflow
+from simrun.snapshot import SourceProvenance
 from simrun.store import RunRecord, RunState, RunStore, TaskState
 from simrun.worker import paths_from_env, run_merge, run_worker
 from simrun.workflow import Priority, Workflow
@@ -92,3 +93,59 @@ def test_a_port_is_a_directory_of_out(tmp_path: Path) -> None:
 def test_a_port_the_type_does_not_have() -> None:
     errors = validate_workflow(_workflow("sq.out"), TYPES)
     assert errors == ["input 'squares' of task 'total': task 'sq' has no output 'out'"]
+
+
+def _source(name: str, snapshot: str, path: str | None = None) -> SourceProvenance:
+    return SourceProvenance(
+        name=name,
+        branch="main",
+        commit="c" * 40,
+        dirty=False,
+        changed_files=[],
+        diff_sha256="0" * 64,
+        snapshot=snapshot,
+        patch=None,
+        path=path,
+    )
+
+
+def _with_sources(sources: list[SourceProvenance]) -> RunRecord:
+    return RunRecord(
+        id=RUN,
+        submitted_by="u",
+        owner="u",
+        agent=None,
+        priority=Priority.OWNER,
+        group=None,
+        workflow=_workflow("sq.squares"),
+        sources=sources,
+        image="localhost:5000/base:1",
+        reserve=None,
+        state=RunState.RUNNING,
+        tasks={},
+        plans={},
+        backend_name=None,
+        created=datetime.now(UTC),
+        finished=None,
+        message=None,
+    )
+
+
+def test_a_task_imports_from_the_root_of_the_model(tmp_path: Path) -> None:
+    # as `python -m` in a checkout: the root of the model, e.g. a checkout of
+    # sbmlsim with its `examples`, comes first on the path of the task
+    record = _with_sources(
+        [_source("model", "snapshots/model/a"), _source("lib", "snapshots/lib/b")]
+    )
+    task = record.workflow.task("sq")
+    env = podspec.env_values(record, task, SQUARES, SHAPE, "/store", "/scratch")
+    assert env["PYTHONPATH"] == "/store/snapshots/model/a"
+    # a working tree recorded without a snapshot (the local mode) by its path
+    local = _with_sources([_source("model", "", path=str(tmp_path))])
+    env = podspec.env_values(local, task, SQUARES, SHAPE, "/store", "/scratch")
+    assert env["PYTHONPATH"] == str(tmp_path)
+    # a run without sources has no root
+    env = podspec.env_values(
+        _with_sources([]), task, SQUARES, SHAPE, "/store", "/scratch"
+    )
+    assert "PYTHONPATH" not in env

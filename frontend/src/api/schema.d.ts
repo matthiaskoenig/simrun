@@ -1226,6 +1226,8 @@ export interface components {
          *             the patch stays as provenance.
          *         snapshot: Directory of the snapshot, relative to the store root.
          *         patch: Stored `git diff HEAD --binary`, relative to the store root.
+         *         path: The working tree of a source recorded without a snapshot (the local
+         *             mode), None for a snapshot.
          */
         SourceProvenance: {
             /** Branch */
@@ -1242,6 +1244,8 @@ export interface components {
             name: string;
             /** Patch */
             patch: string | null;
+            /** Path */
+            path?: string | null;
             /** Snapshot */
             snapshot: string;
         };

@@ -7,13 +7,16 @@ a tar of only those files.
 The CLI (`simrun.cli`) and the MCP server (`simrun.mcp`) both go through `Client`.
 """
 
+import importlib
 import json
 import logging
 import os
+import sys
 import tarfile
 import tempfile
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Generator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Literal
 
@@ -90,7 +93,9 @@ def _apply_event(current: dict[str, Any], event: str, data: str) -> bool:
     return "run" in current
 
 
-def plan_tasks(workflow: Workflow, types: dict[str, TaskType]) -> Workflow:
+def plan_tasks(
+    workflow: Workflow, types: dict[str, TaskType], root: Path | None = None
+) -> Workflow:
     """The workflow with the settings of its tasks planned by their types.
 
     A task whose type is in `types` and has a `plan` gets the settings the plan
@@ -102,6 +107,8 @@ def plan_tasks(workflow: Workflow, types: dict[str, TaskType]) -> Workflow:
     Args:
         workflow: The workflow, which is not changed.
         types: The task types installed locally, by name.
+        root: The working tree of the model, first on the path of the imports
+            while planning, as a task imports from it (`podspec.import_root`).
 
     Returns:
         A copy of the workflow with the planned settings.
@@ -109,6 +116,27 @@ def plan_tasks(workflow: Workflow, types: dict[str, TaskType]) -> Workflow:
     Raises:
         ValueError: The settings of a task are invalid for its type.
     """
+    with _importable(root):
+        return _plan_tasks(workflow, types)
+
+
+@contextmanager
+def _importable(root: Path | None) -> Generator[None]:
+    """Put `root` first on `sys.path` for the block, as `python -m` in it does."""
+    if root is None:
+        yield
+        return
+    entry = str(root.resolve())
+    sys.path.insert(0, entry)
+    importlib.invalidate_caches()
+    try:
+        yield
+    finally:
+        sys.path.remove(entry)
+
+
+def _plan_tasks(workflow: Workflow, types: dict[str, TaskType]) -> Workflow:
+    """`plan_tasks` with the path of the imports set."""
     tasks = []
     for task in workflow.tasks:
         task_type = types.get(task.type)
@@ -341,7 +369,8 @@ class Client:
     ) -> dict[str, Any]:
         if isinstance(workflow, Path):
             workflow = load_workflow(workflow)
-        workflow = plan_tasks(workflow, load_task_types())
+        model = next(iter(sources.values()), None)
+        workflow = plan_tasks(workflow, load_task_types(), model)
         recorded = [self.source(path, name) for name, path in sources.items()]
         return {
             "workflow": workflow.model_dump(mode="json"),
