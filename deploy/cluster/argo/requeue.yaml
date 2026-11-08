@@ -1,6 +1,7 @@
-# the controller looks at a workflow again 2 s after a change of its pods instead of
+# the controller looks at a workflow again 1 s after a change of its pods instead of
 # 10 s (`DEFAULT_REQUEUE_TIME`, docs/environment-variables.md of Argo), so a run and
-# its tasks show running soon after their pods started
+# its tasks show running soon after their pods started, and the next task of the DAG
+# starts about a second after the one before it ended
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -12,4 +13,4 @@ spec:
         - name: workflow-controller
           env:
             - name: DEFAULT_REQUEUE_TIME
-              value: 2s
+              value: 1s
