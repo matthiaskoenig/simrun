@@ -25,7 +25,13 @@ def exec_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("SIMRUN_MEMORY_PER_WORKER_GB", "1.5")
     monkeypatch.setenv("SIMRUN_ATTEMPT", "1")
     monkeypatch.setenv("SIMRUN_SCRATCH", str(tmp_path / "scratch"))
-    for name in ("SIMRUN_STAGE", "SIMRUN_EDITABLE", "SIMRUN_INPUTS", "SIMRUN_WORKER"):
+    for name in (
+        "SIMRUN_STAGE",
+        "SIMRUN_EDITABLE",
+        "SIMRUN_INPUTS",
+        "SIMRUN_WORKER",
+        worker.SOURCES_INSTALLED,
+    ):
         monkeypatch.delenv(name, raising=False)
     for name in worker.THREAD_VARIABLES:
         monkeypatch.setenv(name, "4")
@@ -50,7 +56,10 @@ def test_runs_the_command_and_reports(
     exec_env: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     installed: list[list[str]] = []
+    restarts: list[str] = []
     monkeypatch.setattr(worker, "install_editable", installed.append)
+    # the harness restarts after an install; here it goes on in the same process
+    monkeypatch.setattr(worker, "restart", lambda: restarts.append("restart"))
     monkeypatch.setenv("SIMRUN_EDITABLE", "/store/snapshots/m/1,/store/snapshots/l/2")
     threads = tmp_path / "threads.json"
     code = (
@@ -60,6 +69,7 @@ def test_runs_the_command_and_reports(
     )
     assert run_exec(monkeypatch, "--", *python(code, str(threads))) == 0
     assert installed == [["/store/snapshots/m/1", "/store/snapshots/l/2"]]
+    assert restarts == ["restart"]
     assert json.loads(threads.read_text()) == ["1", "1", "1"]
     # the report of the task, by its id, so the controller learns its memory
     report = json.loads((exec_env / "workers" / "report-1.json").read_text())

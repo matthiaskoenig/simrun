@@ -182,6 +182,7 @@ def worker_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "SIMRUN_ATTEMPT",
         "SIMRUN_ROLE",
         "SIMRUN_STALE_S",
+        worker.SOURCES_INSTALLED,
     ):
         monkeypatch.delenv(name, raising=False)
     # main sets the thread variables; monkeypatch restores them afterwards
@@ -381,6 +382,68 @@ def test_install_read_only_snapshots(tmp_path: Path) -> None:
         "['hlib:X']"
     )
     subprocess.run([python, "-P", "-c", code], check=True, cwd=tmp_path)
+
+
+RESTART_SCRIPT = """
+import os, sys, threading
+from pathlib import Path
+from simrun import worker
+
+log = Path(sys.argv[1])
+def logged(line):
+    with log.open("a") as f:
+        f.write(line + "\\n")
+
+logged("start")
+worker.install_editable = lambda snapshots: logged(f"install {snapshots}")
+worker.install_sources(os.environ, threading.Event())
+logged("done")
+"""
+
+
+def test_install_sources_restarts_once_in_a_new_interpreter(tmp_path: Path) -> None:
+    # an editable install of a package the process imported already (simrun itself)
+    # breaks later imports in that process, so the command starts again
+    script = tmp_path / "script.py"
+    script.write_text(RESTART_SCRIPT)
+    log = tmp_path / "log"
+    env = {**os.environ, "SIMRUN_EDITABLE": "/store/snapshots/simrun/1"}
+    env.pop(worker.SOURCES_INSTALLED, None)
+    subprocess.run([sys.executable, str(script), str(log)], env=env, check=True)
+    assert log.read_text().splitlines() == [
+        "start",
+        "install ['/store/snapshots/simrun/1']",
+        "start",
+        "install []",
+        "done",
+    ]
+
+
+def test_install_sources_without_snapshots_or_on_sigterm_does_not_restart(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv(worker.SOURCES_INSTALLED, raising=False)
+    monkeypatch.setattr(worker, "install_editable", lambda snapshots: None)
+    monkeypatch.setattr(worker, "restart", lambda: pytest.fail("restarted"))
+    worker.install_sources({}, threading.Event())
+    stop = threading.Event()
+    stop.set()
+    worker.install_sources({"SIMRUN_EDITABLE": "/store/snapshots/m/1"}, stop)
+    assert worker.SOURCES_INSTALLED not in os.environ
+
+
+def test_a_task_type_which_cannot_be_imported_is_a_configuration_error(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (worker_env / "settings.json").write_text(SquaresSettings(n=5).model_dump_json())
+
+    def broken() -> None:
+        raise ModuleNotFoundError("No module named 'simrun.plugins_builtin'")
+
+    monkeypatch.setattr(worker, "load_task_types", broken)
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == worker.EXIT_CONFIGURATION
 
 
 def test_merge_incomplete_raises(tmp_path: Path) -> None:

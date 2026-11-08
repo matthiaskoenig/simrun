@@ -171,8 +171,10 @@ def test_retry_strategy() -> None:
         # evictions count against it; the controller ends a second kill for memory
         assert retry["limit"] == 100
         assert retry["retryPolicy"] == "Always"
+        # only a pod which was stopped: no exit code, killed, SIGTERM
         assert retry["expression"] == (
-            "lastRetry.exitCode != '3' && lastRetry.exitCode != '4'"
+            "lastRetry.exitCode == '-1' || lastRetry.exitCode == '137' "
+            "|| lastRetry.exitCode == '143'"
         )
         patch = json.loads(template["podSpecPatch"])
         assert patch["terminationGracePeriodSeconds"] == 90
@@ -242,6 +244,44 @@ def test_unsplit_plugin_command() -> None:
         f"{task_dir}/out",
     ]
     assert container["image"] == "localhost:5000/plot:2"
+
+
+def test_command_args_get_the_paths_of_the_inputs_and_the_output() -> None:
+    record = _record()
+    record.workflow = Workflow(
+        name="p",
+        tasks=[
+            {"id": "squares", "type": "demo.squares", "settings": {"n": 10}},
+            {
+                "id": "sum",
+                "type": "command",
+                "settings": {
+                    "image": "localhost:5000/tools:1",
+                    "args": [
+                        "sum",
+                        "--input={input}",
+                        "{out}",
+                        "--settings={settings}",
+                    ],
+                    "cores": 1,
+                    "memory_gb": 1.0,
+                },
+                "inputs": {"b": "squares.squares", "a": "squares.squares"},
+            },
+        ],
+    )
+    plans = {"squares": PLANS["squares"], "sum": PLANS["report"]}
+    manifest = to_argo(record, plans, TYPES, CONFIG)
+    run = f"/store/runs/{RUN}/tasks"
+    container = _template(manifest, "sum")["container"]
+    # no harness: the args as given, with the templates of a plugin command
+    assert container["command"] == [
+        "sum",
+        f"--input=a={run}/squares/out/squares",
+        f"--input=b={run}/squares/out/squares",
+        f"{run}/sum/out",
+        f"--settings={run}/sum/settings.json",
+    ]
 
 
 def test_pod_env_has_provenance() -> None:

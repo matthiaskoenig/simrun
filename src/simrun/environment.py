@@ -126,7 +126,8 @@ class Environment:
         lock: Text of the `uv.lock`.
         lock_sha256: Hash of the lock and the python version, the identity of the image.
         python: Python version of the image.
-        simrun_version: Version of the simrun wheel the image installs.
+        simrun_version: Version of the simrun wheel the image installs, with the
+            hash of the wheel when the service has one.
         editable: Snapshot directories of the model and the libraries, relative to
             the store in the order of the sources, installed at pod start.
         requirements: The third party dependencies of the lock as pinned requirements,
@@ -233,7 +234,8 @@ def resolve_environment(
         libraries: Snapshots of the libraries; each replaces the entry of
             `[tool.uv.sources]` of its package name, the other entries are kept.
         python: Python version of the image.
-        simrun_version: Version of the simrun wheel of the image, part of the hash.
+        simrun_version: Version of the simrun wheel of the image, part of the hash
+            (the service adds the hash of the wheel, `Submitter._harness`).
         build_constraints: The pinned versions of the build backends; a pin of a
             package the `uv.lock` of the model does not have constrains the lock.
 

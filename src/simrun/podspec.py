@@ -119,12 +119,13 @@ def unsplit_command(
 
     The command of a plugin type runs through `simrun-exec`, which installs the
     snapshots, sets the thread variables and writes a report; a `command` task runs
-    its argv as given in its image. In the command template of a type, `{settings}`
-    is the path of the settings file and `{out}` the output directory of the task,
-    and a part with `{input}` is repeated once per input port of the task, sorted by
-    port, with `{input}` replaced by `<port>=<path>`, the output the port reads as
-    the pod sees it, or `<scratch>/<port>` for a staged port, the copy
-    `simrun-exec` stages; without inputs the part is dropped.
+    its args in its image. In the command template of a type and in the args of a
+    `command` task, `{settings}` is the path of the settings file and `{out}` the
+    output directory of the task, and a part with `{input}` is repeated once per
+    input port of the task, sorted by port, with `{input}` replaced by
+    `<port>=<path>`, the output the port reads as the pod sees it, or
+    `<scratch>/<port>` for a staged port of a plugin type, the copy `simrun-exec`
+    stages; without inputs the part is dropped.
 
     Args:
         record: The run.
@@ -139,28 +140,38 @@ def unsplit_command(
     Raises:
         ValueError: The type is neither splittable nor has a command.
     """
+    directory = task_dir(record, task.id, store)
     if task_type.name == COMMAND.name:
         settings = CommandSettings.model_validate(task.settings)
-        return settings.image, settings.args
+        inputs = [
+            f"{port}={store}/{output(record, task.inputs[port])}"
+            for port in sorted(task.inputs)
+        ]
+        return settings.image, _expand(settings.args, directory, inputs)
     if task_type.command is None:
         raise ValueError(
             f"task {task.id!r}: type {task_type.name!r} is neither splittable "
             "nor has a command"
         )
-    directory = task_dir(record, task.id, store)
     inputs = [
         f"{port}={scratch}/{port}"
         if port in task.stage
         else f"{port}={store}/{output(record, task.inputs[port])}"
         for port in sorted(task.inputs)
     ]
-    argv = [EXEC_COMMAND]
-    for template in shlex.split(task_type.command):
-        part = template.replace("{settings}", f"{directory}/{SETTINGS_FILE}").replace(
-            "{out}", f"{directory}/out"
-        )
+    argv = [EXEC_COMMAND, *_expand(shlex.split(task_type.command), directory, inputs)]
+    return image(record, task, task_type), argv
+
+
+def _expand(template: list[str], directory: str, inputs: list[str]) -> list[str]:
+    """The argv of a template: `{settings}`, `{out}` and the parts with `{input}`."""
+    argv: list[str] = []
+    for template_part in template:
+        part = template_part.replace(
+            "{settings}", f"{directory}/{SETTINGS_FILE}"
+        ).replace("{out}", f"{directory}/out")
         if "{input}" in part:
             argv += [part.replace("{input}", value) for value in inputs]
         else:
             argv.append(part)
-    return image(record, task, task_type), argv
+    return argv
