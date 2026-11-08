@@ -728,13 +728,16 @@ class _Service:
         """The image of a run without its own environment, the default image.
 
         A run whose model has a `pyproject.toml` gets the image of its environment
-        in the background (None until then).
+        in the background (None until then). A backend which runs no images needs
+        none.
 
         Raises:
             HTTPException: 422 when the run needs an image and the service has no
                 default image.
         """
-        if has_model_project(self.settings.store, request.sources):
+        if not self.backend.runs_images or has_model_project(
+            self.settings.store, request.sources
+        ):
             return None
         if self.settings.default_image is None and self._needs_run_image(
             request.workflow

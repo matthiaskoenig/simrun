@@ -38,7 +38,6 @@ from simrun.service.edits import (
     OpenEdit,
     TreeState,
 )
-from simrun.snapshot import snapshot
 from simrun.workflow import Workflow, WorkflowError, load_workflow, workflow_yaml
 
 logger = logging.getLogger(__name__)
@@ -157,8 +156,7 @@ class Editor:
         """Snapshot the sources and open the session."""
         workflow, digest = file_state(self.path)
         provenance = [
-            snapshot(repo, self.client.store, name)
-            for name, repo in self.sources.items()
+            self.client.source(repo, name) for name, repo in self.sources.items()
         ]
         trees = self._trees()
         session = self.client.open_edit(

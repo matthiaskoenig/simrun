@@ -9,7 +9,7 @@ import httpx
 import pytest
 
 import simrun.client
-from simrun.client import ClientError
+from simrun.client import Client, ClientError
 from simrun.demo import SQUARES, SquaresSettings
 from simrun.testing import FakeBackend
 from simrun.workflow import Workflow
@@ -229,3 +229,20 @@ def _write(path: Path) -> Path:
 
     path.write_text(yaml.safe_dump(WORKFLOW))
     return path
+
+
+def test_client_records_provenance_only_without_a_store(
+    service, repo: Path, tmp_path: Path
+) -> None:
+    client = Client(
+        "http://testserver",
+        "t-mk",
+        None,
+        sources="provenance",
+        transport=httpx.MockTransport(lambda r: httpx.Response(200)),
+    )
+    prov = client.source(repo, "model")
+    assert prov.snapshot == "" and prov.patch is None
+    assert not (tmp_path / "snapshots").exists()
+    with pytest.raises(RuntimeError, match="not available"):
+        Client("http://x", "t", None, "upload").source(repo, "model")

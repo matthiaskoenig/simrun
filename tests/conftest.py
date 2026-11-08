@@ -258,7 +258,7 @@ def make_client(
             "http://testserver",
             token,
             service.settings.store,
-            transport or InProcessTransport(service.client),
+            transport=transport or InProcessTransport(service.client),
         )
 
     return factory

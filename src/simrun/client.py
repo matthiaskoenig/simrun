@@ -7,11 +7,12 @@ import logging
 import os
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 from pydantic import ValidationError
 
+from simrun.local import LOCAL_DIR, ensure_local
 from simrun.plugins import TaskType, load_task_types, resolve
 from simrun.service.app import (
     CleanupResult,
@@ -32,7 +33,7 @@ from simrun.service.edits import (
     OpenEdit,
 )
 from simrun.service.logs import DEFAULT_TAIL_LINES
-from simrun.snapshot import snapshot
+from simrun.snapshot import SourceProvenance, provenance, snapshot
 from simrun.store import RunRecord, RunState
 from simrun.workflow import SplitMode, Workflow, load_workflow
 
@@ -127,7 +128,12 @@ class Client:
     Args:
         url: Base URL of the service.
         token: Bearer token.
-        store: The run store as mounted locally, where snapshots are written.
+        store: The run store as mounted locally, where snapshots are written; None
+            for a client which sends no snapshots.
+        sources: How a source is sent: `store` copies a snapshot into `store`,
+            `provenance` sends its provenance only (the local service runs the
+            tasks with the environment of the command), `upload` is not
+            implemented.
         transport: An HTTP transport, e.g. for tests.
     """
 
@@ -135,12 +141,14 @@ class Client:
         self,
         url: str,
         token: str,
-        store: Path,
+        store: Path | None,
+        sources: Literal["store", "upload", "provenance"] = "store",
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         """Create the client."""
         self.url = url.rstrip("/")
         self.store = store
+        self.sources = sources
         self._http = httpx.Client(
             base_url=url,
             headers={"Authorization": f"Bearer {token}"},
@@ -163,6 +171,39 @@ class Client:
             values[name] = value
         return cls(values[URL_ENV], values[TOKEN_ENV], Path(values[STORE_ENV]))
 
+    @classmethod
+    def local(cls, root: Path, snapshot: bool = False) -> Client:
+        """The client of the local service of a project directory.
+
+        The service is started in the background when none runs.
+
+        Args:
+            root: The project directory, where `.simrun/` is.
+            snapshot: Copy the sources into the local store and install them as on
+                the cluster; else only their provenance is recorded.
+
+        Raises:
+            RuntimeError: The service did not start.
+        """
+        service = ensure_local(root)
+        if snapshot:
+            store = root.absolute() / LOCAL_DIR / "store"
+            return cls(service.url, service.token, store, "store")
+        return cls(service.url, service.token, None, "provenance")
+
+    def source(self, repo: Path, name: str) -> SourceProvenance:
+        """The provenance of a source, its snapshot written to the store first.
+
+        Raises:
+            RuntimeError: When the client sends no snapshots and records no
+                provenance, or git fails.
+        """
+        if self.sources == "provenance":
+            return provenance(repo, name)
+        if self.sources == "store" and self.store is not None:
+            return snapshot(repo, self.store, name)
+        raise RuntimeError(f"sources {self.sources!r} are not available")
+
     def close(self) -> None:
         """Close the connections."""
         self._http.close()
@@ -180,19 +221,19 @@ class Client:
         group: str | None,
         split: SplitMode | None,
         reserve: str | None,
+        local_commands: str | None = None,
     ) -> dict[str, Any]:
         if isinstance(workflow, Path):
             workflow = load_workflow(workflow)
         workflow = plan_tasks(workflow, load_task_types())
-        provenance = [
-            snapshot(path, self.store, name) for name, path in sources.items()
-        ]
+        recorded = [self.source(path, name) for name, path in sources.items()]
         return {
             "workflow": workflow.model_dump(mode="json"),
-            "sources": [p.model_dump(mode="json") for p in provenance],
+            "sources": [p.model_dump(mode="json") for p in recorded],
             "group": group,
             "split": split.value if split else None,
             "reserve": reserve,
+            "local_commands": local_commands,
         }
 
     def submit(
@@ -202,6 +243,7 @@ class Client:
         group: str | None = None,
         split: SplitMode | None = None,
         reserve: str | None = None,
+        local_commands: str | None = None,
     ) -> RunSummary:
         """Plan the tasks, snapshot the sources and submit a workflow.
 
@@ -214,6 +256,8 @@ class Client:
             group: Group of the run.
             split: Split mode of every task.
             reserve: A node to reserve.
+            local_commands: With the local service, `docker` runs a `command` task
+                in its image, `direct` (the default) as a process.
 
         Returns:
             The summary of the run, `submitting` while the service resolves its
@@ -222,7 +266,7 @@ class Client:
         Raises:
             ClientError: When the service refuses the submission.
         """
-        body = self._request(workflow, sources, group, split, reserve)
+        body = self._request(workflow, sources, group, split, reserve, local_commands)
         return RunSummary.model_validate(self._call("POST", "/runs", json=body).json())
 
     def estimate(

@@ -50,6 +50,14 @@ GROUP = Annotated[str | None, typer.Option(help="Group of the run, e.g. a study.
 SINGLE_SERVER = Annotated[
     bool, typer.Option("--single-server", help="Place the pieces on one server.")
 ]
+LOCAL = Annotated[
+    bool,
+    typer.Option(
+        "--local",
+        help=f"Use the local service of the current directory ({LOCAL_DIR}/), "
+        "started if none runs, instead of SIMRUN_URL.",
+    ),
+]
 RESERVE = Annotated[str | None, typer.Option(help="A node to reserve for the run.")]
 
 EXIT_FAILED = 1
@@ -59,6 +67,21 @@ EXIT_TIMEOUT = 2
 def make_client() -> Client:
     """The client of the environment (`SIMRUN_URL`, `SIMRUN_TOKEN`, `SIMRUN_STORE`)."""
     return Client.from_env()
+
+
+def _client(local: bool, snapshot: bool = False, docker: bool = False) -> Client:
+    """The client of the local service with `local`, else of the environment.
+
+    Raises:
+        typer.Exit: With 1 for `snapshot` or `docker` without `local`.
+    """
+    if snapshot and not local:
+        _fail("--snapshot needs --local")
+    if docker and not local:
+        _fail("--docker needs --local")
+    if local:
+        return Client.local(Path.cwd(), snapshot=snapshot)
+    return make_client()
 
 
 def _fail(message: str) -> NoReturn:
@@ -139,11 +162,36 @@ def submit(
     group: GROUP = None,
     single_server: SINGLE_SERVER = False,
     reserve: RESERVE = None,
+    local: LOCAL = False,
+    docker: Annotated[
+        bool,
+        typer.Option(
+            "--docker",
+            help="With --local: run a command task in its image with docker "
+            "instead of directly.",
+        ),
+    ] = False,
+    snapshot: Annotated[
+        bool,
+        typer.Option(
+            "--snapshot",
+            help="With --local: copy and install the sources as on the cluster, "
+            "instead of recording their provenance only.",
+        ),
+    ] = False,
     as_json: AS_JSON = False,
 ) -> None:
     """Snapshot the sources and submit a workflow."""
     split = SplitMode.SINGLE_SERVER if single_server else None
-    summary = make_client().submit(workflow, _sources(source), group, split, reserve)
+    client = _client(local, snapshot, docker)
+    summary = client.submit(
+        workflow,
+        _sources(source),
+        group,
+        split,
+        reserve,
+        "docker" if docker else None,
+    )
     if as_json:
         _json(summary)
     else:
@@ -155,10 +203,11 @@ def submit(
 def wait(
     run: Annotated[str, typer.Argument(help="The run id.")],
     timeout: Annotated[float | None, typer.Option(help="Seconds to wait.")] = None,
+    local: LOCAL = False,
     as_json: AS_JSON = False,
 ) -> None:
     """Wait for a run to end; exit 0 if it succeeded, 1 if not, 2 on timeout."""
-    summary = make_client().wait(run, timeout)
+    summary = _client(local).wait(run, timeout)
     if as_json:
         _json(summary)
     else:
@@ -175,10 +224,11 @@ def wait(
 @_guarded
 def status(
     run: Annotated[str, typer.Argument(help="The run id.")],
+    local: LOCAL = False,
     as_json: AS_JSON = False,
 ) -> None:
     """Show the state of a run and its tasks."""
-    client = make_client()
+    client = _client(local)
     record = client.status(run)
     progress = client.progress(run)
     if as_json:
@@ -205,10 +255,11 @@ def list_(
     owner: Annotated[
         str | None, typer.Option(help="Only runs of this owner and their agents.")
     ] = None,
+    local: LOCAL = False,
     as_json: AS_JSON = False,
 ) -> None:
     """List runs."""
-    runs = make_client().list_runs(group, agent, state, owner)
+    runs = _client(local).list_runs(group, agent, state, owner)
     if as_json:
         _json(runs)
     else:
@@ -219,10 +270,11 @@ def list_(
 @_guarded
 def compare(
     runs: Annotated[list[str], typer.Argument(help="The run ids.")],
+    local: LOCAL = False,
     as_json: AS_JSON = False,
 ) -> None:
     """Compare the provenance and the summaries of runs."""
-    result = make_client().compare(runs)
+    result = _client(local).compare(runs)
     if as_json:
         _json(result)
         return
@@ -238,10 +290,11 @@ def compare(
 @_guarded
 def cancel(
     run: Annotated[str, typer.Argument(help="The run id.")],
+    local: LOCAL = False,
     as_json: AS_JSON = False,
 ) -> None:
     """Cancel a run."""
-    summary = make_client().cancel(run)
+    summary = _client(local).cancel(run)
     if as_json:
         _json(summary)
     else:
@@ -256,9 +309,10 @@ def logs(
     tail: Annotated[
         int, typer.Option(help="The last lines of every pod, 0 for all of them.")
     ] = DEFAULT_TAIL_LINES,
+    local: LOCAL = False,
 ) -> None:
     """Print the logs of the pods of a task."""
-    sys.stdout.write(make_client().logs(run, task, tail))
+    sys.stdout.write(_client(local).logs(run, task, tail))
 
 
 @app.command()
@@ -268,11 +322,12 @@ def estimate(
     source: SOURCE = None,
     single_server: SINGLE_SERVER = False,
     reserve: RESERVE = None,
+    local: LOCAL = False,
     as_json: AS_JSON = False,
 ) -> None:
     """Show the plan and the expected duration of every task of a submission."""
     split = SplitMode.SINGLE_SERVER if single_server else None
-    plans = make_client().estimate(workflow, _sources(source), None, split, reserve)
+    plans = _client(local).estimate(workflow, _sources(source), None, split, reserve)
     if as_json:
         _json(plans)
         return
@@ -299,10 +354,11 @@ def cleanup(
     group: GROUP = None,
     failed: Annotated[bool, typer.Option(help="Only failed runs.")] = False,
     dry_run: Annotated[bool, typer.Option(help="Remove nothing.")] = False,
+    local: LOCAL = False,
     as_json: AS_JSON = False,
 ) -> None:
     """Remove ended runs and the snapshots nothing refers to."""
-    result = make_client().cleanup(older_than, group, failed, dry_run)
+    result = _client(local).cleanup(older_than, group, failed, dry_run)
     if as_json:
         _json(result)
         return
@@ -317,13 +373,28 @@ def cleanup(
 
 @app.command()
 @_guarded
-def edit(workflow: WORKFLOW, source: SOURCE = None, group: GROUP = None) -> None:
+def edit(
+    workflow: WORKFLOW,
+    source: SOURCE = None,
+    group: GROUP = None,
+    local: LOCAL = False,
+    snapshot: Annotated[
+        bool,
+        typer.Option(
+            "--snapshot",
+            help="With --local: copy and install the sources as on the cluster, "
+            "instead of recording their provenance only.",
+        ),
+    ] = False,
+) -> None:
     """Serve the Editor of the web app for a workflow file until stopped.
 
     Saves of the browser are written into the file, a run snapshots the sources
     again. A missing file is a new workflow. Ctrl-C closes the session and exits,
-    a second Ctrl-C exits without waiting for the close.
+    a second Ctrl-C exits without waiting for the close. With --local the session
+    is on the local service of the current directory.
     """
+    client = _client(local, snapshot)
     stop = threading.Event()
 
     def first_signal(*_: object) -> None:
@@ -335,18 +406,16 @@ def edit(workflow: WORKFLOW, source: SOURCE = None, group: GROUP = None) -> None
     for number in (signal.SIGINT, signal.SIGTERM):
         signal.signal(number, first_signal)
     try:
-        run_edit(
-            make_client(), workflow, _sources(source), group, should_stop=stop.is_set
-        )
+        run_edit(client, workflow, _sources(source), group, should_stop=stop.is_set)
     except KeyboardInterrupt:
         console.print("Stopped, the session shows not connected within 30 s")
 
 
 @app.command()
 @_guarded
-def usage(as_json: AS_JSON = False) -> None:
+def usage(local: LOCAL = False, as_json: AS_JSON = False) -> None:
     """Show the bytes of the store per group and run."""
-    result = make_client().usage()
+    result = _client(local).usage()
     if as_json:
         _json(result)
         return
