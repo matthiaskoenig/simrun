@@ -40,6 +40,7 @@ The service: the API, the controller and the backends, see [Service](../service.
 | [service.auth](service.auth.md) | identities of the callers of the service and the priorities of their runs |
 | [service.backend](service.backend.md) | the backend the service runs workflows on: Argo Workflows, or a fake in tests |
 | [service.argo_backend](service.argo_backend.md) | the backend of the service on a cluster: Argo Workflows, Kueue and BuildKit |
+| [service.local_backend](service.local_backend.md) | the backend of the local mode: the tasks of a run as processes on this machine |
 | [service.controller](service.controller.md) | the controller: follows the workflows of the runs and records their end |
 | [service.submission](service.submission.md) | the submission of a run in the background: its environment, image and workflow |
 | [service.index](service.index.md) | the index of the runs in SQLite, beside the run store |

@@ -23,7 +23,15 @@ simrun wait <run>
 simrun compare <run> <run>
 ```
 
-The documentation is available at [https://matthiaskoenig.github.io/simrun](https://matthiaskoenig.github.io/simrun): [installation](https://matthiaskoenig.github.io/simrun/installation/), [concepts](https://matthiaskoenig.github.io/simrun/concepts/), [workflows](https://matthiaskoenig.github.io/simrun/workflows/), [command line](https://matthiaskoenig.github.io/simrun/command-line/), [agents and MCP](https://matthiaskoenig.github.io/simrun/mcp/), [plugins](https://matthiaskoenig.github.io/simrun/plugins/), [service](https://matthiaskoenig.github.io/simrun/service/), [cluster deployment](https://matthiaskoenig.github.io/simrun/deployment/) and [development](https://matthiaskoenig.github.io/simrun/development/).
+Without a cluster the same workflow runs on this machine, with the web app, see [local mode](https://matthiaskoenig.github.io/simrun/local/):
+
+```bash
+pip install simrun
+simrun submit fit.yaml --source model=. --local
+simrun outputs <run> <task> --to results
+```
+
+The documentation is available at [https://matthiaskoenig.github.io/simrun](https://matthiaskoenig.github.io/simrun): [installation](https://matthiaskoenig.github.io/simrun/installation/), [concepts](https://matthiaskoenig.github.io/simrun/concepts/), [workflows](https://matthiaskoenig.github.io/simrun/workflows/), [command line](https://matthiaskoenig.github.io/simrun/command-line/), [local mode](https://matthiaskoenig.github.io/simrun/local/), [agents and MCP](https://matthiaskoenig.github.io/simrun/mcp/), [plugins](https://matthiaskoenig.github.io/simrun/plugins/), [service](https://matthiaskoenig.github.io/simrun/service/), [cluster deployment](https://matthiaskoenig.github.io/simrun/deployment/) and [development](https://matthiaskoenig.github.io/simrun/development/).
 
 If you have any questions or issues please [open an issue](https://github.com/matthiaskoenig/simrun/issues).
 

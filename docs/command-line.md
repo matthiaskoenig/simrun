@@ -1,6 +1,6 @@
 # Command line
 
-`simrun` is the command line of people and scripts: it submits, follows, compares, cancels and cleans up runs, and `simrun edit` opens a workflow file in the [Editor](web-app.md#the-editor) of the web app. It runs on the machine of the working trees, e.g. the development server, which mounts the run store, and reads three environment variables, which the [MCP server](mcp.md) reads alike:
+`simrun` is the command line of people and scripts: it submits, follows, compares, cancels and cleans up runs, and `simrun edit` opens a workflow file in the [Editor](web-app.md#the-editor) of the web app. On a cluster it runs on the machine of the working trees and reads three environment variables, which the [MCP server](mcp.md) reads alike:
 
 | variable | meaning |
 | --- | --- |
@@ -16,15 +16,18 @@ export SIMRUN_STORE=/mnt/cluster
 
 Every command takes `--json` (except `logs`, which prints the logs as text, and `edit`, which runs until it is stopped) and prints machine-readable JSON instead of tables. A refusal of the service is printed to stderr with exit code 1.
 
+With `--local` on a command, no variable is needed: it talks to the local service of the current directory, see [Local mode](local.md).
+
 ## Commands
 
 | command | what it does |
 | --- | --- |
-| `simrun submit WORKFLOW` | snapshot the sources and submit a workflow; prints the run in the state `submitting` |
+| `simrun submit WORKFLOW` | snapshot the sources and submit a workflow; prints the run in the state `submitting`, or with `--wait` follows it to its end |
 | `simrun wait RUN` | wait for a run to end; exit 0 if it succeeded, 1 if it failed or was cancelled, 2 on timeout |
 | `simrun status RUN` | the state of a run and its tasks with their progress |
 | `simrun list` | the runs, filtered by group, agent, state and owner |
 | `simrun logs RUN TASK` | the logs of the pods of a task |
+| `simrun outputs RUN TASK` | list the output files of a task, or download them with `--to DIR` |
 | `simrun edit WORKFLOW` | serve the Editor of the web app for a workflow file: saves go into the file, runs use the working trees |
 | `simrun estimate WORKFLOW` | the plan and the expected duration of every task of a submission |
 | `simrun compare RUN RUN...` | the provenance and the summaries of the tasks of runs side by side |
@@ -45,6 +48,11 @@ simrun submit fit.yaml --source model=~/git/pkdb_models --source sbmlsim=~/git/s
 | `--group GROUP` | the group of the run, e.g. a study |
 | `--single-server` | place the pieces of every task on one server |
 | `--reserve NODE` | reserve a node for the run |
+| `--local` | use the local service of the current directory, see [Local mode](local.md) |
+| `--docker` | with `--local`: run a `command` task in its image with docker instead of directly |
+| `--snapshot` | with `--local`: copy and install the sources as on the cluster instead of recording their provenance only |
+| `--wait` / `--no-wait` | follow the run to its end (a live line per task on a terminal, plain lines otherwise) and exit like `wait`; the default with `--local`, else `--no-wait` |
+| `--timeout SECONDS` | with `--wait`: give up after this long, exit 2 |
 
 The client copies every working tree with its uncommitted changes into `snapshots/<name>/` of the store, or without `SIMRUN_STORE` uploads the files the store lacks to the service which writes the snapshot, and sends its provenance, see [Snapshots and environments](concepts.md#snapshots-and-environments).
 
@@ -58,6 +66,8 @@ simrun edit fit.yaml --source model=~/git/pkdb_models --source sbmlsim=~/git/sbm
 | --- | --- |
 | `--source NAME=PATH` | a source, as for `submit`; snapshotted when the session opens and at every run |
 | `--group GROUP` | the group of the runs started from the Editor which name none |
+| `--local` | use the local service of the current directory |
+| `--snapshot` | with `--local`: copy and install the sources at every run |
 
 The command opens an edit session in the service, prints the link of the [Editor](web-app.md#the-editor) and runs until Ctrl-C, which closes the session and exits 0 (a second Ctrl-C exits without waiting for the close): it writes the saves of the browser into the file, runs the workflow of the browser as `submit` does, and sends a change of the file or of the working trees to the browser. A file which does not exist is a new workflow.
 
@@ -68,6 +78,15 @@ simrun wait <run> --timeout 3600
 ```
 
 `--timeout` is in seconds, without it the command waits for the end of the run. The service answers a long poll which the client repeats, so no connection is held for hours.
+
+### outputs
+
+```bash
+simrun outputs <run> <task>              # the files and their sizes
+simrun outputs <run> <task> --to results # download them into results/
+```
+
+The files come through the API, so no mount of the store is needed. With `--json` the list is `[{"path", "bytes"}]`, or with `--to` the paths written.
 
 ### status, list and logs
 
