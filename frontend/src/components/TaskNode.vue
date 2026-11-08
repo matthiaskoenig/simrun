@@ -8,6 +8,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { TaskProgress, TaskSpec, TaskState, WorkerView } from "../api/client";
+import { serverLabel } from "../lib/format";
 import { kindOf } from "../lib/kinds";
 import { rankWorkers, workerLook } from "../lib/workers";
 import AppIcon from "./AppIcon.vue";
@@ -138,9 +139,9 @@ function workerTitle(worker: WorkerView): string {
           >
             <!-- a worker whose pod is not bound to a server yet waits for one -->
             <span v-if="w.node === null" data-node class="w-20 shrink-0 text-gray-400 italic">pending</span>
-            <span v-else data-node class="truncate-start w-20 shrink-0 font-mono text-gray-500" :title="w.node"
-              ><bdi>{{ w.node }}</bdi></span
-            >
+            <span v-else data-node class="w-20 shrink-0 truncate font-mono text-gray-500" :title="w.node">{{
+              serverLabel(w.node)
+            }}</span>
             <div class="h-1 flex-1 overflow-hidden rounded-full bg-gray-100">
               <div data-bar class="h-full rounded-full" :class="look(w).bar" :style="{ width: percent(workerFrac(w)) }"></div>
             </div>
@@ -154,7 +155,9 @@ function workerTitle(worker: WorkerView): string {
         </div>
         <div v-else-if="workers.length === 1" class="mt-2 flex items-center gap-1.5 text-[11px] text-gray-500" :title="workerTitle(workers[0]!)">
           <AppIcon name="server" class="size-3 shrink-0" />
-          <span data-server class="truncate-start min-w-0 font-mono"><bdi>{{ workers[0]?.node ?? "no server yet" }}</bdi></span>
+          <span data-server class="min-w-0 truncate font-mono" :title="workers[0]?.node ?? undefined">{{
+            workers[0]?.node ? serverLabel(workers[0].node) : "no server yet"
+          }}</span>
         </div>
       </div>
     </div>

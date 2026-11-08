@@ -108,11 +108,31 @@ function reads(workflow: Workflow, task: string, from: string, seen = new Set<st
   });
 }
 
-/** The workflow with the input `target` reading the output `source`, or the reason it is refused. */
+/** The handle of a task of a type which reads any input, `command`: a connection to it adds a port. */
+export const NEW_INPUT = "+";
+
+/** Whether a type takes inputs on ports of any name: the built-in `command`, whose args get them. */
+export const anyInputs = (typeName: string): boolean => typeName === "command";
+
+/** The input ports a task shows: those of its type and those it reads, and `NEW_INPUT` for a `command`. */
+export function inputPorts(task: TaskSpec, type: TaskTypeView | null): string[] {
+  const used = Object.keys(task.inputs ?? {});
+  const ports = [...(type?.inputs ?? []), ...used.filter((port) => !type?.inputs.includes(port)).sort()];
+  return anyInputs(task.type) ? [...ports, NEW_INPUT] : ports;
+}
+
+/** The workflow with the input `target` reading the output `source`, or the reason it is refused.
+ * A connection to `NEW_INPUT` adds a port named after the source task. */
 export function connect(workflow: Workflow, source: PortRef, target: PortRef): Workflow | string {
   if (source.task === target.task) return "a task cannot read its own output";
   const spec = workflow.tasks.find((task) => task.id === target.task);
   if (!spec) return `there is no task ${target.task}`;
+  if (target.port === NEW_INPUT) {
+    const taken = new Set(Object.keys(spec.inputs ?? {}));
+    let port = source.task;
+    for (let n = 2; taken.has(port); n += 1) port = `${source.task}-${n}`;
+    target = { ...target, port };
+  }
   if (spec.inputs?.[target.port] !== undefined) return `the input ${target.port} of ${target.task} is already connected`;
   if (reads(workflow, source.task, target.task)) return "this connection makes a cycle";
   const next = clone(workflow);

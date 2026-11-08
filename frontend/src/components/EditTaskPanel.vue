@@ -7,7 +7,7 @@
 <script setup lang="ts">
 import { computed, ref, watch } from "vue";
 import type { ResourceOverride, TaskEstimate, TaskSpec, TaskTypeView, Workflow } from "../api/client";
-import { disconnect, removeTask, renameTask } from "../lib/edit-graph";
+import { NEW_INPUT, anyInputs, disconnect, inputPorts, removeTask, renameTask } from "../lib/edit-graph";
 import { formatDuration, formatGb, formatPlacement } from "../lib/format";
 import { kindOf } from "../lib/kinds";
 import { fieldErrors, fields } from "../lib/schema-form";
@@ -68,7 +68,9 @@ function setSettings(value: Record<string, unknown>): void {
 }
 
 // inputs
-const ports = computed(() => props.type?.inputs ?? Object.keys(props.task.inputs ?? {}));
+const ports = computed(() => inputPorts(props.task, props.type).filter((port) => port !== NEW_INPUT));
+// a command runs without the harness: it does not stage, and its resources are its settings
+const command = computed(() => anyInputs(props.task.type));
 function unconnect(port: string): void {
   emit("change", disconnect(props.workflow, { task: props.task.id, port }));
 }
@@ -153,7 +155,7 @@ function remove(): void {
             </span>
             <span v-else class="text-xs text-gray-400">not connected</span>
           </div>
-          <label v-if="task.inputs?.[port]" class="mt-1.5 flex items-center gap-2 text-xs text-gray-600">
+          <label v-if="task.inputs?.[port] && !command" class="mt-1.5 flex items-center gap-2 text-xs text-gray-600">
             <input type="checkbox" :data-stage="port" :checked="task.stage?.includes(port) ?? false" @change="(e) => stage(port, (e.target as HTMLInputElement).checked)" />
             Stage a copy in the scratch of the pod
           </label>
@@ -163,10 +165,10 @@ function remove(): void {
       <section class="space-y-3">
         <h3 class="flex items-center justify-between text-xs font-semibold tracking-wide text-gray-500 uppercase">
           Resources
-          <span v-if="estimate" class="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium tracking-normal text-emerald-700 normal-case">{{ estimate.resources.source }}</span>
+          <span v-if="estimate && !command" class="rounded bg-emerald-50 px-1.5 py-0.5 text-[10px] font-medium tracking-normal text-emerald-700 normal-case">{{ estimate.resources.source }}</span>
         </h3>
         <div v-if="estimate" data-estimate class="rounded-lg border border-gray-200 bg-gray-50/70 p-3 text-xs leading-relaxed text-gray-600">
-          <div class="flex justify-between"><span>Memory per worker</span><b class="font-semibold text-gray-900">{{ formatGb(estimate.resources.memory_per_worker_gb) }}</b></div>
+          <div class="flex justify-between"><span>Memory per worker</span><b class="font-semibold text-gray-900">{{ formatGb(estimate.plan.shape.per_worker_gb) }}</b></div>
           <div class="flex justify-between"><span>Duration</span><b class="font-semibold text-gray-900">{{ estimate.seconds === null ? "unknown" : formatDuration(estimate.seconds) }}</b></div>
           <div class="flex justify-between">
             <span>Placement</span>
@@ -175,7 +177,8 @@ function remove(): void {
           <div v-if="estimate.plan.units !== null" class="mt-1.5 text-[11px] text-gray-500">{{ estimate.plan.units }} units</div>
         </div>
         <p v-else class="text-xs text-gray-400">No estimate while the workflow is not valid.</p>
-        <div class="grid grid-cols-2 gap-3">
+        <p v-if="command" data-command-resources class="text-xs text-gray-500">A command gets the cores, memory, scratch and GPUs of its settings.</p>
+        <div v-else class="grid grid-cols-2 gap-3">
           <label class="block">
             <span class="mb-1 block text-xs text-gray-600">Workers</span>
             <input data-workers type="number" min="1" step="1" placeholder="auto" :class="INPUT" :value="task.resources?.workers ?? ''" @input="(e) => override('workers', (e.target as HTMLInputElement).value)" />

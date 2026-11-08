@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fileOf, formatAgo, formatBytes, formatCores, formatDuration, formatGb, formatPlacement, formatTime, initials, shortRun } from "./format";
+import { fileOf, formatAgo, formatBytes, formatCores, formatDuration, formatGb, formatPlacement, formatTime, initials, serverLabel, shortRun } from "./format";
 
 describe("formatDuration", () => {
   it("names seconds, minutes and hours with minutes", () => {
@@ -102,5 +102,14 @@ describe("fileOf", () => {
   it("splits a path into its directory and its file name", () => {
     expect(fileOf("/home/mk/git/model/squares.yaml")).toEqual({ dir: "/home/mk/git/model/", name: "squares.yaml" });
     expect(fileOf("squares.yaml")).toEqual({ dir: "", name: "squares.yaml" });
+  });
+});
+
+describe("serverLabel", () => {
+  it("keeps the last two parts of the host name", () => {
+    expect(serverLabel("k3d-simrun-test-agent-0")).toBe("agent-0");
+    expect(serverLabel("srv-01")).toBe("srv-01");
+    expect(serverLabel("node7")).toBe("node7");
+    expect(serverLabel("gpu-node-3.cluster.local")).toBe("node-3");
   });
 });

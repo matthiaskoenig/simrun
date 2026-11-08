@@ -5,7 +5,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import type { ServerUsage } from "../api/client";
-import { formatCores, formatGb } from "../lib/format";
+import { formatCores, formatGb, serverLabel } from "../lib/format";
 import AppIcon from "./AppIcon.vue";
 
 const props = defineProps<{ servers: ServerUsage[]; selected: string | null }>();
@@ -53,10 +53,10 @@ const tiles = computed(() =>
       >
         <!-- a long name pushes the capacity to a line of its own instead of being cut -->
         <div class="flex flex-wrap items-baseline justify-between gap-x-1">
-          <!-- names of a cluster share their start (`k3d-simrun-test-agent-0`): a cut keeps their end -->
-          <span data-name class="truncate-start min-w-0 font-mono text-[11px] font-semibold text-gray-800"
-            ><bdi>{{ tile.server.name }}</bdi></span
-          >
+          <!-- names of a cluster share their start (`k3d-simrun-test-agent-0`): the label keeps their end -->
+          <span data-name class="min-w-0 truncate font-mono text-[11px] font-semibold text-gray-800">{{
+            serverLabel(tile.server.name)
+          }}</span>
           <span data-capacity class="shrink-0 text-[10px] text-gray-400"
             >{{ formatCores(tile.server.cores) }} c · {{ formatGb(tile.server.memory_gb) }}</span
           >

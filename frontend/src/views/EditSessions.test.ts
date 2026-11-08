@@ -38,6 +38,7 @@ describe("EditSessions", () => {
   });
 
   it("lists the sessions with path, host and a connected dot", async () => {
+    vi.useFakeTimers({ now: new Date("2026-11-07T13:10:00Z"), toFake: ["Date"] });
     stub(sessions);
     const view = mount(EditSessions);
     await flushPromises();
@@ -47,6 +48,22 @@ describe("EditSessions", () => {
     expect(rows[0]!.text()).toContain("laptop");
     expect(rows[0]!.get("[data-connected]").classes()).toContain("bg-emerald-500");
     expect(rows[1]!.get("[data-connected]").classes()).not.toContain("bg-emerald-500");
+    vi.useRealTimers();
+  });
+
+  it("puts the closed sessions older than a day behind Show older", async () => {
+    vi.useFakeTimers({ now: new Date("2026-11-09T13:10:00Z"), toFake: ["Date"] });
+    const recent = { ...base, id: "e", host: "laptop", path: "/home/mk/new.yaml", connected: false, closed: true, seen: "2026-11-09T12:00:00Z" };
+    stub([...later, recent]);
+    const view = mount(EditSessions);
+    await flushPromises();
+    const names = () => view.get("[data-section='closed']").findAll("[data-file]").map((f) => f.text());
+    expect(names()).toEqual(["new.yaml"]);
+    expect(view.get("[data-older]").text()).toBe("Show 1 older");
+    await view.get("[data-older]").trigger("click");
+    expect(names()).toEqual(["old.yaml", "new.yaml"]);
+    expect(view.get("[data-older]").text()).toBe("Hide older");
+    vi.useRealTimers();
   });
 
   it("shows the command and the docs page without sessions", async () => {

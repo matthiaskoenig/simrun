@@ -67,28 +67,29 @@ const button = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm 
     <div class="flex items-start justify-between gap-3">
       <div
         data-edit-bar
-        class="pointer-events-auto flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 rounded-lg border border-gray-200 bg-white/95 px-3 py-2 text-xs shadow-sm"
+        class="pointer-events-auto flex min-w-0 items-center gap-2 rounded-lg border border-gray-200 bg-white/95 px-3 py-2 text-xs whitespace-nowrap shadow-sm"
       >
+        <!-- one line: a long branch is cut, the separators never end a line -->
         <template v-if="model">
-          <AppIcon name="git-branch" class="size-3.5 text-gray-500" />
-          <span data-branch class="font-mono text-gray-700">{{ model.branch ?? "detached" }}</span>
-          <span data-commit class="font-mono text-gray-400">{{ model.commit.slice(0, 7) }}</span>
+          <AppIcon name="git-branch" class="size-3.5 shrink-0 text-gray-500" />
+          <span data-branch class="min-w-0 truncate font-mono text-gray-700" :title="model.branch ?? undefined">{{ model.branch ?? "detached" }}</span>
+          <span data-commit class="shrink-0 font-mono text-gray-400">{{ model.commit.slice(0, 7) }}</span>
           <span
             v-if="changed.length"
             data-uncommitted
-            class="rounded bg-amber-50 px-1.5 py-0.5 whitespace-nowrap text-amber-800"
+            class="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-amber-800"
             :title="changed.join('\n')"
             >{{ changed.length }} uncommitted {{ changed.length === 1 ? "file" : "files" }}</span
           >
-          <span class="text-gray-300">|</span>
+          <span class="shrink-0 text-gray-300">|</span>
         </template>
-        <span class="inline-flex items-center gap-1.5 whitespace-nowrap" :class="connected || run ? 'text-gray-700' : 'text-gray-500'">
+        <span class="inline-flex shrink-0 items-center gap-1.5" :class="connected || run ? 'text-gray-700' : 'text-gray-500'">
           <span v-if="!run" data-dot class="size-2 rounded-full" :class="connected ? 'bg-emerald-500' : 'bg-gray-300'"></span>
           <AppIcon v-else name="rotate-ccw" class="size-3.5 text-gray-500" />
           <span data-machine>{{ machine }}</span>
         </span>
-        <span class="text-gray-300">|</span>
-        <span data-state class="inline-flex items-center gap-1 whitespace-nowrap" :class="state.tone">
+        <span class="shrink-0 text-gray-300">|</span>
+        <span data-state class="inline-flex shrink-0 items-center gap-1" :class="state.tone">
           <AppIcon v-if="state.text.startsWith('valid')" name="check" class="size-3.5" />{{ state.text }}
         </span>
         <!-- only the machine of the session can reload the file or save over it -->

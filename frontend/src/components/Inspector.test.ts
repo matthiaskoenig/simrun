@@ -128,7 +128,7 @@ describe("Inspector of a task", () => {
   it("counts the time of a task with inputs from its first progress line, unknown before it", () => {
     const tasks = { squares: "done", plot: "running" } as const;
     const before = mountInspector({ record: record({ tasks }), task: "plot", progress: { plot: { counts: null, first: null, last: null } } });
-    expect(tile(before, "Elapsed")).toBe("-");
+    expect(tile(before, "Elapsed")).toBe("starting");
     const first = { time: "2026-11-07T13:55:00+00:00", event: "unit_done", unit: 0 };
     const after = mountInspector({
       record: record({ tasks }),
@@ -137,6 +137,18 @@ describe("Inspector of a task", () => {
     });
     expect(tile(after, "Elapsed")).toBe("5 min");
     expect(tile(after, "Remaining")).toBe("≈ 5 min");
+  });
+
+  it("shows why a failed task failed, its part of the message of the run", () => {
+    const message = "task plot failed: plot exited 2 (see its logs); task squares failed: squares-w0 exited 4, a configuration error (see its logs)";
+    const wrapper = mountInspector({ record: record({ state: "failed", message, tasks: { squares: "failed", plot: "failed" } }) });
+    expect(wrapper.get("[data-failure]").text()).toBe("task squares failed: squares-w0 exited 4, a configuration error (see its logs)");
+  });
+
+  it("names the merge of a running task once every unit is done", () => {
+    const merging: TaskProgress = { ...running, counts: { pending: 0, claimed: 0, done: 3000, total: 3000 } };
+    const wrapper = mountInspector({ progress: { squares: merging } });
+    expect(tile(wrapper, "Remaining")).toBe("merging");
   });
 
   it("stops the clock of a task which is over at its last unit", () => {
@@ -149,7 +161,7 @@ describe("Inspector of a task", () => {
   it("shows no units and no times for a task which has not started", () => {
     const wrapper = mountInspector({ task: "plot" });
     expect(wrapper.find('[data-tile="Units"]').exists()).toBe(false);
-    expect(tile(wrapper, "Elapsed")).toBe("-");
+    expect(tile(wrapper, "Elapsed")).toBe("not started");
     expect(wrapper.find("[data-workers]").exists()).toBe(false);
   });
 
@@ -241,6 +253,25 @@ describe("Inspector of a task", () => {
     wrapper.unmount();
     await vi.advanceTimersByTimeAsync(10_000);
     expect(logs).toHaveBeenCalledTimes(2);
+  });
+
+  it("hides the lines of the Argo executor unless asked for and marks the errors", async () => {
+    const text = [
+      "==> squares-w0 (pod-1) <==",
+      'time=2026-11-08T09:03:19Z level=INFO msg="waiting for signals" argo=true',
+      "Traceback (most recent call last):",
+      "ModuleNotFoundError: No module named 'simrun.plugins_builtin'",
+      "unit 1 done",
+    ].join("\n");
+    vi.spyOn(api, "logs").mockResolvedValue(text);
+    const wrapper = mountInspector({ record: record({ state: "failed", tasks: { squares: "failed", plot: "waiting" } }) });
+    await wrapper.get('[data-tab="logs"]').trigger("click");
+    await flushPromises();
+    expect(wrapper.get("[data-logs]").text()).not.toContain("waiting for signals");
+    const red = wrapper.findAll("[data-logs-text] span.text-red-300").map((s) => s.text());
+    expect(red).toEqual(["Traceback (most recent call last):", "ModuleNotFoundError: No module named 'simrun.plugins_builtin'"]);
+    await wrapper.get("[data-executor]").setValue(true);
+    expect(wrapper.get("[data-logs]").text()).toContain("waiting for signals");
   });
 
   it("reads the logs one request at a time, so that slow logs still show", async () => {

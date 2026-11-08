@@ -2,13 +2,15 @@
   A task on the canvas of the Editor, `tpl-node` of the mockup in its editor
   mode: the type icon, the type in small caps and the task id, the count of
   its errors, and the chips of the estimate (workers, memory per worker,
-  duration, split). A target handle per input port of the type sits on the
-  left, a source handle per output port on the right.
+  duration, split). A target handle per input port (of the type, read by the
+  task, and a `+` to add one on a `command`) sits on the left, a source handle
+  per output port on the right.
 -->
 <script setup lang="ts">
 import { Handle, Position } from "@vue-flow/core";
 import { computed } from "vue";
 import type { TaskEstimate, TaskSpec, TaskTypeView } from "../api/client";
+import { NEW_INPUT, inputPorts } from "../lib/edit-graph";
 import { formatDuration, formatGb } from "../lib/format";
 import { kindOf } from "../lib/kinds";
 import AppIcon from "./AppIcon.vue";
@@ -22,7 +24,8 @@ const props = defineProps<{
 }>();
 
 const kind = computed(() => kindOf(props.task.type));
-const inputs = computed(() => props.type?.inputs ?? []);
+const inputs = computed(() => inputPorts(props.task, props.type));
+const inputNames = computed(() => inputs.value.filter((port) => port !== NEW_INPUT));
 const outputs = computed(() => props.type?.outputs ?? []);
 
 /** The vertical place of a port on its side, in percent. */
@@ -34,7 +37,8 @@ const chips = computed(() => {
   const pods = e.plan.pods;
   return {
     workers: pods * e.plan.shape.processes,
-    memory: formatGb(e.resources.memory_per_worker_gb),
+    // the memory per process of the plan: the learned one, or the override, or the settings of a command
+    memory: formatGb(e.plan.shape.per_worker_gb),
     time: e.seconds === null ? null : formatDuration(e.seconds),
     split: pods > 1 ? `${pods} pods` : null,
   };
@@ -57,7 +61,8 @@ const CHIP = "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]";
         type="target"
         :position="Position.Left"
         :style="{ top: top(i, inputs.length) }"
-        :title="port"
+        :title="port === NEW_INPUT ? 'connect an output to add an input' : port"
+        :class="port === NEW_INPUT ? 'new-input' : ''"
       />
       <Handle
         v-for="(port, i) in outputs"
@@ -87,8 +92,8 @@ const CHIP = "inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px]";
         >
       </div>
       <div class="px-3 pb-3 text-xs text-gray-600">
-        <div v-if="inputs.length || outputs.length" class="flex justify-between gap-2 font-mono text-[10px] text-gray-400">
-          <span class="truncate">{{ inputs.join(" ") }}</span>
+        <div v-if="inputNames.length || outputs.length" class="flex justify-between gap-2 font-mono text-[10px] text-gray-400">
+          <span class="truncate">{{ inputNames.join(" ") }}</span>
           <span class="truncate text-right">{{ outputs.join(" ") }}</span>
         </div>
         <div v-if="chips" data-chips class="mt-2 flex flex-wrap gap-1">

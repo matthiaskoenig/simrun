@@ -252,6 +252,22 @@ defineExpose({ onConnect, rename });
 .edit-canvas .vue-flow__handle:hover {
   border-color: #3b82f6;
 }
+/* the handle which adds an input to a command (`NEW_INPUT`): a dashed plus */
+.edit-canvas .vue-flow__handle.new-input {
+  display: grid;
+  place-items: center;
+  width: 14px;
+  height: 14px;
+  border-style: dashed;
+}
+.edit-canvas .vue-flow__handle.new-input::after {
+  content: "+";
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1;
+  color: #64748b;
+  pointer-events: none;
+}
 .edit-canvas .vue-flow__node-task {
   padding: 0;
   border: 0;
