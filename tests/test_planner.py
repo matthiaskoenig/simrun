@@ -1,3 +1,5 @@
+import math
+
 import pytest
 from pydantic import BaseModel
 
@@ -245,3 +247,14 @@ def test_single_server_ignores_the_work():
         400,
     )
     assert single.pods == 1
+
+
+def test_a_pod_has_no_more_processes_than_units():
+    # 3 units on a server of 36 processes: a pod of 3 processes and their cores,
+    # the other cores stay free for other tasks
+    plan = _plan(units=3)
+    assert (plan.pods, plan.shape.processes, plan.shape.cores) == (1, 3, 3)
+    assert plan.shape.memory_gb == math.ceil(2.0 + 5.1 * 3)
+    single = _plan(mode=SplitMode.SINGLE_SERVER, units=3)
+    assert (single.shape.processes, single.shape.cores) == (3, 3)
+    assert _plan(units=400).shape.processes == 36

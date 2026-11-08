@@ -278,8 +278,9 @@ def plan_task(
 ) -> TaskPlan:
     """Plans the pods of a task.
 
-    A split task of the mode `fastest` gets at most `MAX_PIECES` pods, as many as
-    fit on the nodes, and no pod without a unit for each of its processes. With the
+    A pod of a split task has no more processes than the task has units. A split
+    task of the mode `fastest` gets at most `MAX_PIECES` pods, as many as fit on
+    the nodes, and no pod without a unit for each of its processes. With the
     learned seconds of a unit it gets a further pod only while every pod still has
     at least `pod_start_s` of work: a pod which takes longer to start than its share
     of the work would find the units taken by the others and only hold cores.
@@ -309,7 +310,8 @@ def plan_task(
             # a single command is one process, unless it uses the cores of its pod
             pod = shape(resources, nodes, None if task_type.uses_cores else 1)
         return TaskPlan(task.id, 1, pod, base, extra, None, coordinator_merges=True)
-    pod = shape(resources, nodes)
+    # no more processes than units: the other cores stay free for other tasks
+    pod = shape(resources, nodes, units)
     pods = 1
     if mode == SplitMode.FASTEST and units is not None:
         pods = min(MAX_PIECES, _slots(pod, nodes), math.ceil(units / pod.processes))
