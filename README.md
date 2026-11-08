@@ -4,7 +4,7 @@
 [![Version](https://img.shields.io/pypi/v/simrun.svg)](https://pypi.org/project/simrun/)
 [![Python Versions](https://img.shields.io/pypi/pyversions/simrun.svg)](https://pypi.org/project/simrun/)
 [![MIT License](https://img.shields.io/pypi/l/simrun.svg)](https://opensource.org/licenses/MIT)
-[![DOI](https://img.shields.io/badge/DOI-after%20the%20first%20release-lightgrey.svg)](https://matthiaskoenig.github.io/simrun/development/#pypi-and-zenodo)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24035618.svg)](https://doi.org/10.5281/zenodo.24035618)
 
 `simrun` runs simulation workflows on a small cluster of servers with [k3s](https://k3s.io), [Argo Workflows](https://argoproj.github.io/workflows/) and [Kueue](https://kueue.sigs.k8s.io). People and agents submit a workflow of tasks together with the working trees of their model and libraries, uncommitted changes included, and get a run id at once; the run is queued, placed, executed and recorded without the submitter staying connected.
 
@@ -45,7 +45,11 @@ pip install simrun
 
 ## How to cite
 
-If you use `simrun` please cite the archived software on [Zenodo](https://zenodo.org); the DOI follows with the first release, see [CITATION.cff](CITATION.cff).
+If you use `simrun` please cite the archived software on Zenodo:
+
+> König, M. *simrun: a runner of simulation workflows on a k3s cluster*. Zenodo. [https://doi.org/10.5281/zenodo.24035618](https://doi.org/10.5281/zenodo.24035618)
+
+This DOI stands for every version of `simrun`; the DOI of a single version is on its Zenodo page. The metadata of the citation are in [CITATION.cff](CITATION.cff).
 
 ## License
 
