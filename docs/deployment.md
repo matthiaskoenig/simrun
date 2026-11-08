@@ -7,7 +7,7 @@
 | namespace | `namespace.yaml` | the namespace `simrun` of the service, the workflows and their pods |
 | priorities | `priority-classes.yaml` | the six priority classes of simrun, each a Kueue `WorkloadPriorityClass` and a Kubernetes `PriorityClass` of the same value, see [Priorities and preemption](concepts.md#priorities-and-preemption) |
 | Kueue v0.20.5 | `kueue/` | the release manifests, committed unchanged, and the queue: a `Topology` by host, a `ResourceFlavor` over the nodes labelled `simrun/worker=true`, the `ClusterQueue` `simrun`, which preempts lower priorities, and the `LocalQueue` `simrun` |
-| Argo Workflows v4.1.6 | `argo/` | the release manifests of a namespace install, committed unchanged, the configuration of the controller, its requeue time of 2 s instead of 10 s (`requeue.yaml`, so a run shows running soon after its pods start) and the service account `simrun-workflow` of the pods |
+| Argo Workflows v4.1.6 | `argo/` | the release manifests of a namespace install, committed unchanged, the configuration of the controller, its requeue time of 1 s instead of 10 s (`requeue.yaml`, so a run shows running soon after its pods start and the next task of the DAG starts about a second after the one before it) and the service account `simrun-workflow` of the pods |
 | run store | `store-settings.yaml`, `store.yaml` | the run store on NFS (csi-driver-nfs), mounted by the service and every pod with `nfsvers=4.2` and `lookupcache=positive` |
 | registry | `zot.yaml` | [Zot](https://zotregistry.dev), the image registry inside the network |
 | builds | `buildkit.yaml` | the BuildKit daemon, which builds the images of the environments |
