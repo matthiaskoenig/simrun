@@ -1,6 +1,6 @@
 """The configuration of the cluster the runs are submitted to."""
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # the base image of the images of the environments: uv with the python of the
 # service, pinned by the digest of its index, which the registry mirrors (the tag
@@ -9,6 +9,9 @@ DEFAULT_BASE_IMAGE = (
     "astral-sh/uv:0.13.7-python3.14-trixie-slim"
     "@sha256:e80c05a310400cfc90af00b5b7271ef9ad24816e3265e1162af8a678e1aad099"
 )
+# about the seconds from the creation of a pod to its first unit on the cluster:
+# the admission by Kueue, the init container of Argo, the start of the container
+POD_START_S = 10.0
 
 
 class ClusterConfig(BaseModel):
@@ -35,6 +38,9 @@ class ClusterConfig(BaseModel):
             unless it names a registry host itself.
         grace_s: Seconds a worker has to stop after SIGTERM.
         ttl_after_finished_s: Seconds a finished workflow is kept.
+        pod_start_s: About the seconds from the creation of a pod to its first unit;
+            a split task gets a further pod only while every pod has at least this
+            much work (`simrun.planner.plan_task`).
     """
 
     namespace: str = "simrun"
@@ -50,6 +56,7 @@ class ClusterConfig(BaseModel):
     base_image: str = DEFAULT_BASE_IMAGE
     grace_s: int = 60
     ttl_after_finished_s: int = 86400
+    pod_start_s: float = Field(POD_START_S, gt=0)
 
     def base_image_ref(self) -> str:
         """The base image of the environments as the builds name it.

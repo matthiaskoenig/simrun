@@ -821,7 +821,14 @@ class _Service:
                 mode = SplitMode.SINGLE_SERVER
             try:
                 plan = plan_task(
-                    task, task_type, resources, nodes, mode, priority, units
+                    task,
+                    task_type,
+                    resources,
+                    nodes,
+                    mode,
+                    priority,
+                    units,
+                    self.settings.cluster.pod_start_s,
                 )
             except PlanError as error:
                 raise HTTPException(422, f"task {task.id!r}: {error}") from error
