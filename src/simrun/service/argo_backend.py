@@ -26,6 +26,10 @@ An image is built by a Job of `buildctl`, which sends the build context (a Confi
 of its files, owned by the Job) to the BuildKit daemon of the cluster and pushes the
 image to the registry with the credentials of the optional Secret
 `simrun-registry-auth`; whether the registry has an image is asked its API.
+
+A thread watches the workflows of the runs and wakes the controller on every change,
+so the state of a run follows Argo at once; the controller still polls, which covers
+a watch that is restarted.
 """
 
 import base64
@@ -34,6 +38,7 @@ import logging
 import math
 import os
 import re
+import threading
 import time
 import uuid
 from collections.abc import Callable
@@ -46,8 +51,9 @@ from kubernetes import config as kube_config
 from kubernetes.client.exceptions import ApiException
 from kubernetes.config.config_exception import ConfigException
 from kubernetes.utils import parse_quantity
+from kubernetes.watch import Watch
 
-from simrun.argo import CONTAINER, GPU_RESOURCE, RESERVED_KEY, to_argo
+from simrun.argo import CONTAINER, GPU_RESOURCE, RESERVED_KEY, RUN_LABEL, to_argo
 from simrun.config import ClusterConfig
 from simrun.planner import Node, TaskPlan
 from simrun.plugins import TaskType
@@ -70,6 +76,11 @@ GROUP = "argoproj.io"
 VERSION = "v1alpha1"
 PLURAL = "workflows"
 WORKFLOW_LABEL = "workflows.argoproj.io/workflow"
+# seconds after which the API server ends a request of the watch of the workflows;
+# the watch continues from the last version it saw
+WATCH_TIMEOUT_S = 300
+# seconds before a watch which failed is started again
+WATCH_RETRY_S = 5.0
 NODE_ANNOTATION = "workflows.argoproj.io/node-name"
 # the label of the nodes the pods of the runs run on, the nodes of the ResourceFlavor
 WORKER_LABEL = "simrun/worker"
@@ -426,6 +437,11 @@ class ArgoBackend:
         self.core = client.CoreV1Api(self.api)
         self.batch = client.BatchV1Api(self.api)
         self.custom = client.CustomObjectsApi(self.api)
+        self._lock = threading.Lock()
+        self._callbacks: list[Callable[[], None]] = []
+        self._closed = threading.Event()
+        self._watcher: threading.Thread | None = None
+        self._watch: Watch | None = None
 
     # workflows
 
@@ -433,7 +449,76 @@ class ArgoBackend:
     extra_workers = True
 
     def subscribe(self, callback: Callable[[], None]) -> None:
-        """Ignore the callback: the controller polls the cluster."""
+        """Call `callback` on every change of a workflow of a run.
+
+        The first subscription starts the thread of the watch of the workflows,
+        which every subscription shares.
+        """
+        with self._lock:
+            self._callbacks.append(callback)
+            if self._watcher is None:
+                self._watcher = threading.Thread(
+                    target=self._watch_workflows, name="simrun-watch", daemon=True
+                )
+                self._watcher.start()
+
+    def close(self) -> None:
+        """Stop the watch of the workflows, at its next event at the latest."""
+        self._closed.set()
+        with self._lock:
+            watch = self._watch
+        if watch is not None:
+            watch.stop()
+
+    def join_watch(self, timeout_s: float | None = None) -> None:
+        """Wait until the thread of the watch ended, after `close`.
+
+        Args:
+            timeout_s: The longest wait in seconds, None for no limit.
+        """
+        with self._lock:
+            watcher = self._watcher
+        if watcher is not None:
+            watcher.join(timeout_s)
+
+    def _watch_workflows(self) -> None:
+        """Watch the workflows of the runs until closed; start again on a failure."""
+        while not self._closed.is_set():
+            watch = Watch()
+            with self._lock:
+                self._watch = watch
+            try:
+                for _ in watch.stream(
+                    self.custom.list_namespaced_custom_object,
+                    GROUP,
+                    VERSION,
+                    self.config.namespace,
+                    PLURAL,
+                    label_selector=RUN_LABEL,
+                    timeout_seconds=WATCH_TIMEOUT_S,
+                ):
+                    self._notify()
+                    if self._closed.is_set():
+                        break
+            except Exception:
+                logger.warning(
+                    "the watch of the workflows failed, it starts again in %s s",
+                    WATCH_RETRY_S,
+                    exc_info=True,
+                )
+                self._closed.wait(WATCH_RETRY_S)
+            finally:
+                watch.stop()
+
+    def _notify(self) -> None:
+        """Call the callbacks of the subscriptions; a failing one is logged."""
+        with self._lock:
+            callbacks = list(self._callbacks)
+        for callback in callbacks:
+            try:
+                callback()
+            except Exception:
+                logger.exception("a callback of a change of a workflow failed")
 
     def submit(
         self,
