@@ -21,9 +21,13 @@ metadata:
   namespace: simrun
 spec:
   replicas: 1
-  # the state is a volume of one node, which one pod at a time mounts
+  # the state is a volume of one node, which one pod at a time mounts: the old pod
+  # ends before the new one starts
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   selector:
     matchLabels:
       app: buildkitd
