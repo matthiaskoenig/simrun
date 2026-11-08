@@ -9,7 +9,7 @@ import tomllib
 from collections.abc import Callable, Generator, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import httpx
 import pytest
@@ -226,6 +226,7 @@ class InProcessTransport(httpx.BaseTransport):
 
     def handle_request(self, request: httpx.Request) -> httpx.Response:
         self.requests.append(request)
+        request.read()  # a streamed body, e.g. an upload of a file
         response = self.client.request(
             request.method,
             request.url.raw_path.decode(),
@@ -253,15 +254,23 @@ def make_client(
         service: Service,
         token: str = "t-mk",
         transport: httpx.BaseTransport | None = None,
+        sources: Literal["store", "upload"] = "store",
     ) -> Client:
         return Client(
             "http://testserver",
             token,
-            service.settings.store,
+            service.settings.store if sources == "store" else None,
+            sources,
             transport=transport or InProcessTransport(service.client),
         )
 
     return factory
+
+
+@pytest.fixture
+def in_process() -> Callable[[Service], InProcessTransport]:
+    """An `InProcessTransport` to the app of a `Service`, which records requests."""
+    return lambda service: InProcessTransport(service.client)
 
 
 @pytest.fixture

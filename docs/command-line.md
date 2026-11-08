@@ -6,7 +6,7 @@
 | --- | --- |
 | `SIMRUN_URL` | the address of the service, e.g. `http://simrun.cluster.internal` |
 | `SIMRUN_TOKEN` | a token of the tokens file of the service, which names the person or the agent |
-| `SIMRUN_STORE` | the run store as it is mounted on this machine, e.g. `/mnt/cluster` |
+| `SIMRUN_STORE` | optional: the run store as it is mounted on this machine, e.g. `/mnt/cluster`, where the client writes the snapshots itself; without it the client uploads them to the service |
 
 ```bash
 export SIMRUN_URL=http://simrun.cluster.internal
@@ -46,7 +46,7 @@ simrun submit fit.yaml --source model=~/git/pkdb_models --source sbmlsim=~/git/s
 | `--single-server` | place the pieces of every task on one server |
 | `--reserve NODE` | reserve a node for the run |
 
-The client copies every working tree with its uncommitted changes into `snapshots/<name>/` of the store and sends its provenance, see [Snapshots and environments](concepts.md#snapshots-and-environments).
+The client copies every working tree with its uncommitted changes into `snapshots/<name>/` of the store, or without `SIMRUN_STORE` uploads the files the store lacks to the service which writes the snapshot, and sends its provenance, see [Snapshots and environments](concepts.md#snapshots-and-environments).
 
 ### edit
 

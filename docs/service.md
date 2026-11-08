@@ -35,6 +35,8 @@ The identity of the token is recorded with the run and decides its priority: the
 | `GET /runs/{run}/progress` | the progress of every task: the counts of its ledger and its first and last progress lines |
 | `GET /runs/{run}/logs/{task}` | the logs of the pods of a task as text, the last `tail_lines` of each (300, 0 for all) |
 | `GET /runs/{run}/outputs/{task}` | the output files of a task, paths relative to the store |
+| `POST /snapshots/{name}/missing` | the paths of a file list (path, mode, `sha256` or `link`) whose content the latest snapshot of a source lacks |
+| `POST /snapshots/{name}` | write a snapshot from a multipart body: `scan` (the git state and the file list as JSON) and `files` (a tar of the missing files); 422 for a path outside the tree, a link out of it, a member which is not a listed regular file or a hash which does not match, 409 when the store lost a content meanwhile, 413 above `max_upload_bytes` |
 | `POST /runs/{run}/cancel` | cancel a run |
 | `DELETE /runs/{run}` | remove an ended run and the snapshots nothing refers to |
 | `POST /cleanup` | remove the runs which ended more than `older_than_days` ago, of a `group` or only failed ones (`failed_only`), `dry_run` lists them |
@@ -61,6 +63,7 @@ The service reads a YAML file named by `SIMRUN_CONFIG`, a `simrun.service.app.Se
 | `python` | the python of the images of the environments (3.14) |
 | `build_constraints` | the pinned versions of the build backends, `src/simrun/build_constraints.txt` by default |
 | `backend` | `module:callable` of the backend, `simrun.service.argo_backend:backend` |
+| `max_upload_bytes` | the largest body of an upload of a snapshot (2 GiB) |
 | `web` | the directory of the built [web app](web-app.md), served at `/ui/` without a token; by default the one of the installation (`simrun/web` of the package, else `frontend/dist` of a checkout), `null` for no `/ui/` |
 
 `cluster`, a `simrun.config.ClusterConfig`:
@@ -89,7 +92,7 @@ To raise a pin of the build backends, edit `build_constraints.txt` (or point `bu
 | --- | --- | --- |
 | `SIMRUN_URL` | command line, MCP server | the address of the service |
 | `SIMRUN_TOKEN` | command line, MCP server | the token of the person or the agent |
-| `SIMRUN_STORE` | command line, MCP server | the run store as mounted on the machine of the client |
+| `SIMRUN_STORE` | command line, MCP server | optional: the run store as mounted on the machine of the client, which then writes the snapshots itself instead of uploading them |
 | `SIMRUN_CONFIG` | service | the YAML file of the `ServiceSettings` |
 | `KUBECONFIG` | service | the cluster outside of a pod; in the pod the service account |
 | `SIMRUN_TASK_DIR`, `SIMRUN_TASK_TYPE`, `SIMRUN_INPUTS`, `SIMRUN_STAGE`, `SIMRUN_EDITABLE`, `SIMRUN_SCRATCH`, `SIMRUN_PROVENANCE`, `SIMRUN_MEMORY_BASE_GB`, `SIMRUN_MEMORY_PER_WORKER_GB`, `SIMRUN_WORKER`, `SIMRUN_ROLE`, `SIMRUN_ATTEMPT`, `SIMRUN_STALE_S`, `SIMRUN_MERGE`, `SIMRUN_NODE`, `SIMRUN_CORES`, `SIMRUN_MEMORY_LIMIT_GB` | pods | the environment of the harness of a pod, set by the workflow, see `simrun.podspec` and `simrun.worker`; `SIMRUN_CORES` caps the cores of a worker and `SIMRUN_MEMORY_LIMIT_GB` is its memory limit without one of its cgroup (the local backend sets both, a pod has the quota and the limit of its cgroup) |

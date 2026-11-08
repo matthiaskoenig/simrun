@@ -1,5 +1,9 @@
 """The client of the service: snapshots working trees, then calls the API.
 
+A snapshot is written into the store when it is mounted here (`SIMRUN_STORE`),
+else uploaded: the client asks the service which contents the store lacks and sends
+a tar of only those files.
+
 The CLI (`simrun.cli`) and the MCP server (`simrun.mcp`) both go through `Client`.
 """
 
@@ -37,7 +41,7 @@ from simrun.service.edits import (
     OpenEdit,
 )
 from simrun.service.logs import DEFAULT_TAIL_LINES
-from simrun.snapshot import SourceProvenance, provenance, snapshot
+from simrun.snapshot import SourceProvenance, provenance, scan, snapshot
 from simrun.store import RunRecord, RunState
 from simrun.workflow import SplitMode, Workflow, load_workflow
 
@@ -49,6 +53,10 @@ STORE_ENV = "SIMRUN_STORE"
 # one long poll of the service, below its maximum of 300 s
 POLL_S = 30.0
 REQUEST_TIMEOUT_S = 60.0
+# the service assembles an uploaded snapshot before it answers
+UPLOAD_READ_TIMEOUT_S = 600.0
+# an upload is sent again when the latest snapshot changed since `missing`
+UPLOAD_ATTEMPTS = 3
 BACKOFF_START_S = 1.0
 REFOLLOW_S = 0.2
 BACKOFF_MAX_S = 10.0
@@ -153,9 +161,9 @@ class Client:
         store: The run store as mounted locally, where snapshots are written; None
             for a client which sends no snapshots.
         sources: How a source is sent: `store` copies a snapshot into `store`,
-            `provenance` sends its provenance only (the local service runs the
-            tasks with the environment of the command), `upload` is not
-            implemented.
+            `upload` sends the files the store of the service lacks, which writes
+            the snapshot, `provenance` sends its provenance only (the local
+            service runs the tasks with the environment of the command).
         transport: An HTTP transport, e.g. for tests.
     """
 
@@ -182,16 +190,21 @@ class Client:
     def from_env(cls) -> Client:
         """The client of `SIMRUN_URL`, `SIMRUN_TOKEN` and `SIMRUN_STORE`.
 
+        With `SIMRUN_STORE`, the store as mounted here, snapshots are written into
+        it; without it they are uploaded to the service.
+
         Raises:
-            RuntimeError: When one of them is not set.
+            RuntimeError: When `SIMRUN_URL` or `SIMRUN_TOKEN` is not set.
         """
         values: dict[str, str] = {}
-        for name in (URL_ENV, TOKEN_ENV, STORE_ENV):
+        for name in (URL_ENV, TOKEN_ENV):
             value = os.environ.get(name)
             if not value:
                 raise RuntimeError(f"{name} is not set")
             values[name] = value
-        return cls(values[URL_ENV], values[TOKEN_ENV], Path(values[STORE_ENV]))
+        if store := os.environ.get(STORE_ENV):
+            return cls(values[URL_ENV], values[TOKEN_ENV], Path(store))
+        return cls(values[URL_ENV], values[TOKEN_ENV], None, "upload")
 
     @classmethod
     def local(cls, root: Path, snapshot: bool = False) -> Client:
@@ -217,14 +230,51 @@ class Client:
         """The provenance of a source, its snapshot written to the store first.
 
         Raises:
-            RuntimeError: When the client sends no snapshots and records no
-                provenance, or git fails.
+            RuntimeError: When the client has `store` sources without a store, or
+                git fails.
+            ClientError: When the service refuses an upload.
         """
         if self.sources == "provenance":
             return provenance(repo, name)
-        if self.sources == "store" and self.store is not None:
+        if self.sources == "upload":
+            return self._upload(repo, name)
+        if self.store is not None:
             return snapshot(repo, self.store, name)
         raise RuntimeError(f"sources {self.sources!r} are not available")
+
+    def _upload(self, repo: Path, name: str) -> SourceProvenance:
+        """Upload a snapshot: the scan, and a tar of the files the store lacks.
+
+        Sent again with a new scan when the store lost a content meanwhile (409).
+        """
+        timeout = httpx.Timeout(REQUEST_TIMEOUT_S, read=UPLOAD_READ_TIMEOUT_S)
+        for attempt in range(1, UPLOAD_ATTEMPTS + 1):
+            found = scan(repo)
+            files = [entry.model_dump(mode="json") for entry in found.files]
+            lacking = self._call("POST", f"/snapshots/{name}/missing", json=files)
+            with tempfile.TemporaryFile() as archive:
+                with tarfile.open(fileobj=archive, mode="w") as tar:
+                    for path in lacking.json():
+                        try:
+                            tar.add(repo / path, arcname=path, recursive=False)
+                        except FileNotFoundError:
+                            continue  # the service answers 409, then a new scan
+                archive.seek(0)
+                parts = {
+                    "scan": ("scan.json", found.model_dump_json(), "application/json"),
+                    "files": ("files.tar", archive, "application/x-tar"),
+                }
+                try:
+                    response = self._call(
+                        "POST", f"/snapshots/{name}", files=parts, timeout=timeout
+                    )
+                except ClientError as error:
+                    if error.status != 409 or attempt == UPLOAD_ATTEMPTS:
+                        raise
+                    logger.info("upload of %s again: %s", name, error.detail)
+                    continue
+            return SourceProvenance.model_validate(response.json())
+        raise AssertionError("unreachable")
 
     def close(self) -> None:
         """Close the connections."""
