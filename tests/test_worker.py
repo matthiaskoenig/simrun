@@ -940,6 +940,23 @@ def test_a_failed_merge_of_the_coordinator_is_an_analysis_failure(
     assert not (worker_env / "out" / worker.MERGED_MARKER).exists()
 
 
+def test_a_value_error_of_the_merge_of_the_coordinator_exits_3(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (worker_env / "settings.json").write_text(SquaresSettings(n=2).model_dump_json())
+
+    def fail(*args: object) -> None:
+        raise ValueError("bad merge")
+
+    monkeypatch.setattr(worker, "install_editable", lambda snapshots: None)
+    monkeypatch.setattr(worker, "run_merge", fail)
+    monkeypatch.setenv("SIMRUN_ROLE", "base")
+    monkeypatch.setenv("SIMRUN_MERGE", "1")
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == worker.EXIT_ANALYSIS
+
+
 def test_report_carries_the_peak_of_the_sampled_anonymous_memory(
     worker_env: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

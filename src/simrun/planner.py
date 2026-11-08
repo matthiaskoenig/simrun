@@ -299,7 +299,7 @@ def plan_task(
         else:
             # a single command is one process, unless it uses the cores of its pod
             pod = shape(resources, nodes, None if task_type.uses_cores else 1)
-        return TaskPlan(task.id, 1, pod, base, extra, None, True)
+        return TaskPlan(task.id, 1, pod, base, extra, None, coordinator_merges=True)
     pod = shape(resources, nodes)
     pods = 1
     if mode == SplitMode.FASTEST and units is not None:
