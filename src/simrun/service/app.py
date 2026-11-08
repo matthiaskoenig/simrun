@@ -830,12 +830,25 @@ class _Service:
     def _check_sources(self, sources: list[SourceProvenance]) -> None:
         """Check that the snapshots are below the store and exist in it.
 
+        A source recorded without a snapshot (`snapshot` empty, the local mode
+        records a working tree without copying it) is allowed only where the tasks
+        run with the environment of the service, a backend which runs no images.
+
         Raises:
-            HTTPException: 422 for a path outside the store or a snapshot which the
-                store of the service does not have, e.g. one a client wrote with a
-                `SIMRUN_STORE` other than the store of the service.
+            HTTPException: 422 for a path outside the store, a snapshot which the
+                store of the service does not have (e.g. one a client wrote with a
+                `SIMRUN_STORE` other than the store of the service), or a source
+                without a snapshot on a backend whose pods need the code.
         """
         for source in sources:
+            if not source.snapshot:
+                if self.backend.runs_images:
+                    raise HTTPException(
+                        422,
+                        f"source {source.name!r} has no snapshot; the pods of the "
+                        "cluster need the code of the working tree",
+                    )
+                continue
             for rel in (source.snapshot, source.patch):
                 if rel is None:
                     continue
