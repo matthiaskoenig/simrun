@@ -42,7 +42,7 @@ def _plain(value: Any) -> Any:
 def build_server(client: Client) -> FastMCP:
     """The MCP server whose tools call the service through `client`."""
     server = FastMCP("simrun")
-    store = str(client.store.resolve())
+    store = None if client.store is None else str(client.store.resolve())
 
     def answer(call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
         try:

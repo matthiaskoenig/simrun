@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from simrun.snapshot import snapshot
+from simrun.snapshot import provenance, snapshot
 from simrun.worker import shadow_tree
 
 
@@ -206,3 +206,32 @@ def test_snapshot_files_are_read_only(repo: Path, tmp_path: Path) -> None:
     (repo / "dirty.py").write_text("x = 2\n")
     second = store / snapshot(repo, store, "model").snapshot
     assert os.stat(root / "same.txt").st_ino == os.stat(second / "same.txt").st_ino
+
+
+def test_provenance_matches_the_snapshot_without_copying(
+    repo: Path, tmp_path: Path
+) -> None:
+    store = tmp_path / "store"
+    (repo / "a.py").write_text("a = 2\n")
+    (repo / "sub").mkdir()
+    (repo / "sub" / "n.py").write_text("n\n")
+    (repo / "a.txt").write_text("t\n")
+    (repo / "run.sh").write_text("#!/bin/sh\n")
+    (repo / "run.sh").chmod(0o755)
+    (repo / "l").symlink_to("a.py")
+    (repo / "gone.py").unlink()
+    prov = provenance(repo, "proj")
+    assert not store.exists()
+    assert (prov.snapshot, prov.patch) == ("", None)
+    assert prov.dirty
+    full = snapshot(repo, store, "proj")
+    assert prov.model_dump(exclude={"snapshot", "patch"}) == full.model_dump(
+        exclude={"snapshot", "patch"}
+    )
+
+
+def test_provenance_hash_follows_the_content(repo: Path) -> None:
+    before = provenance(repo, "proj")
+    assert not before.dirty
+    (repo / "a.py").write_text("a = 3\n")
+    assert provenance(repo, "proj").diff_sha256 != before.diff_sha256
