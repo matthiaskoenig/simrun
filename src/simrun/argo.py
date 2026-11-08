@@ -5,10 +5,12 @@ A split task of `pods` pods is three DAG tasks of one worker template running
 base priority), which returns once the ledger of the task is complete; `<task>-extra`
 over `withSequence: {start: 1, count: pods - 1}` (workers `<task>-w<item>`,
 `SIMRUN_ROLE=extra`, extra priority; left out for one pod), which exit when nothing is
-pending; and `<task>-merge` running `simrun-merge`, which depends on `<task>-w0` only,
-so extra workers still waiting for admission never hold up the merge. An unsplit task
-is one pod running its command. A task waits for the tasks it reads from, a split one
-for their merge.
+pending. The coordinator merges the units itself once the ledger is complete
+(`SIMRUN_MERGE=1`, `TaskPlan.coordinator_merges`; only the coordinator acts on it), so
+extra workers still waiting for admission never hold up the merge. A plan recorded
+before that has a node `<task>-merge` running `simrun-merge`, which depends on
+`<task>-w0` only. An unsplit task is one pod running its command. A task waits for the
+tasks it reads from, a split one for their merge (its `<task>-w0` when that merges).
 
 The extra workers continue on failure (`continueOn: {failed: true, error: true}`), so
 an extra worker which fails does not fail the run; the coordinator releases the
@@ -188,6 +190,13 @@ def _pod_spec_patch(shape: PodShape, config: ClusterConfig) -> str:
     return json.dumps(patch)
 
 
+def _last_node(task_id: str, split: dict[str, bool], plans: dict[str, TaskPlan]) -> str:
+    """The DAG node whose success a dependant of a task waits for."""
+    if not split[task_id]:
+        return task_id
+    return f"{task_id}-w0" if plans[task_id].coordinator_merges else f"{task_id}-merge"
+
+
 def _env(
     record: RunRecord,
     task: TaskSpec,
@@ -305,7 +314,7 @@ def to_argo(
         plan = plans[task.id]
         shape = plan.shape
         dependencies = [
-            f"{dep}-merge" if split[dep] else dep for dep in task.dependencies()
+            _last_node(dep, split, plans) for dep in task.dependencies()
         ] or None
         if not split[task.id]:
             image, argv = podspec.unsplit_command(
@@ -335,6 +344,7 @@ def to_argo(
                 "SIMRUN_WORKER": worker,
                 "SIMRUN_ROLE": _parameter("role"),
                 "SIMRUN_STALE_S": str(config.grace_s + podspec.STALE_MARGIN_S),
+                **({"SIMRUN_MERGE": "1"} if plan.coordinator_merges else {}),
             },
         )
         templates.append(
@@ -379,6 +389,8 @@ def to_argo(
                     ),
                 )
             )
+        if plan.coordinator_merges:
+            continue
         merge_shape = podspec.merge_shape(shape, task_type.hint.memory_base_gb)
         merge_env = _env(record, task, task_type, merge_shape, config)
         templates.append(

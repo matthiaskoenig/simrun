@@ -182,6 +182,7 @@ def worker_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "SIMRUN_ATTEMPT",
         "SIMRUN_ROLE",
         "SIMRUN_STALE_S",
+        "SIMRUN_MERGE",
         worker.SOURCES_INSTALLED,
     ):
         monkeypatch.delenv(name, raising=False)
@@ -888,6 +889,55 @@ def test_merge_main_writes_marker(
         worker.merge_main()
     assert raised.value.code == 0
     assert marker.exists()
+
+
+def test_the_coordinator_merges_once_the_ledger_is_complete(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (worker_env / "settings.json").write_text(SquaresSettings(n=4).model_dump_json())
+    monkeypatch.setattr(worker, "install_editable", lambda snapshots: None)
+    monkeypatch.setenv("SIMRUN_ROLE", "base")
+    monkeypatch.setenv("SIMRUN_MERGE", "1")
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == 0
+    assert (worker_env / "out" / worker.MERGED_MARKER).is_file()
+    assert (worker_env / "out" / "summary.json").is_file()
+
+
+def test_a_coordinator_skips_a_merge_which_completed(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (worker_env / "settings.json").write_text(SquaresSettings(n=2).model_dump_json())
+    (worker_env / "out").mkdir()
+    (worker_env / "out" / worker.MERGED_MARKER).touch()
+    merges = []
+    monkeypatch.setattr(worker, "install_editable", lambda snapshots: None)
+    monkeypatch.setattr(worker, "run_merge", lambda *args: merges.append(args))
+    monkeypatch.setenv("SIMRUN_ROLE", "base")
+    monkeypatch.setenv("SIMRUN_MERGE", "1")
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == 0
+    assert merges == []
+
+
+def test_a_failed_merge_of_the_coordinator_is_an_analysis_failure(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (worker_env / "settings.json").write_text(SquaresSettings(n=2).model_dump_json())
+
+    def fail(*args: object) -> None:
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(worker, "install_editable", lambda snapshots: None)
+    monkeypatch.setattr(worker, "run_merge", fail)
+    monkeypatch.setenv("SIMRUN_ROLE", "base")
+    monkeypatch.setenv("SIMRUN_MERGE", "1")
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == worker.EXIT_ANALYSIS
+    assert not (worker_env / "out" / worker.MERGED_MARKER).exists()
 
 
 def test_report_carries_the_peak_of_the_sampled_anonymous_memory(

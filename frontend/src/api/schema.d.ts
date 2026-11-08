@@ -1197,10 +1197,18 @@ export interface components {
          *         base_priority: Priority class of the first pods.
          *         extra_priority: Priority class of the further pods.
          *         units: Number of units, None for an unsplit task.
+         *         coordinator_merges: Whether the coordinator of a split task merges once its
+         *             ledger is complete, so the task has no merge pod. False for plans
+         *             recorded before the merge moved into the coordinator.
          */
         TaskPlan: {
             /** Base Priority */
             base_priority: string;
+            /**
+             * Coordinator Merges
+             * @default false
+             */
+            coordinator_merges: boolean;
             /** Extra Priority */
             extra_priority: string;
             /** Pods */

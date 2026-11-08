@@ -504,6 +504,19 @@ def test_split_task_dag() -> None:
     assert merge["container"]["image"] == "localhost:5000/env:1"
 
 
+def test_a_coordinator_which_merges_has_no_merge_node() -> None:
+    plans = {
+        k: dataclasses.replace(p, coordinator_merges=True) for k, p in PLANS.items()
+    }
+    manifest = to_argo(_record(), plans, TYPES, CONFIG)
+    dag = _dag(manifest)
+    assert "squares-merge" not in dag
+    assert dag["report"]["dependencies"] == ["squares-w0"]
+    assert _env(_template(manifest, "squares-w0"))["SIMRUN_MERGE"] == "1"
+    assert "SIMRUN_MERGE" not in _env(_template(_manifest(), "squares-w0"))
+    m.Workflow.model_validate(manifest)
+
+
 def test_single_pod_has_no_extra_workers() -> None:
     plans = {**PLANS, "squares": dataclasses.replace(PLANS["squares"], pods=1)}
     manifest = to_argo(_record(), plans, TYPES, CONFIG)

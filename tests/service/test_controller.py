@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from simrun.demo import SQUARES
+from simrun.planner import PodShape, TaskPlan
 from simrun.plugins_builtin import COMMAND
 from simrun.resources import GIB, ResourceKey, ResourceStore
 from simrun.service.backend import BackendStatus
@@ -360,9 +361,30 @@ WORKFLOW = Workflow(
 )
 
 
-def _states(**nodes: str) -> dict[str, TaskState]:
+def _states(merges: bool = False, **nodes: str) -> dict[str, TaskState]:
     status = BackendStatus(phase="Running", tasks=nodes)
-    return task_states(WORKFLOW, {**TYPES, COMMAND.name: COMMAND}, status)
+    plans = {"a": TaskPlan("a", 1, _SHAPE, "b", "e", 4, coordinator_merges=merges)}
+    return task_states(WORKFLOW, {**TYPES, COMMAND.name: COMMAND}, status, plans)
+
+
+_SHAPE = PodShape(
+    cores=1,
+    memory_gb=1,
+    processes=1,
+    per_worker_gb=0.5,
+    retry_memory_gb=2,
+    retry_per_worker_gb=1,
+    scratch_gb=0,
+    gpus=0,
+)
+
+
+def test_a_split_task_whose_coordinator_merges_is_done_with_its_coordinator():
+    assert _states(True, **{"a-w0": "Succeeded"})["a"] == TaskState.DONE
+    assert _states(True, **{"a-w0": "Running"})["a"] == TaskState.RUNNING
+    assert _states(True, **{"a-w0": "Error"})["a"] == TaskState.FAILED
+    # a plan of a record from before: the merge node is still awaited
+    assert _states(False, **{"a-w0": "Succeeded"})["a"] == TaskState.RUNNING
 
 
 def test_task_states():
@@ -573,6 +595,13 @@ def test_second_memory_kill_of_a_worker_fails_the_run(service):
 def test_second_memory_kill_of_a_merge_or_unsplit_task_fails_the_run(service):
     for key, retry in (("squares-merge", "2 GiB (0.75"), ("cmd", "2 GiB (2.0")):
         run_id = service.submit(workflow=_two_tasks(service))["id"]
+        if key.endswith("-merge"):
+            # a run recorded before the coordinator merged has a merge pod
+            record = service.store.read(run_id)
+            plans = {
+                t: {**p, "coordinator_merges": False} for t, p in record.plans.items()
+            }
+            service.store.write(record.model_copy(update={"plans": plans}))
         name = service.name(run_id)
         service.backend.start(name)
         service.backend.oom_kill(name, key, count=2)

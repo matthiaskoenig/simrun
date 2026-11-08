@@ -1,8 +1,10 @@
 """The controller: follows the workflows of the runs and records their end.
 
 The state of a run is the service's, not the one of Argo (Ruling 17b): a split task is
-done when its `<task>-merge` node succeeded and failed when its `<task>-w0` or its
-merge failed (after the retries of Argo), an extra worker never fails a task; an
+done when its `<task>-merge` node succeeded (when its coordinator `<task>-w0` merges,
+`TaskPlan.coordinator_merges`, there is no such node and it is done when `<task>-w0`
+succeeded) and failed when its `<task>-w0` or its merge failed (after the retries of
+Argo), an extra worker never fails a task; an
 unsplit task is its node `<task>`. When every task is done the run succeeded, when a
 task failed the run failed; in both cases the controller stops the workflow, so extra
 workers still waiting for admission go away, and releases the reserved node.
@@ -42,6 +44,7 @@ rebuilds from the records at its start, so a restarted service continues where t
 one before stopped; a record which cannot be read is logged and skipped.
 """
 
+import dataclasses
 import json
 import logging
 import re
@@ -51,7 +54,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
 
 from simrun import podspec
-from simrun.planner import PodShape
+from simrun.planner import PodShape, TaskPlan
 from simrun.plugins import TaskType
 from simrun.plugins_builtin import COMMAND
 from simrun.resources import GIB, ResourceStore, resource_key
@@ -102,9 +105,13 @@ EXIT_MEANINGS = {
 LOGS_WAIT_S = 600.0
 
 
-def _split_state(task_id: str, nodes: dict[str, str]) -> TaskState:
+def _split_state(
+    task_id: str, nodes: dict[str, str], coordinator_merges: bool = False
+) -> TaskState:
     w0 = nodes.get(f"{task_id}-w0")
     merge = nodes.get(f"{task_id}-merge")
+    if coordinator_merges and w0 == "Succeeded":
+        return TaskState.DONE
     extra = re.compile(rf"{re.escape(task_id)}-extra(\(\d+:\d+\))?")
     extras = [phase for node, phase in nodes.items() if extra.fullmatch(node)]
     if merge == "Succeeded":
@@ -142,8 +149,22 @@ def _unsplit_state(phase: str | None) -> TaskState:
     return TaskState.QUEUED
 
 
+def task_plans(record: RunRecord) -> dict[str, TaskPlan]:
+    """The plans of the tasks of a run from its record.
+
+    A plan written before `coordinator_merges` existed reads it as False.
+    """
+    return {
+        task_id: dataclasses.replace(TaskPlan(**plan), shape=PodShape(**plan["shape"]))
+        for task_id, plan in record.plans.items()
+    }
+
+
 def task_states(
-    workflow: Workflow, types: dict[str, TaskType], status: BackendStatus
+    workflow: Workflow,
+    types: dict[str, TaskType],
+    status: BackendStatus,
+    plans: dict[str, TaskPlan],
 ) -> dict[str, TaskState]:
     """The state of every task of a workflow from the phases of its DAG nodes.
 
@@ -156,6 +177,8 @@ def task_states(
         workflow: The workflow of the run.
         types: The task types by name.
         status: The status of the workflow in the backend.
+        plans: The plans of the tasks, by id; a split task whose plan merges in the
+            coordinator is done when `<task>-w0` succeeded.
 
     Returns:
         The state of every task by id.
@@ -163,7 +186,10 @@ def task_states(
     states: dict[str, TaskState] = {}
     for task in workflow.tasks:
         if types[task.type].splittable:
-            states[task.id] = _split_state(task.id, status.tasks)
+            plan = plans.get(task.id)
+            states[task.id] = _split_state(
+                task.id, status.tasks, plan is not None and plan.coordinator_merges
+            )
         else:
             states[task.id] = _unsplit_state(status.tasks.get(task.id))
     return states
@@ -450,12 +476,20 @@ class Controller:
             return True
 
     def _pods(
-        self, task: TaskSpec, shape: PodShape | None
+        self,
+        task: TaskSpec,
+        shape: PodShape | None,
+        coordinator_merges: bool = False,
     ) -> list[tuple[str, PodShape | None]]:
-        """The patterns of the pod keys of a task with the shapes of their pods."""
+        """The patterns of the pod keys of a task with the shapes of their pods.
+
+        A split task whose coordinator merges has no merge pod.
+        """
         task_type = self.types[task.type]
         if not task_type.splittable:
             return [(re.escape(task.id), shape)]
+        if coordinator_merges:
+            return [(rf"{re.escape(task.id)}-w\d+", shape)]
         merge = (
             None
             if shape is None
@@ -469,7 +503,8 @@ class Controller:
     def _task_of(self, record: RunRecord, key: str) -> TaskSpec | None:
         """The task of a pod key: a worker, a merge or an unsplit task."""
         for task in record.workflow.tasks:
-            if any(re.fullmatch(p, key) for p, _ in self._pods(task, None)):
+            merges = bool(record.plans.get(task.id, {}).get("coordinator_merges"))
+            if any(re.fullmatch(p, key) for p, _ in self._pods(task, None, merges)):
                 return task
         return None
 
@@ -539,7 +574,8 @@ class Controller:
             shape_values = record.plans.get(task.id, {}).get("shape")
             if shape_values is None:
                 continue
-            pods = self._pods(task, PodShape(**shape_values))
+            merges = bool(record.plans[task.id].get("coordinator_merges"))
+            pods = self._pods(task, PodShape(**shape_values), merges)
             for key, killed in kills.items():
                 exits = {a.attempt: a.exit_code for a in failed.get(key, [])}
                 counted = sum(
@@ -588,7 +624,7 @@ class Controller:
 
     def _next(self, record: RunRecord, status: BackendStatus) -> RunRecord:
         """The record after a status of its workflow."""
-        tasks = task_states(record.workflow, self.types, status)
+        tasks = task_states(record.workflow, self.types, status, task_plans(record))
         kills = self._memory_kills(record, status.failed)
         record = record.model_copy(update={"oom_kills": kills})
         killed = self._killed_twice(record, status.failed, kills)

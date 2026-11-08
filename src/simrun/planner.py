@@ -119,6 +119,9 @@ class TaskPlan:
         base_priority: Priority class of the first pods.
         extra_priority: Priority class of the further pods.
         units: Number of units, None for an unsplit task.
+        coordinator_merges: Whether the coordinator of a split task merges once its
+            ledger is complete, so the task has no merge pod. False for plans
+            recorded before the merge moved into the coordinator.
     """
 
     task_id: str
@@ -127,6 +130,7 @@ class TaskPlan:
     base_priority: str
     extra_priority: str
     units: int | None
+    coordinator_merges: bool = False
 
 
 def _usable(nodes: list[Node], gpus: int) -> list[Node]:
@@ -295,9 +299,11 @@ def plan_task(
         else:
             # a single command is one process, unless it uses the cores of its pod
             pod = shape(resources, nodes, None if task_type.uses_cores else 1)
-        return TaskPlan(task.id, 1, pod, base, extra, None)
+        return TaskPlan(task.id, 1, pod, base, extra, None, True)
     pod = shape(resources, nodes)
     pods = 1
     if mode == SplitMode.FASTEST and units is not None:
         pods = min(MAX_PIECES, units, _slots(pod, nodes))
-    return TaskPlan(task.id, max(1, pods), pod, base, extra, units)
+    return TaskPlan(
+        task.id, max(1, pods), pod, base, extra, units, coordinator_merges=True
+    )

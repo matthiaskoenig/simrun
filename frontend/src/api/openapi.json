@@ -1401,11 +1401,16 @@
         "type": "object"
       },
       "TaskPlan": {
-        "description": "The plan of a task.\n\nAttributes:\n    task_id: Id of the task.\n    pods: Number of worker pods.\n    shape: Shape of a pod.\n    base_priority: Priority class of the first pods.\n    extra_priority: Priority class of the further pods.\n    units: Number of units, None for an unsplit task.",
+        "description": "The plan of a task.\n\nAttributes:\n    task_id: Id of the task.\n    pods: Number of worker pods.\n    shape: Shape of a pod.\n    base_priority: Priority class of the first pods.\n    extra_priority: Priority class of the further pods.\n    units: Number of units, None for an unsplit task.\n    coordinator_merges: Whether the coordinator of a split task merges once its\n        ledger is complete, so the task has no merge pod. False for plans\n        recorded before the merge moved into the coordinator.",
         "properties": {
           "base_priority": {
             "title": "Base Priority",
             "type": "string"
+          },
+          "coordinator_merges": {
+            "default": false,
+            "title": "Coordinator Merges",
+            "type": "boolean"
           },
           "extra_priority": {
             "title": "Extra Priority",
