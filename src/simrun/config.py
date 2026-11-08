@@ -1,6 +1,8 @@
 """The configuration of the cluster the runs are submitted to."""
 
-from pydantic import BaseModel, Field
+from typing import Annotated
+
+from pydantic import BaseModel, Field, StringConstraints
 
 # the base image of the images of the environments: uv with the python of the
 # service, pinned by the digest of its index, which the registry mirrors (the tag
@@ -12,6 +14,8 @@ DEFAULT_BASE_IMAGE = (
 # about the seconds from the creation of a pod to its first unit on the cluster:
 # the admission by Kueue, the init container of Argo, the start of the container
 POD_START_S = 10.0
+# the name of a Debian package, as `apt-get install` takes it
+DebianPackage = Annotated[str, StringConstraints(pattern=r"^[a-z0-9][a-z0-9+.-]+$")]
 
 
 class ClusterConfig(BaseModel):
@@ -36,6 +40,9 @@ class ClusterConfig(BaseModel):
             uv and the python of the service (`ServiceSettings.python`); a
             repository of `registry` (the mirror of an image of another registry)
             unless it names a registry host itself.
+        system_packages: The Debian packages the images of the environments install
+            on the base image: the shared libraries which wheels link but do not
+            bundle, `libexpat1` for python-libsbml.
         grace_s: Seconds a worker has to stop after SIGTERM.
         ttl_after_finished_s: Seconds a finished workflow is kept.
         pod_start_s: About the seconds from the creation of a pod to its first unit;
@@ -54,6 +61,7 @@ class ClusterConfig(BaseModel):
     buildkit: str = "tcp://buildkitd.simrun:1234"
     buildctl_image: str = "moby/buildkit:v0.34.2-rootless"
     base_image: str = DEFAULT_BASE_IMAGE
+    system_packages: list[DebianPackage] = ["libexpat1"]
     grace_s: int = 60
     ttl_after_finished_s: int = 86400
     pod_start_s: float = Field(POD_START_S, gt=0)

@@ -31,7 +31,6 @@ import simrun
 from simrun.config import ClusterConfig
 from simrun.environment import (
     BUILD_CONSTRAINTS,
-    Environment,
     dockerfile,
     image_ref,
     resolve_environment,
@@ -150,7 +149,13 @@ class Submitter:
             raise SubmissionError(
                 f"the environment cannot be resolved: {error}"
             ) from error
-        ref = image_ref(env, self.cluster.registry)
+        wheel = self.simrun_wheel
+        if wheel is None:
+            raise SubmissionError("the service has no simrun_wheel to build with")
+        text = dockerfile(
+            env, self.cluster.base_image_ref(), wheel.name, self.cluster.system_packages
+        )
+        ref = image_ref(env, self.cluster.registry, text)
         with self._building(ref):
             try:
                 missing = not self.backend.has_image(ref)
@@ -159,7 +164,7 @@ class Submitter:
                     f"the registry cannot tell whether it has {ref}: {error}"
                 ) from error
             if missing:
-                self._build(env, ref)
+                self._build(text, wheel, ref)
         return ref, env.lock
 
     def _harness(self) -> str:
@@ -175,15 +180,11 @@ class Submitter:
         digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
         return f"{simrun.__version__}+{digest[:16]}"
 
-    def _build(self, env: Environment, ref: str) -> None:
-        wheel = self.simrun_wheel
-        if wheel is None:
-            raise SubmissionError("the service has no simrun_wheel to build with")
+    def _build(self, text: str, wheel: Path, ref: str) -> None:
+        """Build the image `ref` of the Dockerfile `text` with the simrun `wheel`."""
         with tempfile.TemporaryDirectory(prefix="simrun-build-") as tmp:
             context = Path(tmp)
-            (context / "Dockerfile").write_text(
-                dockerfile(env, self.cluster.base_image_ref(), wheel.name)
-            )
+            (context / "Dockerfile").write_text(text)
             shutil.copy2(wheel, context / wheel.name)
             logger.info("building the image %s", ref)
             try:

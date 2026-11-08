@@ -74,6 +74,7 @@ The service reads a YAML file named by `SIMRUN_CONFIG`, a `simrun.service.app.Se
 | `registry` | the registry inside the network, as the nodes and BuildKit name it in image references |
 | `registry_url` | the API of the registry as the service reaches it, `http://<registry>` by default |
 | `base_image` | the base image of the images of the environments, uv and the python of the service; a repository of the registry by default (`astral-sh/uv:0.13.7-python3.14-trixie-slim@sha256:...`), which the registry mirrors with its digest |
+| `system_packages` | the Debian packages the images of the environments install on the base image, the shared libraries which wheels link but do not bundle (`[libexpat1]`, which python-libsbml needs) |
 | `namespace` | the namespace of the workflows and their pods (`simrun`) |
 | `local_queue` | the Kueue LocalQueue of the pods (`simrun`) |
 | `store_claim` | the PersistentVolumeClaim of the run store (`simrun-store`) |
