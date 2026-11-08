@@ -13,6 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pydantic
 import pytest
 
 from simrun import worker
@@ -702,3 +703,43 @@ def test_a_running_process_is_named_by_its_pid_file(backends, tmp_path):
     backend.cancel(name)
     _wait(backend, name, lambda s: s.tasks["a"] == "Failed")
     assert not (logs / "a-0.pid").exists()  # removed before the end is recorded
+
+
+class _EchoSettings(pydantic.BaseModel):
+    """The settings of `_ECHO`."""
+
+    text: str = "hello"
+
+
+#: an unsplit type of a plugin with a command and without an image, as the
+#: kinds of sbmlsim which are not split (`sbmlsim.simulate`, `sbmlsim.report`)
+_ECHO = TaskType(
+    name="test.echo",
+    settings=_EchoSettings,
+    command=(
+        f'{PYTHON} -c "import json, pathlib, sys; '
+        "pathlib.Path(sys.argv[2]).mkdir(parents=True, exist_ok=True); "
+        "pathlib.Path(sys.argv[2], 'echo.txt').write_text("
+        "json.loads(pathlib.Path(sys.argv[1]).read_text())['text'])\" "
+        "{settings} {out}"
+    ),
+)
+
+
+def test_an_unsplit_task_of_a_plugin_runs_without_an_image(
+    backends, monkeypatch, tmp_path
+):
+    """A run without an image runs the command of an unsplit plugin type.
+
+    The local backend runs no images, so a run has none; the command of the type
+    ran into `needs the image of the run` before it started.
+    """
+    monkeypatch.setitem(TYPES, _ECHO.name, _ECHO)
+    backend = backends(cores=1)
+    run, name = _submit(
+        backend, [{"id": "echo", "type": _ECHO.name, "settings": {"text": "hi"}}]
+    )
+    status = _wait(backend, name)
+    assert status.phase == "Succeeded", (status, _log(backend, name, "echo"))
+    out = RunStore(backend.store).run_dir(run.id) / "tasks" / "echo" / "out"
+    assert (out / "echo.txt").read_text() == "hi"
