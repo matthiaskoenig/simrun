@@ -62,6 +62,37 @@ def test_submit_local_runs_the_example_and_status_shows_it(project: Path) -> Non
     assert (project / LOCAL_DIR / "store" / "runs" / run_id / "run.json").is_file()
 
 
+def test_submit_local_records_the_working_tree_of_a_source(project: Path) -> None:
+    model = project / "model"
+    model.mkdir()
+    (model / "a.txt").write_text("committed\n")
+    _git(model, "init", "-q", "-b", "main")
+    _git(model, "-c", "user.email=a@b.c", "-c", "user.name=T", "add", "-A")
+    _git(model, "-c", "user.email=a@b.c", "-c", "user.name=T", "commit", "-qm", "i")
+    (model / "a.txt").write_text("changed\n")  # uncommitted
+    shutil.copy(EXAMPLES / "squares.yaml", "squares.yaml")
+    runner = CliRunner()
+    result = runner.invoke(
+        app,
+        [
+            *("submit", "squares.yaml", "--source", "model=model"),
+            *("--local", "--timeout", "120", "--json"),
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    run_id = json.loads(result.output.strip().splitlines()[-1])["id"]
+    status = runner.invoke(app, ["status", run_id, "--local", "--json"])
+    record = json.loads(status.output)["run"]
+    assert record["state"] == "succeeded"
+    (source,) = record["sources"]
+    assert (source["name"], source["branch"], source["dirty"]) == (
+        "model",
+        "main",
+        True,
+    )
+    assert source["snapshot"] == ""
+
+
 @pytest.mark.parametrize("flag", ["--docker", "--snapshot"])
 def test_flags_which_need_local_are_refused_without_it(
     project: Path, flag: str

@@ -982,6 +982,26 @@ def test_a_backend_without_images_does_not_build(service_factory, tmp_path):
     assert not (service.run_dir(run_id) / "environment.lock").exists()
 
 
+def test_a_source_recorded_without_a_snapshot_runs_on_a_backend_without_images(
+    service_factory,
+):
+    # the local mode records a working tree without copying it: no snapshot
+    source = {**provenance("model", "snapshots/model/a"), "snapshot": "", "patch": None}
+    with service_factory(_NoImages()) as service:
+        record = service.store.read(service.submit(sources=[source])["id"])
+    assert record.state == "queued"
+    assert record.sources[0].snapshot == ""
+
+
+def test_a_source_without_a_snapshot_is_refused_where_runs_need_the_code(service):
+    source = {**provenance("model", "snapshots/model/a"), "snapshot": "", "patch": None}
+    response = service.post(
+        "/runs", {"workflow": service.workflow(), "sources": [source]}
+    )
+    assert response.status_code == 422
+    assert "source 'model' has no snapshot" in response.json()["detail"]
+
+
 def test_a_run_the_backend_refuses_fails_with_its_message(service, monkeypatch):
     def refuse(self, record, plans, types, cluster):
         raise ValueError("no image for task x")
