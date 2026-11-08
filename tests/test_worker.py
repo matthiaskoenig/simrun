@@ -184,6 +184,7 @@ def worker_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "SIMRUN_STALE_S",
         "SIMRUN_MERGE",
         "SIMRUN_CORES",
+        "SIMRUN_MEMORY_LIMIT_GB",
         worker.SOURCES_INSTALLED,
     ):
         monkeypatch.delenv(name, raising=False)
@@ -239,6 +240,33 @@ def test_cores_of_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
     assert worker.cores({"SIMRUN_CORES": "1"}) == 1
     with pytest.raises(worker.ConfigurationError):
         worker.cores({"SIMRUN_CORES": "many"})
+
+
+def test_the_memory_limit_without_a_cgroup_bounds_the_processes(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(worker.cgroup, "cpu_quota", lambda: 4)
+    monkeypatch.setattr(worker.cgroup, "memory_limit", lambda: None)
+    # 0.5 GiB base and 0.5 GiB per worker: two processes fit into 1.5 GiB
+    monkeypatch.setenv("SIMRUN_MEMORY_LIMIT_GB", "1.5")
+    (worker_env / "settings.json").write_text(SquaresSettings(n=3).model_dump_json())
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == 0
+    report = read_report(worker_env, "squares-w0")
+    assert report["processes"] == 2
+    assert report["memory_limit_bytes"] == int(1.5 * worker.GIB)
+
+
+def test_memory_limit_of_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worker.cgroup, "memory_limit", lambda: None)
+    assert worker.memory_limit({}) is None
+    assert worker.memory_limit({"SIMRUN_MEMORY_LIMIT_GB": "2"}) == 2 * worker.GIB
+    with pytest.raises(worker.ConfigurationError):
+        worker.memory_limit({"SIMRUN_MEMORY_LIMIT_GB": "much"})
+    # the limit of the cgroup wins
+    monkeypatch.setattr(worker.cgroup, "memory_limit", lambda: worker.GIB)
+    assert worker.memory_limit({"SIMRUN_MEMORY_LIMIT_GB": "2"}) == worker.GIB
 
 
 def test_main_configuration_error(worker_env: Path) -> None:

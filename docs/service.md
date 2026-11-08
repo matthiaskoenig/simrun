@@ -92,7 +92,7 @@ To raise a pin of the build backends, edit `build_constraints.txt` (or point `bu
 | `SIMRUN_STORE` | command line, MCP server | the run store as mounted on the machine of the client |
 | `SIMRUN_CONFIG` | service | the YAML file of the `ServiceSettings` |
 | `KUBECONFIG` | service | the cluster outside of a pod; in the pod the service account |
-| `SIMRUN_TASK_DIR`, `SIMRUN_TASK_TYPE`, `SIMRUN_INPUTS`, `SIMRUN_STAGE`, `SIMRUN_EDITABLE`, `SIMRUN_SCRATCH`, `SIMRUN_PROVENANCE`, `SIMRUN_MEMORY_BASE_GB`, `SIMRUN_MEMORY_PER_WORKER_GB`, `SIMRUN_WORKER`, `SIMRUN_ROLE`, `SIMRUN_ATTEMPT`, `SIMRUN_STALE_S`, `SIMRUN_MERGE`, `SIMRUN_NODE`, `SIMRUN_CORES` | pods | the environment of the harness of a pod, set by the workflow, see `simrun.podspec` and `simrun.worker`; `SIMRUN_CORES` caps the cores of a worker (the local backend sets it, a pod has the quota of its cgroup) |
+| `SIMRUN_TASK_DIR`, `SIMRUN_TASK_TYPE`, `SIMRUN_INPUTS`, `SIMRUN_STAGE`, `SIMRUN_EDITABLE`, `SIMRUN_SCRATCH`, `SIMRUN_PROVENANCE`, `SIMRUN_MEMORY_BASE_GB`, `SIMRUN_MEMORY_PER_WORKER_GB`, `SIMRUN_WORKER`, `SIMRUN_ROLE`, `SIMRUN_ATTEMPT`, `SIMRUN_STALE_S`, `SIMRUN_MERGE`, `SIMRUN_NODE`, `SIMRUN_CORES`, `SIMRUN_MEMORY_LIMIT_GB` | pods | the environment of the harness of a pod, set by the workflow, see `simrun.podspec` and `simrun.worker`; `SIMRUN_CORES` caps the cores of a worker and `SIMRUN_MEMORY_LIMIT_GB` is its memory limit without one of its cgroup (the local backend sets both, a pod has the quota and the limit of its cgroup) |
 | `SIMRUN_K3D`, `SIMRUN_K3D_KEEP` | tests | run the tests on the k3d cluster and keep it, see [Testing](testing.md) |
 
 ## Submissions in the background
