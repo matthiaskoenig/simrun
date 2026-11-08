@@ -16,9 +16,11 @@ simrun outputs <run> <task> --to results
 
 ## The service of a project
 
-The local service keeps everything in `.simrun/` of the current directory, like `.venv`: `store/` (`runs/`, `snapshots/`), `scratch/`, the index `simrun.sqlite`, the generated tokens `tokens.yaml`, `service.json`, `service.log` and a `.gitignore` of everything, so none of it lands in git. It listens on `127.0.0.1` on a free port only.
+The local service keeps everything in `.simrun/` of the current directory, like `.venv`: `store/` (`runs/`, `snapshots/`), `scratch/`, `envs/` (the environments of the runs with `--snapshot`), the index `simrun.sqlite`, the generated tokens `tokens.yaml`, `service.json`, `service.log` and a `.gitignore` of everything, so none of it lands in git. It listens on `127.0.0.1` on a free port only.
 
-A `--local` command starts the service in the background when none runs, waits for its `service.json` and uses it. The service exits after 30 minutes without a request and without a live run, and a stopped service is started again by the next command. `simrun serve --local` runs the service in the foreground instead and prints its address; Ctrl-C, SIGTERM or SIGHUP cancels the runs and waits for their processes, so no process of a run outlives the service. One service runs per directory. See [serve](command-line.md#serve) for the file `service.json` and the check of the instance before the token is sent.
+A `--local` command starts the service in the background when none runs, waits for its `service.json` and uses it. The service exits after 30 minutes without a request and without a live run, and a stopped service is started again by the next command. The service runs the python, the simrun and the task types of the command which started it; `service.json` records them, and a command whose environment differs (another venv, a new or upgraded plugin, another simrun) restarts a service in the background which has no live run and no open request, else it warns and uses the running one. `simrun serve --local --stop` stops the service of the directory (its runs are cancelled) and waits for its end.
+
+`simrun serve --local` runs the service in the foreground instead and prints its address; Ctrl-C, SIGTERM or SIGHUP cancels the runs and waits for their processes (up to 60 s, printing what it waits for), so no process of a run outlives a graceful stop. A service killed without its cleanup (SIGKILL, the out of memory killer) leaves the processes of its runs running; the next service of the directory kills them when it starts. One service runs per directory. See [serve](command-line.md#serve) for the file `service.json` and the check of the instance before the token is sent.
 
 ## The web app
 
@@ -28,19 +30,19 @@ The service serves the web app at `/ui/`: the Executions with live updates, and 
 
 The `LocalBackend` of the service runs the pods of a run as processes of this machine:
 
-- a split task is one coordinator process (`simrun-worker`) with as many processes as the machine has cores, which computes the units and merges them itself; there are no extra workers
+- a split task is one coordinator process (`simrun-worker`) with as many processes as the machine has cores, which computes the units and merges them itself; there are no extra workers, and the plan (also of `estimate --local`) has one pod
 - a task of a plugin type runs through `simrun-exec`
 - a `command` task runs its args directly by default, or in its image with `docker run` when the run is submitted with `--docker`; the run records which. The store and the scratch directory are mounted at the same paths
 - a task starts when the tasks it reads from succeeded and its cores are free; the cores are shared by all runs of the service, in the order of submission, and a waiting task is `queued`
-- a process stopped from outside (no exit code, 137 or 143) is retried as on the cluster, a kill for memory with more memory. The harness limits its own memory where there is no cgroup
+- a process stopped from outside (no exit code, 137 or 143) is retried as on the cluster, after a kill (137) with the retry memory per process, so the harness runs fewer processes; there is no memory limit per task, a process which takes too much is killed by the out of memory killer of the machine
 
-The backend sets `SIMRUN_CORES` (the cores of the worker) and `SIMRUN_MEMORY_LIMIT_GB` (its memory, which the harness enforces itself without a cgroup) in the environment of a process. The scratch directories are in `.simrun/scratch/`, the logs of every process are in `.simrun/store/runs/<run>/tasks/<task>/logs/`, and `simrun logs` reads them as it does on the cluster.
+The backend sets `SIMRUN_CORES` (the cores of the worker), `SIMRUN_MEMORY_LIMIT_GB` (its memory, by which the harness sizes its pool of processes; nothing kills a process above it) and `SIMRUN_MEMORY_SOURCE=process` in the environment of a process: the processes share the cgroup of the machine or of the session, so the harness measures the memory of its own process tree in `/proc` instead of the one of the cgroup, and learns the resources of a task from it as on the cluster. The scratch directories are in `.simrun/scratch/`, the logs of every process are in `.simrun/store/runs/<run>/tasks/<task>/logs/`, and `simrun logs` reads them as it does on the cluster.
 
 ## Sources
 
 Locally the sources are recorded, not copied: the provenance (branch, commit, uncommitted files, the hash of the diff) is stored as on the cluster, and the processes run with the python environment of the command, so the code is the working tree as installed in it, e.g. editable. Nothing is snapshotted or installed, which keeps a run as fast as running the code by hand.
 
-`--snapshot` on `submit` and `edit` copies the working trees into `snapshots/` and installs them in the environment of the run as the cluster does, when a run must not see later changes of the tree.
+`--snapshot` on `submit` and `edit` copies the working trees into `snapshots/`, when a run must not see later changes of the tree. The run gets an environment of its own, a venv in `.simrun/envs/<run>/` which sees the packages of the command's python, and the snapshots are installed into it as editable packages without their dependencies, never into the environment of the command; the harness runs with its python, and a `command` task finds it first on `PATH`. The installer is `uv` (else `pip`), which builds the snapshots with their build backends from the index or its cache. The venv is removed at the end of the run.
 
 ## What differs from the cluster
 
@@ -50,7 +52,7 @@ Locally the sources are recorded, not copied: the provenance (branch, commit, un
 | priorities and preemption | Kueue, six priority classes | none, the tasks run in the order of submission |
 | reservations of nodes | yes | refused |
 | images | built with BuildKit per environment | none; a `command` may use its image with `--docker` |
-| sources | snapshots, installed in the image | provenance only, unless `--snapshot` |
+| sources | snapshots, installed in the image | provenance only, unless `--snapshot`: installed in a venv of the run |
 | store | shared drive, or uploads through the API | `.simrun/store/` |
 | extra workers of a split task | spread over idle servers | none, one worker with all cores |
 

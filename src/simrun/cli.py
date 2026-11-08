@@ -23,6 +23,7 @@ from rich.console import Console
 from rich.live import Live
 from rich.table import Column, Table
 
+from simrun import worker
 from simrun.client import Client, ClientError
 from simrun.edit import run_edit
 from simrun.local import (
@@ -32,6 +33,7 @@ from simrun.local import (
     LocalService,
     ServiceRunning,
     serve_local,
+    stop_local,
     web_dir,
 )
 from simrun.service.app import RunSummary, TaskProgress
@@ -90,8 +92,12 @@ def _client(local: bool, snapshot: bool = False, docker: bool = False) -> Client
     if docker and not local:
         _fail("--docker needs --local")
     if local:
-        return Client.local(Path.cwd(), snapshot=snapshot)
+        return Client.local(Path.cwd(), snapshot=snapshot, warn=_warn)
     return make_client()
+
+
+def _warn(message: str) -> None:
+    typer.echo(message, err=True)
 
 
 def _fail(message: str) -> NoReturn:
@@ -601,18 +607,28 @@ def serve(
             "a live run.",
         ),
     ] = None,
+    stop: Annotated[
+        bool,
+        typer.Option(
+            "--stop",
+            help="With --local: stop the service of the current directory, which "
+            "cancels its runs, and wait for its end.",
+        ),
+    ] = False,
 ) -> None:
     """Run the service until stopped.
 
     With --local the service of the current directory with the local backend: the
     tasks run as processes on this machine, Ctrl-C cancels the runs; exit 3 when
-    the service of the directory runs already. Without, the
-    service of the settings named by SIMRUN_CONFIG, as
+    the service of the directory runs already. --stop stops it instead. Without,
+    the service of the settings named by SIMRUN_CONFIG, as
     `uvicorn --factory simrun.service.app:serve` runs it.
     """
     if not local:
         if idle_exit is not None:
             _fail("--idle-exit needs --local")
+        if stop:
+            _fail("--stop needs --local")
         uvicorn.run(
             "simrun.service.app:serve",
             factory=True,
@@ -623,6 +639,19 @@ def serve(
         return
     if host != "127.0.0.1":
         _fail("the local service listens on 127.0.0.1 only")
+    if stop:
+
+        def stopping(service: LocalService) -> None:
+            typer.echo(
+                f"stopping the local service (pid {service.pid}); its runs are "
+                f"cancelled and get up to {worker.GRACE_S:.0f} s to end"
+            )
+
+        if stop_local(Path.cwd(), stopping=stopping) is None:
+            typer.echo(f"no local service runs in {Path.cwd()}")
+        else:
+            typer.echo("stopped")
+        return
 
     def ready(service: LocalService) -> None:
         typer.echo(f"simrun at {service.url}/ui/ (token in {LOCAL_DIR}/{SERVICE_FILE})")
@@ -630,7 +659,7 @@ def serve(
             typer.echo("the web app is not built in this installation", err=True)
 
     try:
-        serve_local(Path.cwd(), port or 0, idle_exit, ready)
+        serve_local(Path.cwd(), port or 0, idle_exit, ready, _warn)
     except ServiceRunning as error:
         typer.echo(str(error), err=True)
         raise typer.Exit(EXIT_RUNNING) from None

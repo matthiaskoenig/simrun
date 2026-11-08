@@ -200,3 +200,20 @@ def test_submit_local_snapshot_installs_into_a_venv_of_the_run(
     # the venv of the run is removed at its end
     assert not (envs / run_id).exists()
 
+
+def test_serve_local_stop_stops_the_service_of_the_directory(project: Path) -> None:
+    runner = CliRunner()
+    assert runner.invoke(app, ["list", "--local"]).exit_code == 0
+    service = read_service(project)
+    assert service is not None
+    result = runner.invoke(app, ["serve", "--local", "--stop"])
+    assert result.exit_code == 0, result.output
+    assert f"stopping the local service (pid {service.pid})" in result.output
+    assert result.output.endswith("stopped\n")
+    assert not _alive(service.pid)
+    assert read_service(project) is None
+    again = runner.invoke(app, ["serve", "--local", "--stop"])
+    assert again.output == f"no local service runs in {project}\n"
+    refused = runner.invoke(app, ["serve", "--stop"])
+    assert refused.exit_code == 1
+    assert "--stop needs --local" in refused.output

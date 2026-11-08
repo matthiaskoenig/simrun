@@ -1,11 +1,15 @@
 """The local service of a project: the service with the local backend in `.simrun/`.
 
 `.simrun/` of a project directory holds the store, the index, the token of the user
-and, while the service runs, `service.json` (pid, port, token, url). `simrun serve
---local` runs the service in the foreground; `ensure_local` finds the running one or
-starts it in the background, which exits after `IDLE_EXIT_S` without a request and
-without a live run. The service listens on `127.0.0.1` only, and its end cancels the
-runs of the local backend, so no process of a run outlives it.
+and, while the service runs, `service.json` (pid, port, token, url and the
+environment it runs with). `simrun serve --local` runs the service in the
+foreground; `ensure_local` finds the running one or starts it in the background,
+which exits after `IDLE_EXIT_S` without a request and without a live run. A service
+in the background which runs with another environment than the command (python,
+simrun, task types) is restarted when it is idle. The service listens on
+`127.0.0.1` only, and its end cancels the runs of the local backend, so no process
+of a run outlives a graceful stop; a service which starts kills the processes one
+which died left behind (`LocalBackend.kill_orphans`).
 """
 
 import asyncio
@@ -13,6 +17,7 @@ import contextlib
 import dataclasses
 import fcntl
 import getpass
+import hashlib
 import json
 import logging
 import os
@@ -25,6 +30,7 @@ import threading
 import time
 import tomllib
 from collections.abc import Callable, Generator
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import Any
 
@@ -34,7 +40,9 @@ import yaml
 from fastapi import FastAPI
 
 import simrun
+from simrun import worker
 from simrun.config import ClusterConfig
+from simrun.plugins import ENTRY_POINT_GROUP
 from simrun.service.app import ServiceSettings, create_app
 from simrun.service.auth import load_tokens
 from simrun.service.local_backend import LocalBackend
@@ -59,6 +67,12 @@ CHECKOUT = Path(simrun.__file__).parents[2]
 """The checkout of the repository simrun is imported from, if it is one."""
 INSTANCE_PATH = "/local/instance"
 """The route which answers the instance of the local service, without a token."""
+STOP_PATH = "/local/stop"
+"""The route which stops the local service, with the token of the user; with
+`?idle=1` only when no run is live and no other request is open (409 otherwise)."""
+STOP_MARGIN_S = 30.0
+"""Seconds a stop waits for the end of the service beyond the grace of the
+processes of its runs."""
 EXIT_RUNNING = 3
 """The exit code of `simrun serve --local` when the service of the directory runs."""
 _CHECK_S = 0.25
@@ -66,6 +80,10 @@ _CHECK_S = 0.25
 
 class ServiceRunning(RuntimeError):
     """The local service of the directory runs already."""
+
+
+class ServiceBusy(RuntimeError):
+    """The local service has a live run or an open request, so it was not stopped."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -80,6 +98,11 @@ class LocalService:
         port: The port on `127.0.0.1`.
         token: The bearer token of the user.
         url: The URL of the API, `http://127.0.0.1:<port>`.
+        python: The interpreter of the service.
+        version: The version of simrun of the service.
+        types: The hash of the task types the service found (`environment`).
+        background: Whether it was started in the background (`ensure_local`),
+            which exits when idle and is restarted for another environment.
     """
 
     instance: str
@@ -87,6 +110,40 @@ class LocalService:
     port: int
     token: str
     url: str
+    python: str = ""
+    version: str = ""
+    types: str = ""
+    background: bool = False
+
+
+def environment() -> dict[str, str]:
+    """The environment of this process as a local service records it.
+
+    Returns:
+        `python` (the interpreter), `version` (of simrun) and `types`, a hash of the
+        entry points of the task types with the names and versions of their
+        distributions, so a new, removed or upgraded plugin changes it.
+    """
+    found = sorted(
+        f"{ep.name}={ep.value} {ep.dist.name if ep.dist else ''} "
+        f"{ep.dist.version if ep.dist else ''}"
+        for ep in entry_points(group=ENTRY_POINT_GROUP)
+    )
+    digest = hashlib.sha256("\n".join(found).encode()).hexdigest()[:16]
+    return {"python": sys.executable, "version": simrun.__version__, "types": digest}
+
+
+def _differences(service: LocalService) -> list[str]:
+    """How the environment of a service differs from the one of this process."""
+    own = environment()
+    differences: list[str] = []
+    if service.python != own["python"]:
+        differences.append(f"python {service.python or '?'} (not {own['python']})")
+    if service.version != own["version"]:
+        differences.append(f"simrun {service.version or '?'} (not {own['version']})")
+    if service.types != own["types"]:
+        differences.append("other task types")
+    return differences
 
 
 def web_dir() -> Path | None:
@@ -184,12 +241,23 @@ class _Activity:
     """ASGI middleware: the time since the last request, the web app not counted.
 
     A request counts from its start to its end, so an open event stream is activity.
-    It answers `INSTANCE_PATH` itself, without a token and without activity.
+    It answers `INSTANCE_PATH` itself, without a token and without activity, and
+    `STOP_PATH` with the token of the user (`token`): it calls `stop`, with
+    `?idle=1` only when no other request is open and `live` says no run is.
     """
 
-    def __init__(self, app: Callable[..., Any], instance: str = "") -> None:
+    def __init__(
+        self,
+        app: Callable[..., Any],
+        instance: str = "",
+        token: str = "",
+        live: Callable[[], bool] = lambda: False,
+    ) -> None:
         self.app = app
         self.instance = instance
+        self.token = token
+        self.live = live
+        self.stop: Callable[[], None] | None = None
         self.last = time.monotonic()
         self.open = 0
 
@@ -197,6 +265,9 @@ class _Activity:
         path = scope.get("path", "")
         if scope["type"] == "http" and path == INSTANCE_PATH:
             await _plain(send, self.instance)
+            return
+        if scope["type"] == "http" and path == STOP_PATH:
+            await self._stop(scope, send)
             return
         static = path == "/ui" or path.startswith("/ui/")
         if scope["type"] not in ("http", "websocket") or static:
@@ -214,14 +285,35 @@ class _Activity:
         """Seconds since the end of the last request, 0 while one is open."""
         return 0.0 if self.open else time.monotonic() - self.last
 
+    async def _stop(self, scope: dict[str, Any], send: Any) -> None:
+        """Answer `STOP_PATH`: 401 without the token, 405 but for POST, 409 busy."""
+        headers = dict(scope.get("headers", []))
+        given = headers.get(b"authorization", b"")
+        if not self.token or not secrets.compare_digest(
+            given, f"Bearer {self.token}".encode()
+        ):
+            await _plain(send, "a valid bearer token is required", 401)
+            return
+        if scope.get("method") != "POST":
+            await _plain(send, "POST stops the service", 405)
+            return
+        if b"idle=1" in scope.get("query_string", b"").split(b"&") and (
+            self.open or await asyncio.to_thread(self.live)
+        ):
+            await _plain(send, "the service has a live run or an open request", 409)
+            return
+        if self.stop is not None:
+            self.stop()
+        await _plain(send, "stopping")
 
-async def _plain(send: Any, text: str) -> None:
-    """Send `text` as a plain response of status 200."""
+
+async def _plain(send: Any, text: str, status: int = 200) -> None:
+    """Send `text` as a plain response."""
     body = text.encode()
     await send(
         {
             "type": "http.response.start",
-            "status": 200,
+            "status": status,
             "headers": [
                 (b"content-type", b"text/plain; charset=utf-8"),
                 (b"content-length", str(len(body)).encode()),
@@ -238,13 +330,20 @@ class _Server(uvicorn.Server):
     before code after `run` would run; the cleanup runs within the shutdown.
     """
 
-    def __init__(self, config: uvicorn.Config, cleanup: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        config: uvicorn.Config,
+        cleanup: Callable[[], None],
+        starting: Callable[[], None] = lambda: None,
+    ) -> None:
         super().__init__(config)
         self.cleanup = cleanup
+        self.starting = starting
 
     async def shutdown(self, sockets: list[socket.socket] | None = None) -> None:
-        """Shut down, then clean up."""
+        """Say what the shutdown waits for, shut down, then clean up."""
         try:
+            self.starting()
             await super().shutdown(sockets)
         finally:
             await asyncio.to_thread(self.cleanup)
@@ -296,18 +395,22 @@ def serve_local(
     port: int = 0,
     idle_exit_s: float | None = None,
     ready: Callable[[LocalService], None] | None = None,
+    stopping: Callable[[str], None] | None = None,
 ) -> None:
     """Run the local service of a project directory until stopped.
 
     Writes `.simrun/service.json` once the service listens and removes it at the end;
-    the end cancels every run of the local backend and waits for its processes.
+    the end cancels every run of the local backend and waits for its processes. At
+    the start it kills the processes a service before left running when it died.
 
     Args:
         root: The project directory.
         port: The port on `127.0.0.1`, 0 for a free one.
         idle_exit_s: Exit after this many seconds without a request and without a
-            live run; None runs until stopped.
+            live run; None runs until stopped. Set for a service in the background.
         ready: Called with the service once it listens.
+        stopping: Called with what the end of the service waits for, the open
+            requests and the processes of the runs, when it waits for any.
 
     Raises:
         ServiceRunning: The local service of the directory runs already.
@@ -319,9 +422,17 @@ def serve_local(
         settings = local_settings(root)
         token = _user_token(settings)
         backend = LocalBackend(settings.store, directory / "scratch")
+        killed = backend.kill_orphans()
+        if killed:
+            logger.warning("killed %d processes of runs of a service before", killed)
         app = create_app(settings, backend)
         instance = secrets.token_urlsafe(16)
-        activity = _Activity(app, instance)
+
+        def live() -> bool:
+            return bool(app.state.service.store.index.any_unended())
+
+        activity = _Activity(app, instance, token, live)
+        notify = stopping or (lambda message: logger.warning("%s", message))
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             listener.bind((HOST, port))
@@ -335,6 +446,8 @@ def serve_local(
             port=bound,
             token=token,
             url=f"http://{HOST}:{bound}",
+            background=idle_exit_s is not None,
+            **environment(),
         )
         path = directory / SERVICE_FILE
         # the service file is written once listening and removed at the end, never
@@ -349,6 +462,13 @@ def serve_local(
                 done.set()
                 if read_service(root) == service:
                     path.unlink(missing_ok=True)
+            running = backend.placements()
+            if running:
+                runs = len({p.workflow for p in running})
+                notify(
+                    f"cancelling {runs} runs: waiting up to {worker.GRACE_S:.0f} s "
+                    f"for their {len(running)} processes to end"
+                )
             backend.close()
             # the cancelled runs are recorded before the service ends
             try:
@@ -361,7 +481,20 @@ def serve_local(
             log_level="warning",
             timeout_graceful_shutdown=GRACEFUL_SHUTDOWN_S,
         )
-        server = _Server(config, cleanup)
+
+        def starting() -> None:
+            if activity.open:
+                notify(
+                    f"waiting up to {GRACEFUL_SHUTDOWN_S} s for {activity.open} "
+                    "open requests, e.g. event streams"
+                )
+
+        server = _Server(config, cleanup, starting)
+
+        def stop() -> None:
+            server.should_exit = True
+
+        activity.stop = stop
 
         def watch() -> None:
             while not server.started:
@@ -497,7 +630,76 @@ def _log_tail(directory: Path, lines: int = 20) -> str:
     return "".join(text.splitlines(True)[-lines:])
 
 
-def ensure_local(root: Path, timeout_s: float = 10.0) -> LocalService:
+def stop_local(
+    root: Path,
+    idle: bool = False,
+    stopping: Callable[[LocalService], None] | None = None,
+    timeout_s: float = worker.GRACE_S + STOP_MARGIN_S,
+) -> LocalService | None:
+    """Stop the local service of a project directory and wait for its end.
+
+    The end of the service cancels its runs, whose processes get `worker.GRACE_S`.
+
+    Args:
+        root: The project directory.
+        idle: Stop it only when no run is live and no request is open.
+        stopping: Called with the service once it stops, before the wait.
+        timeout_s: Seconds to wait for its end.
+
+    Returns:
+        The service which was stopped, None when none runs.
+
+    Raises:
+        ServiceBusy: With `idle`, the service has a live run or an open request.
+        RuntimeError: The service refused to stop or did not end in time.
+    """
+    found = _running(root)
+    if found is None:
+        return None
+    try:
+        response = httpx.post(
+            f"{found.url}{STOP_PATH}",
+            params={"idle": "1"} if idle else None,
+            headers={"Authorization": f"Bearer {found.token}"},
+            timeout=10.0,
+        )
+    except httpx.HTTPError:
+        response = None  # ended meanwhile, or ending
+    if response is not None and response.status_code == 409:
+        raise ServiceBusy(response.text)
+    if response is not None and response.status_code != 200:
+        raise RuntimeError(
+            f"the local service of {root} did not stop: {response.status_code} "
+            f"{response.text}"
+        )
+    if stopping is not None:
+        stopping(found)
+    directory = local_dir(root)
+    deadline = time.monotonic() + timeout_s
+    while _held(directory) or _pid_alive(found.pid):
+        if time.monotonic() >= deadline:
+            raise RuntimeError(
+                f"the local service of {root} (pid {found.pid}) did not end within "
+                f"{timeout_s:.0f} s"
+            )
+        time.sleep(0.05)
+    return found
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a process runs, a zombie not counted."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def ensure_local(
+    root: Path,
+    timeout_s: float = 10.0,
+    warn: Callable[[str], None] | None = None,
+) -> LocalService:
     """The local service of a project directory, started in the background if none runs.
 
     A service runs when the pid of `service.json` is alive, the server answers the
@@ -505,9 +707,15 @@ def ensure_local(root: Path, timeout_s: float = 10.0) -> LocalService:
     lock of `.simrun/start.lock`, so concurrent calls start one service; a start
     refused while an old service still ends is repeated once it has ended.
 
+    A service whose environment (python, simrun, task types) differs from the one of
+    this process runs code this command does not: one in the background without a
+    live run and without an open request is stopped and started again; else it is
+    used with a warning.
+
     Args:
         root: The project directory.
         timeout_s: Seconds to wait for a started service.
+        warn: Called with a warning for the user, by default logged.
 
     Returns:
         The running service.
@@ -518,7 +726,27 @@ def ensure_local(root: Path, timeout_s: float = 10.0) -> LocalService:
     """
     found = _running(root)
     if found is not None:
-        return found
+        differences = _differences(found)
+        if not differences:
+            return found
+        what = ", ".join(differences)
+        say = warn or (lambda message: logger.warning("%s", message))
+        if not found.background:
+            say(
+                f"the local service of {root} (pid {found.pid}) runs in the "
+                f"foreground with {what}: restart it to use this environment"
+            )
+            return found
+        try:
+            stop_local(root, idle=True)
+        except ServiceBusy:
+            say(
+                f"the local service of {root} (pid {found.pid}) runs with {what} "
+                "and is busy, so it keeps running; `simrun serve --local --stop` "
+                "stops it"
+            )
+            return found
+        logger.info("the local service of %s ran with %s: restarted", root, what)
     directory = local_dir(root)
     with open(directory / START_LOCK, "a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)

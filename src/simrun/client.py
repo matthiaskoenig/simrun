@@ -216,7 +216,12 @@ class Client:
         return cls(values[URL_ENV], values[TOKEN_ENV], None, "upload")
 
     @classmethod
-    def local(cls, root: Path, snapshot: bool = False) -> Client:
+    def local(
+        cls,
+        root: Path,
+        snapshot: bool = False,
+        warn: Callable[[str], None] | None = None,
+    ) -> Client:
         """The client of the local service of a project directory.
 
         The service is started in the background when none runs.
@@ -225,11 +230,13 @@ class Client:
             root: The project directory, where `.simrun/` is.
             snapshot: Copy the sources into the local store and install them as on
                 the cluster; else only their provenance is recorded.
+            warn: Called with a warning for the user, e.g. a service which runs
+                with another environment; by default logged.
 
         Raises:
             RuntimeError: The service did not start.
         """
-        service = ensure_local(root)
+        service = ensure_local(root, warn=warn)
         if snapshot:
             store = root.absolute() / LOCAL_DIR / "store"
             return cls(service.url, service.token, store, "store")
