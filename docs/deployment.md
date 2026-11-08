@@ -43,7 +43,7 @@ The manifests carry the values of the cluster of the design. A setup replaces th
 | `registry.cluster.internal:5000` | `zot.yaml`, `buildkit.yaml`, `simrun.yaml`, `deploy/service/Dockerfile` | the address of the registry as the nodes and BuildKit name it |
 | `owner: mk` | `simrun.yaml`, ConfigMap `simrun-config` | the person who owns the cluster |
 | `{}` | `simrun.yaml`, Secret `simrun-tokens` | the tokens of the people and agents, see [Authentication](service.md#authentication) |
-| `simrun-service:0.2.0`, `simrun-0.2.0-py3-none-any.whl` | `simrun.yaml` | the image of the service and the wheel of simrun it carries, see below |
+| `simrun-service:0.3.0`, `simrun-0.3.0-py3-none-any.whl` | `simrun.yaml` | the image of the service and the wheel of simrun it carries, see below |
 | `nominalQuota` of cpu, memory, GPUs and ephemeral storage | `kueue/queues.yaml` | the allocatable resources of the worker nodes |
 
 The Service `simrun` (port 80) is reached by the clients, e.g. through an ingress or a DNS name of the network; the examples of this documentation use `http://simrun.cluster.internal`. The development server of the agents mounts the run store, e.g. at `/mnt/cluster`, which is `SIMRUN_STORE` of the clients.
@@ -63,9 +63,9 @@ cp ~/git/sbmlsim/dist/sbmlsim-*.whl build/service/plugins/   # the plugins
 (cd frontend && npm ci && npm run build)                     # the web app
 rm -rf build/service/web && cp -r frontend/dist build/service/web
 cp deploy/service/Dockerfile build/service/
-docker build -t registry.cluster.internal:5000/simrun-service:0.2.0 \
-    --build-arg WHEEL=simrun-0.2.0-py3-none-any.whl build/service
-docker push registry.cluster.internal:5000/simrun-service:0.2.0
+docker build -t registry.cluster.internal:5000/simrun-service:0.3.0 \
+    --build-arg WHEEL=simrun-0.3.0-py3-none-any.whl build/service
+docker push registry.cluster.internal:5000/simrun-service:0.3.0
 ```
 
 The plugins are installed with their dependencies at the versions of the lock of simrun (`constraints.txt`): a plugin which needs another version of a dependency of simrun fails the build instead of moving it. The base (`--build-arg BASE`) is the base image of the environments in the registry, which the registry mirrors with its digest (`ClusterConfig.base_image`). At runtime the service keeps the cache of uv in `/var/cache/uv`, a volume of the deployment, so a submission does not download the metadata and the build backends again.

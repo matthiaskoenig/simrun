@@ -82,7 +82,7 @@ data:
     db: /var/lib/simrun/resources.sqlite
     tokens: /etc/simrun/tokens/tokens.yaml
     owner: mk
-    simrun_wheel: /opt/simrun/simrun-0.2.0-py3-none-any.whl
+    simrun_wheel: /opt/simrun/simrun-0.3.0-py3-none-any.whl
     backend: simrun.service.argo_backend:backend
     web: /opt/simrun/web
     cluster:
@@ -156,7 +156,7 @@ spec:
         - name: simrun
           # built from deploy/service/Dockerfile, see "The service image" in
           # docs/deployment.md
-          image: registry.cluster.internal:5000/simrun-service:0.2.0
+          image: registry.cluster.internal:5000/simrun-service:0.3.0
           command:
             - uvicorn
             - --factory
