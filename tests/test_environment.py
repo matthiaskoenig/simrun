@@ -1,3 +1,4 @@
+import dataclasses
 import subprocess
 import sys
 from pathlib import Path
@@ -349,3 +350,17 @@ def test_the_constraints_file_names_exact_versions(tmp_path: Path) -> None:
     bad.write_text("hatchling>=1\n")
     with pytest.raises(ValueError, match="hatchling>=1"):
         load_constraints(bad)
+
+
+def test_dockerfile_installs_git_for_a_git_dependency(tmp_path: Path) -> None:
+    # uv needs git to install a dependency locked from a git repository, e.g.
+    # `pkpdsim @ git+https://...` of a branch of a model; the slim base has none
+    store, model, libs = _make(tmp_path, [])
+    env = _resolve(store, model, libs)
+    assert "git" not in dockerfile(env, "reg:5000/uv:1", "w.whl", ["libexpat1"])
+    pinned = "pkpdsim @ git+https://github.com/matthiaskoenig/pkpdsim@9065f38\n"
+    with_git = dataclasses.replace(env, requirements=env.requirements + pinned)
+    text = dockerfile(with_git, "reg:5000/uv:1", "w.whl", ["libexpat1"])
+    install = next(line for line in text.splitlines() if "apt-get" in line)
+    assert "--no-install-recommends libexpat1 git " in install
+    assert dockerfile(with_git, "reg:5000/uv:1", "w.whl").count("apt-get install") == 1

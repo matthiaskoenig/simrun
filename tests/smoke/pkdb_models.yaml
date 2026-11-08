@@ -1,0 +1,53 @@
+# The analyses of a model of pkdb_models (HCTZ, `pkdb_models.models.hctz:MODEL`),
+# small enough to run in minutes: the simulations, a fit with what reads it, and
+# the build of the models, through simrun.
+# Run with `tests/smoke/run.py`, see "Smoke workflows" in docs/testing.md.
+name: smoke-pkdb-models
+tasks:
+  - id: simulate
+    type: sbmlsim.simulate
+    settings:
+      project: pkdb_models.models.hctz:MODEL
+  - id: fit
+    type: sbmlsim.fit
+    settings:
+      project: pkdb_models.models.hctz:MODEL
+      subset: PK
+      repeats: 2
+  - id: identifiability
+    type: sbmlsim.identifiability
+    settings:
+      project: pkdb_models.models.hctz:MODEL
+      subset: PK
+      # the profile of one parameter without the fits along it, the one unit of the
+      # analysis in seconds instead of minutes
+      pids: [ka_hctz]
+      max_points: 5
+      reoptimize: false
+    inputs:
+      fit: fit.out
+  - id: fisher
+    type: sbmlsim.fisher
+    settings:
+      project: pkdb_models.models.hctz:MODEL
+      subset: PK
+    inputs:
+      fit: fit.out
+  - id: report
+    type: sbmlsim.report
+    settings:
+      project: pkdb_models.models.hctz:MODEL
+      subset: PK
+    inputs:
+      fit: identifiability.out
+  - id: petab
+    type: sbmlsim.petab
+    settings:
+      project: pkdb_models.models.hctz:MODEL
+      subset: PK
+    inputs:
+      fit: fit.out
+  - id: factory
+    type: sbmlsim.factory
+    settings:
+      project: pkdb_models.models.hctz:MODEL

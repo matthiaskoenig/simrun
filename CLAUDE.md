@@ -20,6 +20,7 @@ pytest -n 0                                        # in one process, e.g. for --
 SIMRUN_K3D=1 uv run pytest -m cluster tests/cluster                     # the tests on a k3d cluster (docker, ~20 GiB disk)
 SIMRUN_K3D=1 SIMRUN_K3D_KEEP=1 uv run pytest -m cluster tests/cluster   # keep the cluster for the next session
 uv run python tests/cluster/local.py up            # the k3d cluster as a local test system, service on the host (docs/testing.md); `down` deletes it
+uv run python tests/smoke/run.py [--k3d]           # the smoke workflows: the analyses of sbmlsim and pkdb_models (~/git checkouts) through simrun, locally or on the local test system
 uv run simrun submit examples/squares.yaml --local   # on this machine without a cluster, state in .simrun/ (docs/local.md)
 uv run simrun edit /tmp/squares.yaml               # a copy of examples/squares.yaml in the Editor of the local test system (docs/web-app.md)
 tox r -e py3.15                                    # single tox env (py3.14, py3.15)

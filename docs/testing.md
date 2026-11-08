@@ -87,6 +87,18 @@ After a change of the code of the pods, run `up` again, which builds a new image
 uv run python tests/cluster/local.py down
 ```
 
+## Smoke workflows { #smoke-workflows }
+
+The smoke workflows run the analyses of sbmlsim and pkdb_models through simrun, to find what breaks a real model before the migration of the models does: `tests/smoke/sbmlsim.yaml` every kind of analysis of the HCTZ example of sbmlsim (simulate, fit, identifiability, fisher, report, petab, scan, sensitivity, uncertainty) with the checkout of sbmlsim as its source, and `tests/smoke/pkdb_models.yaml` the simulations, a fit with the analyses which read it and the build of the models of the HCTZ model of pkdb_models, with the checkouts of pkdb_models and sbmlsim as its sources. They need checkouts of both (by default `~/git/sbmlsim` and `~/git/pkdb_models`):
+
+```bash
+uv run python tests/smoke/run.py                       # --local, on this machine (about 5 minutes)
+uv run python tests/smoke/run.py --k3d                 # on the local test system, after `tests/cluster/local.py up`
+uv run python tests/smoke/run.py --only sbmlsim --sbmlsim ../sbmlsim --pkdb-models ../pkdb_models
+```
+
+`run.py` installs this checkout of simrun and the two checkouts editable into an environment of its own, `.tools/smoke/venv`, so the client plans with the plugin of sbmlsim and the service knows its task types. Locally it uses the local service of `.tools/smoke/local` and stops it at the end; with `--k3d` it runs a service of that environment against the local test system on a free port, and the first run of each workflow builds the image of its environment. It prints the state of every task and exits 1 when a run did not succeed.
+
 ## Continuous integration
 
 In continuous integration the job `cluster` runs the tests on the k3d cluster on a push to `develop`, on a release, when the workflow `CI-CD` is started by hand and on a pull request with the label `cluster`, see [Development](development.md#pull-requests).
