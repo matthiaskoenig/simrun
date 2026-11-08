@@ -54,8 +54,8 @@ def _submit(
     """Write a run of the tasks into the store of the backend and submit it."""
     store = RunStore(backend.store)
     workflow = Workflow(name="local", tasks=tasks)
+    record.setdefault("id", store.new_run_id())
     run = RunRecord(
-        id=store.new_run_id(),
         submitted_by="mk",
         owner="mk",
         agent=None,
@@ -246,6 +246,10 @@ def test_cancel_ends_every_process_of_the_run(backends, tmp_path):
     status = _wait(backend, name, lambda s: s.tasks.get("squares-w0") == "Failed")
     assert status.phase == "Failed"
     assert status.tasks == {"squares-w0": "Failed", "after": "Omitted"}
+    # stopped on SIGTERM, which is retried, but not in a cancelled run
+    assert status.failed == {
+        "squares-w0": [FailedAttempt(attempt=0, exit_code=worker.EXIT_TERMINATED)]
+    }
     assert backend.placements() == []
     assert _processes_of(tmp_path / "store") == []
 
@@ -275,7 +279,11 @@ def test_tasks_of_two_runs_share_the_cores(backends):
     seen_waiting = False
     deadline = time.monotonic() + DEADLINE_S
     while True:
-        a, b = backend.status(first), backend.status(second)
+        # one consistent view of both runs: the lock of the backend is reentrant
+        with backend._cond:
+            a, b = backend.status(first), backend.status(second)
+            cores = sum(p.cores for p in backend.placements())
+        assert cores <= 2
         assert not (a.tasks.get("big") == "Running" == b.tasks.get("big"))
         if a.tasks.get("big") == "Running" and b.tasks.get("big") == "Pending":
             seen_waiting = True
@@ -303,7 +311,8 @@ def test_a_kill_is_retried_with_the_retry_memory(backends):
     backend = backends(cores=1)
     code = (
         "import os, signal; "
-        "print('memory', os.environ['SIMRUN_MEMORY_PER_WORKER_GB'], flush=True); "
+        "print('memory', os.environ['SIMRUN_MEMORY_PER_WORKER_GB'], "
+        "os.environ['SIMRUN_MEMORY_LIMIT_GB'], flush=True); "
         "os.environ['SIMRUN_ATTEMPT'] == '0' and os.kill(os.getpid(), signal.SIGKILL)"
     )
     run, name = _submit(backend, [_command("killed", code)])
@@ -315,9 +324,50 @@ def test_a_kill_is_retried_with_the_retry_memory(backends):
     logs = backend.logs(name, "killed")
     assert [log.node for log in logs] == ["killed", "killed"]
     shape = run.plans["killed"]["shape"]
-    assert f"memory {float(shape['per_worker_gb'])}" in logs[0].text
-    assert f"memory {float(shape['retry_per_worker_gb'])}" in logs[1].text
+    first = f"memory {float(shape['per_worker_gb'])} {float(shape['memory_gb'])}"
+    retry = (
+        f"memory {float(shape['retry_per_worker_gb'])} "
+        f"{float(shape['retry_memory_gb'])}"
+    )
+    assert first in logs[0].text
+    assert retry in logs[1].text
     assert RETRY_LIMIT > 1
+
+
+def test_a_stop_from_outside_is_retried_with_the_first_memory(backends):
+    backend = backends(cores=1)
+    code = (
+        "import os, signal; "
+        "print('memory', os.environ['SIMRUN_MEMORY_PER_WORKER_GB'], flush=True); "
+        "os.environ['SIMRUN_ATTEMPT'] == '0' and os.kill(os.getpid(), signal.SIGTERM)"
+    )
+    run, name = _submit(backend, [_command("stopped", code)])
+    status = _wait(backend, name)
+    assert status.phase == "Succeeded"
+    assert status.failed == {
+        "stopped": [FailedAttempt(attempt=0, exit_code=worker.EXIT_TERMINATED)]
+    }
+    logs = backend.logs(name, "stopped")
+    per_worker = float(run.plans["stopped"]["shape"]["per_worker_gb"])
+    assert [f"memory {per_worker}" in log.text for log in logs] == [True, True]
+
+
+def test_a_failed_start_fails_the_node_and_frees_its_cores(backends):
+    backend = backends(cores=1)
+    run_id = RunStore(backend.store).new_run_id()
+    # the logs of the task cannot be created: its directory is a file
+    logs = backend.store / "runs" / run_id / "tasks" / "broken" / "logs"
+    logs.parent.mkdir(parents=True)
+    logs.write_text("no directory")
+    _, name = _submit(backend, [_command("broken", "pass")], id=run_id)
+    status = _wait(backend, name)
+    assert status.tasks == {"broken": "Failed"}
+    assert status.failed == {
+        "broken": [FailedAttempt(attempt=0, exit_code=worker.EXIT_CONFIGURATION)]
+    }
+    # the cores are free again: a later run starts
+    _, later = _submit(backend, [_command("later", "pass")])
+    assert _wait(backend, later).phase == "Succeeded"
 
 
 def test_another_exit_fails_the_node(backends):
@@ -346,36 +396,86 @@ def test_docker_missing_fails_the_command_with_a_message(
     assert "docker is not installed" in _log(backend, name, "boxed")
 
 
-def test_the_run_chooses_docker(backends, tmp_path, monkeypatch):
-    """The commands of the run win over the ones of the backend; a fake docker."""
+FAKE_DOCKER = """#!{python}
+import json, sys, time
+with open({calls!r}, "a") as f:
+    f.write(json.dumps(sys.argv[1:]) + "\\n")
+print("docker", sys.argv[1:], flush=True)
+if sys.argv[1] == "run" and "localhost:5000/slow:1" in sys.argv:
+    time.sleep(30)
+"""
+
+
+@pytest.fixture
+def docker_calls(tmp_path, monkeypatch) -> Path:
+    """A fake docker on the PATH which records its calls, one JSON list per line."""
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
+    calls = tmp_path / "docker-calls.jsonl"
     docker = bin_dir / "docker"
-    docker.write_text(f"#!{PYTHON}\nimport sys\nprint('docker', sys.argv[1:])\n")
+    docker.write_text(FAKE_DOCKER.format(python=PYTHON, calls=str(calls)))
     docker.chmod(0o755)
     monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    return calls
+
+
+def _calls(path: Path) -> list[list[str]]:
+    if not path.exists():
+        return []
+    return [json.loads(line) for line in path.read_text().splitlines()]
+
+
+def test_the_run_chooses_docker(backends, tmp_path, docker_calls):
+    """The commands of the run win over the ones of the backend."""
     backend = backends(cores=1)
-    _, name = _submit(
+    run, name = _submit(
         backend, [_command("boxed", "print('boxed')")], local_commands="docker"
     )
     assert _wait(backend, name).phase == "Succeeded"
-    text = _log(backend, name, "boxed")
+    [call] = _calls(docker_calls)
     store, scratch = tmp_path / "store", tmp_path / "scratch"
-    expected = [
+    assert call[:12] == [
         "run",
         "--rm",
+        "--init",
+        "--name",
+        f"simrun-{run.id}-boxed-0",
         "-v",
         f"{store}:{store}",
         "-v",
         f"{scratch}:{scratch}",
         "--user",
         f"{os.getuid()}:{os.getgid()}",
-        "localhost:5000/tools:1",
-        PYTHON,
-        "-c",
-        "print('boxed')",
+        "-e",
     ]
-    assert f"docker {expected}" in text
+    assert call[-4:] == ["localhost:5000/tools:1", PYTHON, "-c", "print('boxed')"]
+    options = call[11:-4]
+    assert options[::2] == ["-e"] * (len(options) // 2)
+    env = dict(value.split("=", 1) for value in options[1::2])
+    task_dir = store / "runs" / run.id / "tasks" / "boxed"
+    assert env["SIMRUN_TASK_DIR"] == str(task_dir)
+    assert env["SIMRUN_ATTEMPT"] == "0"
+    assert env["SIMRUN_MEMORY_LIMIT_GB"] == "1.0"
+    assert all(key.startswith("SIMRUN_") for key in env)
+    assert "boxed" in _log(backend, name, "boxed")
+
+
+def test_cancel_kills_the_container(backends, docker_calls, monkeypatch):
+    monkeypatch.setattr(worker, "GRACE_S", 0.2)
+    backend = backends(cores=1, commands="docker")
+    task = _command("boxed", "print('boxed')")
+    task["settings"]["image"] = "localhost:5000/slow:1"
+    run, name = _submit(backend, [task])
+    _wait(backend, name, lambda s: bool(_calls(docker_calls)))
+    backend.cancel(name)
+    container = f"simrun-{run.id}-boxed-0"
+    deadline = time.monotonic() + DEADLINE_S
+    while ["kill", container] not in _calls(docker_calls):
+        assert time.monotonic() < deadline, _calls(docker_calls)
+        time.sleep(0.02)
+    assert ["kill", "--signal", "TERM", container] in _calls(docker_calls)
+    status = _wait(backend, name, lambda s: s.tasks["boxed"] == "Failed")
+    assert len(status.failed["boxed"]) == 1
 
 
 def test_the_callback_follows_the_end_of_a_process(backends):

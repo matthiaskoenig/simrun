@@ -633,7 +633,7 @@ def run_worker(
                 units_done=sorted(units.done),
                 seconds=time.monotonic() - start,
                 peak_memory_bytes=sampler.peak,
-                memory_limit_bytes=cgroup.memory_limit(),
+                memory_limit_bytes=memory_bytes,
                 per_worker_gb=per_worker_gb,
                 oom_kills=oom_kills.since(),
                 unit_seconds=units.seconds,
@@ -922,6 +922,23 @@ def cores(env: Mapping[str, str]) -> int:
     return min(cap, available)
 
 
+def memory_limit(env: Mapping[str, str]) -> int | None:
+    """The memory limit of a worker in bytes: the one of its cgroup.
+
+    Without a limit of the cgroup it is `SIMRUN_MEMORY_LIMIT_GB`, the harness's own
+    limit, e.g. the memory of the plan of a task on the local backend; None without
+    either.
+
+    Raises:
+        ConfigurationError: `SIMRUN_MEMORY_LIMIT_GB` is not a number.
+    """
+    limit = cgroup.memory_limit()
+    if limit is not None:
+        return limit
+    value = _gb(env, "SIMRUN_MEMORY_LIMIT_GB", 0.0)
+    return int(value * GIB) if value > 0 else None
+
+
 def _gb(env: Mapping[str, str], name: str, default: float) -> float:
     value = env.get(name)
     if not value:
@@ -984,6 +1001,7 @@ def _worker(stop: threading.Event) -> int:
             env, "SIMRUN_MEMORY_PER_WORKER_GB", task_type.hint.memory_per_worker_gb
         )
         worker_cores = cores(env)
+        worker_memory = memory_limit(env)
     except CONFIGURATION_ERRORS as error:
         logger.error("configuration error: %s", error)
         return EXIT_CONFIGURATION
@@ -999,7 +1017,7 @@ def _worker(stop: threading.Event) -> int:
             paths,
             worker,
             cores=worker_cores,
-            memory_bytes=cgroup.memory_limit(),
+            memory_bytes=worker_memory,
             base_gb=base_gb,
             per_worker_gb=per_worker_gb,
             attempt=attempt,
@@ -1110,6 +1128,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
         stage(_pairs(env.get("SIMRUN_STAGE", "")), paths.store, paths.scratch)
         per_worker_gb = _gb(env, "SIMRUN_MEMORY_PER_WORKER_GB", 0.0)
         exec_cores = cores(env)
+        exec_memory = memory_limit(env)
     except CONFIGURATION_ERRORS as error:
         logger.error("configuration error: %s", error)
         return EXIT_CONFIGURATION
@@ -1137,7 +1156,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
             processes=exec_cores,
             seconds=time.monotonic() - start,
             peak_memory_bytes=sampler.peak,
-            memory_limit_bytes=cgroup.memory_limit(),
+            memory_limit_bytes=exec_memory,
             per_worker_gb=per_worker_gb,
             oom_kills=oom_kills.since(),
         )

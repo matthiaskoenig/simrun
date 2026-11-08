@@ -3,7 +3,8 @@
 `LocalBackend` runs the DAG of a run without a cluster: a split task as its
 coordinator (`simrun-worker` with `SIMRUN_ROLE=base`, which merges itself), a plugin
 command through `simrun-exec` and a `command` task with its args directly or in its
-image with `docker run`. A task starts when the tasks it reads from succeeded and its
+image with `docker run` (a container named after the run, the node and the
+attempt, killed with `docker kill` on a cancel). A task starts when the tasks it reads from succeeded and its
 cores fit into the free cores of the machine; the tasks of several runs take them in
 the order of their submission. The nodes and phases of its status are the ones of
 the Argo workflow of the run, so the controller decides the states of the tasks as
@@ -44,7 +45,7 @@ from simrun.service.backend import (
     PodLog,
 )
 from simrun.store import RunRecord
-from simrun.worker import EXIT_CONFIGURATION, EXIT_POOL_BROKEN, GIB
+from simrun.worker import EXIT_CONFIGURATION, EXIT_POOL_BROKEN, EXIT_TERMINATED, GIB
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,10 @@ WAITING = frozenset({PENDING, RETRYING_PHASE})
 WORKER_ARGV = [sys.executable, "-c", "from simrun.worker import main; main()"]
 EXEC_ARGV = [sys.executable, "-c", "from simrun.worker import exec_main; exec_main()"]
 NOT_LOCAL = "not on the local backend"
+# the exits of a stop, retried as on the cluster: a kill and a SIGTERM
+RETRIED_EXITS = frozenset({EXIT_POOL_BROKEN, EXIT_TERMINATED})
+# seconds a `docker kill` may take
+DOCKER_KILL_S = 60.0
 
 Commands = Literal["direct", "docker"]
 
@@ -73,34 +78,41 @@ class _Node:
             key of its failed attempts.
         task_id: The id of its task.
         dependencies: The names of the nodes it reads from.
-        argv: The command of its process.
-        env: The variables of its process besides the ones of the attempt.
+        command: The command of its process, inside the container with an image.
+        env: The `SIMRUN_*` variables of its process besides the ones of the
+            attempt.
         shape: The pod shape of its plan.
         cores: The cores it takes of the machine.
         scratch: Its scratch directory.
         worker: Its `SIMRUN_WORKER`, None for an unsplit task.
-        docker: Whether its command runs with `docker run`.
+        image: The image its command runs in with `docker run`, None to run it
+            directly.
         phase: Its phase, None while it waits for its dependencies.
         admitted: Whether its cores are taken and its process is to be started.
         attempt: The attempt of its current or next process.
+        retry_memory: Whether the attempt has the retry memory: the one before
+            was killed (exit 137).
         process: Its running process.
+        container: The name of the container of its current attempt.
         failed: Its failed attempts.
     """
 
     name: str
     task_id: str
     dependencies: list[str]
-    argv: list[str]
+    command: list[str]
     env: dict[str, str]
     shape: PodShape
     cores: int
     scratch: Path
     worker: str | None
-    docker: bool
+    image: str | None
     phase: str | None = None
     admitted: bool = False
     attempt: int = 0
+    retry_memory: bool = False
     process: subprocess.Popen[bytes] | None = None
+    container: str | None = None
     failed: list[FailedAttempt] = field(default_factory=list)
 
 
@@ -124,6 +136,27 @@ def _signal_group(pid: int, signum: int) -> None:
     """Send a signal to the process group of `pid`, which may be gone."""
     with contextlib.suppress(ProcessLookupError, PermissionError):
         os.killpg(pid, signum)
+
+
+def _docker_kill(container: str, signal_name: str | None = None) -> None:
+    """Send a signal (SIGKILL by default) to a container, which may be gone."""
+    options = ["--signal", signal_name] if signal_name else []
+    try:
+        subprocess.run(
+            ["docker", "kill", *options, container],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=DOCKER_KILL_S,
+            check=False,
+        )
+    except OSError, subprocess.SubprocessError:
+        logger.exception("docker kill %s failed", container)
+
+
+def _container(run_id: str, node: str, attempt: int) -> str:
+    """The name of the container of an attempt, valid for docker."""
+    return re.sub(r"[^a-zA-Z0-9_.-]", "-", f"simrun-{run_id}-{node}-{attempt}")
 
 
 def _tail(text: str, lines: int | None) -> str:
@@ -171,6 +204,8 @@ class LocalBackend:
         self.hostname = socket.gethostname()
         self._cond = threading.Condition()
         self._runs: dict[str, _Run] = {}
+        # the runs with a node which has not ended, in the order of submission
+        self._active: dict[str, _Run] = {}
         self._used = 0
         self._callbacks: list[Callable[[], None]] = []
 
@@ -203,6 +238,7 @@ class LocalBackend:
             if name in self._runs:
                 return name
             self._runs[name] = run
+            self._active[name] = run
             self._advance()
         run.thread = threading.Thread(
             target=self._drive, args=(run,), name=f"local-{record.id}", daemon=True
@@ -237,9 +273,10 @@ class LocalBackend:
     def cancel(self, name: str) -> None:
         """End a run: SIGTERM to its processes, SIGKILL after `worker.GRACE_S`.
 
-        No process of the run starts any more; KeyError for an unknown run.
+        A container gets the same signals with `docker kill`. No process of the run
+        starts or is retried any more; KeyError for an unknown run.
         """
-        processes: list[subprocess.Popen[bytes]] = []
+        targets: list[tuple[subprocess.Popen[bytes], str | None]] = []
         with self._cond:
             run = self._runs[name]
             run.cancelled = True
@@ -249,13 +286,13 @@ class LocalBackend:
                     self._used -= node.cores
                 if node.phase == RUNNING:
                     if node.process is not None:
-                        processes.append(node.process)
+                        targets.append((node.process, node.container))
                 elif node.phase == RETRYING_PHASE:
                     node.phase = FAILED
                 elif node.phase not in ENDED:
                     node.phase = OMITTED
             self._advance()
-        self._terminate(processes)
+        self._terminate(targets)
         self._notify()
 
     def stop(self, name: str) -> None:
@@ -312,7 +349,7 @@ class LocalBackend:
                     cores=node.cores,
                     memory_gb=float(
                         node.shape.retry_memory_gb
-                        if node.attempt
+                        if node.retry_memory
                         else node.shape.memory_gb
                     ),
                     worker=node.worker,
@@ -380,7 +417,7 @@ class LocalBackend:
                 record, task, task_type, shape, str(self.store), str(scratch)
             )
             env |= {"SIMRUN_NODE": self.hostname, "SIMRUN_CORES": str(cores)}
-            docker = False
+            image: str | None = None
             worker_id: str | None = None
             if task_type.splittable:
                 worker_id = name
@@ -392,32 +429,24 @@ class LocalBackend:
                     "SIMRUN_STALE_S": str(cluster.grace_s + podspec.STALE_MARGIN_S),
                 }
             else:
-                image, argv = podspec.unsplit_command(
+                command_image, argv = podspec.unsplit_command(
                     record, task, task_type, str(self.store), str(scratch)
                 )
                 if argv[0] == podspec.EXEC_COMMAND:
                     argv = [*EXEC_ARGV, *argv[1:]]
                 elif commands == "docker":
-                    docker = True
-                    argv = [
-                        *("docker", "run", "--rm"),
-                        *("-v", f"{self.store}:{self.store}"),
-                        *("-v", f"{self.scratch}:{self.scratch}"),
-                        *("--user", f"{os.getuid()}:{os.getgid()}"),
-                        image,
-                        *argv,
-                    ]
+                    image = command_image
             nodes[name] = _Node(
                 name=name,
                 task_id=task.id,
                 dependencies=[names[d] for d in task.dependencies()],
-                argv=argv,
+                command=argv,
                 env=env,
                 shape=shape,
                 cores=cores,
                 scratch=scratch,
                 worker=worker_id,
-                docker=docker,
+                image=image,
             )
         return nodes
 
@@ -430,7 +459,7 @@ class LocalBackend:
         and of the DAG; the first which does not fit stops the admission, so a
         large task is not passed by smaller ones forever.
         """
-        for run in self._runs.values():
+        for run in list(self._active.values()):
             for node in run.nodes.values():
                 if node.phase is not None:
                     continue
@@ -439,7 +468,9 @@ class LocalBackend:
                     node.phase = OMITTED
                 elif all(p == SUCCEEDED for p in phases):
                     node.phase = PENDING
-        for run in self._runs.values():
+            if all(n.phase in ENDED for n in run.nodes.values()):
+                del self._active[run.name]
+        for run in self._active.values():
             if run.cancelled:
                 continue
             for node in run.nodes.values():
@@ -472,51 +503,30 @@ class LocalBackend:
                 self._start(run, node)
 
     def _start(self, run: _Run, node: _Node) -> None:
-        """Start the process of the current attempt of a node, unless cancelled."""
+        """Start the process of the current attempt of a node, unless cancelled.
+
+        A process which cannot start (also for an unexpected error) fails the
+        attempt with exit 4, so its cores are free again.
+        """
         with self._cond:
             if run.cancelled:
                 node.phase = OMITTED if node.attempt == 0 else FAILED
                 self._used -= node.cores
                 self._advance()
                 return
-        log = self._task_dir(run.run_id, node.task_id) / "logs"
-        log.mkdir(parents=True, exist_ok=True)
-        node.scratch.mkdir(parents=True, exist_ok=True)
-        # the variables of the service, e.g. of a shell, are no business of a task
-        env = {k: v for k, v in os.environ.items() if not k.startswith("SIMRUN_")}
-        env |= node.env | {"SIMRUN_ATTEMPT": str(node.attempt)}
-        if node.attempt > 0:
-            # only a kill is retried: the retry has the retry memory
-            per_worker = podspec.number(node.shape.retry_per_worker_gb)
-            env["SIMRUN_MEMORY_PER_WORKER_GB"] = per_worker
-        process: subprocess.Popen[bytes] | None = None
-        error: str | None = None
-        with (log / f"{node.name}-{node.attempt}.log").open("ab") as out:
-            if node.docker and shutil.which("docker", path=env.get("PATH")) is None:
-                error = f"docker is not installed: task {node.task_id} cannot run"
-            else:
-                try:
-                    process = subprocess.Popen(
-                        node.argv,
-                        stdin=subprocess.DEVNULL,
-                        stdout=out,
-                        stderr=subprocess.STDOUT,
-                        env=env,
-                        start_new_session=True,
-                    )
-                except OSError as e:
-                    error = f"the command of task {node.task_id} cannot start: {e}"
-            if error is not None:
-                out.write(f"{error}\n".encode())
+        try:
+            process = self._launch(run, node)
+        except Exception:
+            logger.exception("run %s: %s cannot start", run.run_id, node.name)
+            process = None
         if process is None:
-            logger.error("run %s: %s", run.run_id, error)
             self._finish(run, node, EXIT_CONFIGURATION)
             return
         with self._cond:
             node.process = process
             cancelled = run.cancelled
         if cancelled:
-            self._terminate([process])
+            self._terminate([(process, node.container)])
         threading.Thread(
             target=self._wait,
             args=(run, node, process),
@@ -525,27 +535,94 @@ class LocalBackend:
         ).start()
         self._notify()
 
+    def _launch(self, run: _Run, node: _Node) -> subprocess.Popen[bytes] | None:
+        """The process of the current attempt of a node.
+
+        Returns:
+            The process, None (and a line in its log) when the command cannot start.
+        """
+        log = self._task_dir(run.run_id, node.task_id) / "logs"
+        log.mkdir(parents=True, exist_ok=True)
+        node.scratch.mkdir(parents=True, exist_ok=True)
+        shape = node.shape
+        values = node.env | {
+            "SIMRUN_ATTEMPT": str(node.attempt),
+            "SIMRUN_MEMORY_LIMIT_GB": podspec.number(shape.memory_gb),
+        }
+        if node.retry_memory:
+            values |= {
+                "SIMRUN_MEMORY_PER_WORKER_GB": podspec.number(
+                    shape.retry_per_worker_gb
+                ),
+                "SIMRUN_MEMORY_LIMIT_GB": podspec.number(shape.retry_memory_gb),
+            }
+        # the variables of the service, e.g. of a shell, are no business of a task
+        env = {k: v for k, v in os.environ.items() if not k.startswith("SIMRUN_")}
+        env |= values
+        argv = node.command
+        if node.image is not None:
+            container = _container(run.run_id, node.name, node.attempt)
+            with self._cond:
+                node.container = container
+            argv = [
+                *("docker", "run", "--rm", "--init", "--name", container),
+                *("-v", f"{self.store}:{self.store}"),
+                *("-v", f"{self.scratch}:{self.scratch}"),
+                *("--user", f"{os.getuid()}:{os.getgid()}"),
+                *(option for k, v in values.items() for option in ("-e", f"{k}={v}")),
+                node.image,
+                *node.command,
+            ]
+        with (log / f"{node.name}-{node.attempt}.log").open("ab") as out:
+            error: str | None = None
+            if node.image and shutil.which("docker", path=env.get("PATH")) is None:
+                error = f"docker is not installed: task {node.task_id} cannot run"
+            else:
+                try:
+                    return subprocess.Popen(
+                        argv,
+                        stdin=subprocess.DEVNULL,
+                        stdout=out,
+                        stderr=subprocess.STDOUT,
+                        env=env,
+                        start_new_session=True,
+                    )
+                except OSError as e:
+                    error = f"the command of task {node.task_id} cannot start: {e}"
+            out.write(f"{error}\n".encode())
+        logger.error("run %s: %s", run.run_id, error)
+        return None
+
     def _wait(self, run: _Run, node: _Node, process: subprocess.Popen[bytes]) -> None:
         """Wait for the end of a process, then end the rest of its process group."""
         code = process.wait()
         # a process killed by a signal exits 128 + the signal, as in a container
         code = 128 - code if code < 0 else code
         _signal_group(process.pid, signal.SIGKILL)
+        if node.container is not None and code != 0:
+            # a docker client which was killed leaves its container running
+            _docker_kill(node.container)
         shutil.rmtree(node.scratch, ignore_errors=True)
         self._finish(run, node, code)
 
     def _finish(self, run: _Run, node: _Node, code: int) -> None:
-        """Record the end of an attempt: done, retried after a kill, or failed."""
+        """Record the end of an attempt: done, retried after a stop, or failed.
+
+        A stop (exit 137 or 143) is retried as on the cluster, after 137 with the
+        retry memory; never in a cancelled run.
+        """
         with self._cond:
             node.process = None
+            node.container = None
             self._used -= node.cores
             if code == 0:
                 node.phase = SUCCEEDED
             else:
                 node.failed.append(FailedAttempt(attempt=node.attempt, exit_code=code))
-                retry = code == EXIT_POOL_BROKEN and node.attempt < RETRY_LIMIT
+                retry = code in RETRIED_EXITS and node.attempt < RETRY_LIMIT
                 if retry and not run.cancelled:
                     node.attempt += 1
+                    node.retry_memory = code == EXIT_POOL_BROKEN
                     node.phase = RETRYING_PHASE
                 else:
                     node.phase = FAILED
@@ -553,18 +630,32 @@ class LocalBackend:
         logger.info("run %s: %s exited %d", run.run_id, node.name, code)
         self._notify()
 
-    def _terminate(self, processes: list[subprocess.Popen[bytes]]) -> None:
-        """SIGTERM to the process groups, SIGKILL to the ones alive after the grace."""
-        if not processes:
+    def _terminate(
+        self, targets: list[tuple[subprocess.Popen[bytes], str | None]]
+    ) -> None:
+        """SIGTERM to the process groups and containers, SIGKILL after the grace.
+
+        Only the processes alive after the grace are killed; the `docker kill` of
+        the containers runs in a thread, so a cancel does not wait for docker.
+        """
+        if not targets:
             return
-        for process in processes:
+        for process, _ in targets:
             _signal_group(process.pid, signal.SIGTERM)
+        containers = [c for _, c in targets if c is not None]
+        if containers:
+            threading.Thread(
+                target=lambda: [_docker_kill(c, "TERM") for c in containers],
+                daemon=True,
+            ).start()
 
         def kill() -> None:
-            for process in processes:
+            for process, container in targets:
                 # an ended leader: its waiter killed the rest of its group
                 if process.returncode is None:
                     _signal_group(process.pid, signal.SIGKILL)
+                    if container is not None:
+                        _docker_kill(container)
 
         timer = threading.Timer(worker.GRACE_S, kill)
         timer.daemon = True
