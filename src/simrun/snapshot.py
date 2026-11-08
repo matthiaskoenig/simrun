@@ -39,9 +39,15 @@ MANIFEST_SUFFIX = ".files.json"
 # the name of a source: a directory of `snapshots/`
 SOURCE_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 SHA256 = re.compile(r"[0-9a-f]{64}")
-# the mode bits a file of a snapshot may have: read and execute
+# the mode bits a file of an upload may have: read and execute
 FILE_MODES = 0o555
+# the mode bits a directory of an upload may have: permissions and setgid
+DIR_MODES = 0o2777
+# the bits a directory of a snapshot always has, so the store can remove it
+DIR_OWNER = 0o700
 CHUNK = 1 << 20
+# the refusal of an upload whose file changed between the scan and the tar
+CHANGED_DURING_UPLOAD = "it changed during the upload"
 # the links followed to resolve the target of a link of an upload, as `MAXSYMLINKS`
 MAX_LINK_HOPS = 40
 
@@ -194,8 +200,9 @@ class FileEntry(BaseModel):
 
     Attributes:
         path: Path below the tree, with `/`.
-        mode: Mode bits without the write bits (a snapshot is read-only); the ones
-            of the link for a symbolic link.
+        mode: Mode bits without the write bits (a snapshot is read-only), special
+            bits kept as release 0.1.0 kept them; the ones of the link for a
+            symbolic link.
         sha256: Hash of the content of a regular file, None for a link.
         link: Target of a symbolic link, None for a regular file.
     """
@@ -216,6 +223,8 @@ class Scan(BaseModel):
         changed_files: Porcelain status lines, e.g. `M src/a.py`.
         patch: `git diff HEAD --binary`, base64 in JSON.
         files: The files of the snapshot, in the order of git.
+        dirs: The mode bits of the directories which hold the files, by path; the
+            snapshot keeps them as release 0.1.0 did, with the owner bits added.
     """
 
     model_config = ConfigDict(ser_json_bytes="base64", val_json_bytes="base64")
@@ -226,6 +235,7 @@ class Scan(BaseModel):
     changed_files: list[str]
     patch: bytes
     files: list[FileEntry]
+    dirs: dict[str, int] = {}
 
 
 class SnapshotError(ValueError):
@@ -280,7 +290,7 @@ def scan(repo: Path) -> Scan:
             elif stat.S_ISREG(st.st_mode):
                 entry = FileEntry(
                     path=name,
-                    mode=stat.S_IMODE(st.st_mode) & FILE_MODES,
+                    mode=stat.S_IMODE(st.st_mode) & ~0o222,
                     sha256=_sha256_of(path),
                     link=None,
                 )
@@ -289,6 +299,16 @@ def scan(repo: Path) -> Scan:
         except FileNotFoundError:
             continue
         files.append(entry)
+    dirs: dict[str, int] = {}
+    for entry in files:
+        for parent in PurePosixPath(entry.path).parents:
+            key = str(parent)
+            if key == "." or key in dirs:
+                continue
+            try:
+                dirs[key] = stat.S_IMODE((repo / key).lstat().st_mode)
+            except FileNotFoundError:
+                continue
     return Scan(
         branch=state.branch,
         commit=state.commit,
@@ -296,6 +316,7 @@ def scan(repo: Path) -> Scan:
         changed_files=state.changed,
         patch=state.patch,
         files=files,
+        dirs=dirs,
     )
 
 
@@ -353,12 +374,13 @@ def _place(
     dst: Path,
     known: dict[str, list[Path]],
     files: Callable[[str], Path | bytes],
+    move: bool,
 ) -> str | None:
     """Put a regular file into a snapshot being assembled; the hash of its content.
 
     A file of the latest snapshot with the same content and mode is linked, one
     with the same content and another mode copied; else the content comes from
-    `files`. None for a file which is gone.
+    `files`, a file renamed into place with `move`. None for a file which is gone.
     """
     assert entry.sha256 is not None
     candidates = known.get(entry.sha256, [])
@@ -376,7 +398,12 @@ def _place(
             break
     else:
         try:
-            digest = _copy(files(entry.path), dst)
+            source = files(entry.path)
+            if move and isinstance(source, Path):
+                os.rename(source, dst)
+                digest = entry.sha256
+            else:
+                digest = _copy(source, dst)
         except FileNotFoundError:
             digest = None
     if digest is not None:
@@ -385,14 +412,19 @@ def _place(
 
 
 def assemble(
-    store: Path, name: str, scan: Scan, files: Callable[[str], Path | bytes]
+    store: Path,
+    name: str,
+    scan: Scan,
+    files: Callable[[str], Path | bytes],
+    move: bool = False,
 ) -> SourceProvenance:
     """Write a scanned tree into `store/snapshots/<name>`.
 
     The files whose content the latest snapshot of the name has are hard links to
     it (copies when their modes differ), the others come from `files`: the file to
-    copy or the content. A snapshot is assembled in a temporary directory, named by
-    its content and renamed into place; one which exists already is kept.
+    copy or the content. A snapshot is assembled in a temporary directory, its
+    directories get the modes of the scan, it is named by its content and renamed
+    into place; one which exists already is kept.
 
     Args:
         store: Root of the run store.
@@ -400,6 +432,9 @@ def assemble(
         scan: The files and the git state of the tree.
         files: The content of a path of `scan`, a file or bytes; a file which is
             gone (`FileNotFoundError`) is left out of the snapshot.
+        move: The files of `files` are given up: renamed into the snapshot
+            instead of copied (on the file system of the store), their content
+            trusted to have the hash of the scan.
 
     Returns:
         The provenance of the snapshot.
@@ -415,8 +450,11 @@ def assemble(
             dst.parent.mkdir(parents=True, exist_ok=True)
             if entry.link is not None:
                 dst.symlink_to(entry.link)
-            elif (digest := _place(entry, dst, known, files)) is not None:
+            elif (digest := _place(entry, dst, known, files, move)) is not None:
                 manifest[entry.path] = digest
+        for rel, mode in scan.dirs.items():
+            if (tmp / rel).is_dir() and not (tmp / rel).is_symlink():
+                (tmp / rel).chmod(mode | DIR_OWNER)
         diff_sha256 = _tree_hash(tmp, [entry.path for entry in scan.files])
         dirname = f"{scan.commit[:12]}-{diff_sha256[:12]}"
         final = parent / dirname
@@ -561,8 +599,9 @@ def check_files(files: list[FileEntry]) -> None:
             raise SnapshotError(f"{entry.path!r} has no sha256 hash")
         elif entry.mode & ~FILE_MODES:
             raise SnapshotError(
-                f"{entry.path!r} has mode {entry.mode:o}; a snapshot holds only "
-                "read and execute bits"
+                f"{entry.path!r} has mode {entry.mode:o}; an upload takes only read "
+                "and execute bits (setuid, setgid and sticky files need a client "
+                "with the store mounted)"
             )
 
 
@@ -570,12 +609,24 @@ def check_scan(scan: Scan) -> None:
     """Refuse a scan which cannot become a snapshot, see `check_files`.
 
     Raises:
-        SnapshotError: For a file list `check_files` refuses or a commit which is
-            not a hexadecimal hash.
+        SnapshotError: For a file list `check_files` refuses, a commit which is
+            not a hexadecimal hash, or a directory which is not one of the tree, is
+            also a file, or has other mode bits than permissions and setgid.
     """
     if re.fullmatch(r"[0-9a-f]{40}|[0-9a-f]{64}", scan.commit) is None:
         raise SnapshotError(f"commit {scan.commit!r} is not a git hash")
     check_files(scan.files)
+    paths = {entry.path for entry in scan.files}
+    for rel, mode in scan.dirs.items():
+        if (problem := _path_problem(rel)) is not None:
+            raise SnapshotError(f"directory {rel!r} {problem}")
+        if rel in paths or any(str(p) in paths for p in PurePosixPath(rel).parents):
+            raise SnapshotError(f"directory {rel!r} is or is below a file or link")
+        if mode & ~DIR_MODES:
+            raise SnapshotError(
+                f"directory {rel!r} has mode {mode:o}; an upload takes permission "
+                "bits and setgid only"
+            )
 
 
 def missing(store: Path, name: str, files: list[FileEntry]) -> list[str]:
@@ -596,7 +647,7 @@ def upload(store: Path, name: str, scan: Scan, archive: IO[bytes]) -> SourceProv
     Every member of the tar is a regular file of the scan whose content has the
     hash of the scan; it is extracted, under a name of its own, into a temporary
     directory beside the snapshots of the name, and the snapshot assembled from it
-    and the latest snapshot.
+    (its files renamed into place) and the latest snapshot.
 
     Args:
         store: Root of the run store.
@@ -638,7 +689,7 @@ def upload(store: Path, name: str, scan: Scan, archive: IO[bytes]) -> SourceProv
                     if _copy_member(source, dst) != expected[member.name]:
                         raise SnapshotError(
                             f"the content of {member.name!r} does not match its "
-                            "hash; did it change during the upload?"
+                            f"hash: {CHANGED_DURING_UPLOAD}?"
                         )
                     os.utime(dst, (member.mtime, member.mtime))
                     received[member.name] = dst
@@ -661,7 +712,7 @@ def upload(store: Path, name: str, scan: Scan, archive: IO[bytes]) -> SourceProv
                 raise MissingContent(f"the store lacks the content of {path!r}")
             return received[path]
 
-        return assemble(store, name, scan, content)
+        return assemble(store, name, scan, content, move=True)
     finally:
         shutil.rmtree(staging, ignore_errors=True)
 

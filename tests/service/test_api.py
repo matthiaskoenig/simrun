@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
@@ -1065,6 +1066,7 @@ def _git_repo(path: Path) -> Path:
     (path / "model.txt").write_text("model\n")
     (path / "sub").mkdir()
     (path / "sub" / "x.py").write_text("x = 1\n")
+    (path / "sub").chmod(0o750)
     (path / "run.sh").write_text("#!/bin/sh\n")
     (path / "run.sh").chmod(0o755)
     (path / "link").symlink_to("sub/x.py")
@@ -1290,3 +1292,87 @@ def test_upload_is_bounded(service_factory):
         assert response.status_code == 413
         small = _post_snapshot(svc, "model", _scan_of({"a": b"a"}), _tar({"a": b"a"}))
         assert small.status_code == 200, small.text
+
+
+def test_upload_refuses_a_bad_directory(service):
+    for dirs in (
+        {"d": 0o4755},
+        {"d": 0o1777},
+        {"a.txt": 0o755},
+        {"l/d": 0o755},
+        {"../d": 0o755},
+    ):
+        scan = _scan_of({"a.txt": b"a"}, {"l": "."})
+        scan.dirs = dirs
+        response = _post_snapshot(service, "model", scan, _tar({"a.txt": b"a"}))
+        assert response.status_code == 422, dirs
+
+
+def test_upload_renames_the_new_files_into_place(service, monkeypatch):
+    import simrun.snapshot as snapshot_module
+
+    real = snapshot_module._copy
+
+    def copy(source, dst):
+        assert not isinstance(source, Path), f"{source} copied, not renamed"
+        return real(source, dst)
+
+    monkeypatch.setattr(snapshot_module, "_copy", copy)
+    scan = _scan_of({"a.txt": b"a", "d/b.txt": b"b"})
+    scan.dirs = {"d": 0o750}
+    response = _post_snapshot(
+        service, "model", scan, _tar({"a.txt": b"a", "d/b.txt": b"b"})
+    )
+    assert response.status_code == 200, response.text
+    root = service.settings.store / response.json()["snapshot"]
+    assert (root / "d" / "b.txt").read_text() == "b"
+    assert (root / "d").stat().st_mode & 0o7777 == 0o750
+    assert (root / "a.txt").stat().st_mode & 0o7777 == 0o444
+
+
+def test_missing_bounds_the_file_list(service, monkeypatch):
+    monkeypatch.setattr(app_module, "FILE_LIST_MAX_BYTES", 1024)
+    entries = [
+        f.model_dump() for f in _scan_of({f"f{i}": b"x" for i in range(50)}).files
+    ]
+    assert service.post("/snapshots/model/missing", entries).status_code == 413
+    assert service.post("/snapshots/model/missing", entries[:2]).status_code == 200
+
+
+def test_a_too_large_upload_closes_its_spooled_files(live, monkeypatch):
+    from tempfile import SpooledTemporaryFile
+
+    import starlette.formparsers
+
+    made = []
+
+    class Recorded(SpooledTemporaryFile):
+        def __init__(self, *args, **kw):
+            super().__init__(*args, **kw)
+            made.append(self)
+
+    monkeypatch.setattr(starlette.formparsers, "SpooledTemporaryFile", Recorded)
+    server = live(max_upload_bytes=64 * 1024)
+    body = b"x" * (256 * 1024)
+    scan = _scan_of({"a.bin": body})
+    request = httpx.Request(
+        "POST",
+        f"{server.base}/snapshots/model",
+        files={
+            "scan": ("scan.json", scan.model_dump_json(), "application/json"),
+            "files": ("files.tar", _tar({"a.bin": body}), "application/x-tar"),
+        },
+    )
+    data = request.read()
+    # chunks without a Content-Length: the limit counts the stream, after the
+    # parser spooled the start of the tar
+    try:
+        response = server.http.post(
+            "/snapshots/model",
+            content=(data[i : i + 4096] for i in range(0, len(data), 4096)),
+            headers={"Content-Type": request.headers["Content-Type"]},
+        )
+        assert response.status_code == 413, response.text
+    except httpx.TransportError:
+        pass  # the service answered and closed while the body was still sent
+    assert made and all(f.closed for f in made)

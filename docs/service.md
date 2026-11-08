@@ -35,8 +35,8 @@ The identity of the token is recorded with the run and decides its priority: the
 | `GET /runs/{run}/progress` | the progress of every task: the counts of its ledger and its first and last progress lines |
 | `GET /runs/{run}/logs/{task}` | the logs of the pods of a task as text, the last `tail_lines` of each (300, 0 for all) |
 | `GET /runs/{run}/outputs/{task}` | the output files of a task, paths relative to the store |
-| `POST /snapshots/{name}/missing` | the paths of a file list (path, mode, `sha256` or `link`) whose content the latest snapshot of a source lacks |
-| `POST /snapshots/{name}` | write a snapshot from a multipart body: `scan` (the git state and the file list as JSON) and `files` (a tar of the missing files); 422 for a path outside the tree, a link out of it, a member which is not a listed regular file or a hash which does not match, 409 when the store lost a content meanwhile, 413 above `max_upload_bytes` |
+| `POST /snapshots/{name}/missing` | the paths of a file list (path, mode, `sha256` or `link`) whose content the latest snapshot of a source lacks; 413 above 64 MiB |
+| `POST /snapshots/{name}` | write a snapshot from a multipart body: `scan` (the git state and the file list as JSON) and `files` (a tar of the missing files); new files are renamed into the snapshot, files and directories keep their modes; 422 for a path outside the tree, a link out of it, a file mode beyond read and execute, a member which is not a listed regular file or a hash which does not match, 409 when the store lost a content meanwhile, 413 above `max_upload_bytes` |
 | `POST /runs/{run}/cancel` | cancel a run |
 | `DELETE /runs/{run}` | remove an ended run and the snapshots nothing refers to |
 | `POST /cleanup` | remove the runs which ended more than `older_than_days` ago, of a `group` or only failed ones (`failed_only`), `dry_run` lists them |

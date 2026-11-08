@@ -1,5 +1,7 @@
+import hashlib
 import json
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -298,7 +300,13 @@ def _tree(root: Path) -> dict[str, tuple[str, int, bytes]]:
     found = {}
     for path in sorted(root.rglob("*")):
         st = path.lstat()
-        if stat.S_ISLNK(st.st_mode):
+        if stat.S_ISDIR(st.st_mode):
+            found[path.relative_to(root).as_posix()] = (
+                "d",
+                stat.S_IMODE(st.st_mode),
+                b"",
+            )
+        elif stat.S_ISLNK(st.st_mode):
             found[path.relative_to(root).as_posix()] = (
                 "l",
                 0,
@@ -313,12 +321,18 @@ def _tree(root: Path) -> dict[str, tuple[str, int, bytes]]:
     return found
 
 
+@pytest.mark.skipif(shutil.which("rsync") is None, reason="needs rsync")
 def test_snapshot_equals_the_rsync_copy_of_0_1_0(repo: Path, tmp_path: Path) -> None:
     (repo / "a.py").write_text("a = 2\n")
     (repo / "sub" / "deep").mkdir(parents=True)
     (repo / "sub" / "deep" / "n.py").write_text("n\n")
+    (repo / "sub").chmod(0o750)
     (repo / "run.sh").write_text("#!/bin/sh\n")
     (repo / "run.sh").chmod(0o755)
+    (repo / "sgid.sh").write_text("#!/bin/sh\n")
+    (repo / "sgid.sh").chmod(0o2755)
+    (repo / "sticky").write_text("s\n")
+    (repo / "sticky").chmod(0o1644)
     (repo / "l").symlink_to("a.py")
     (repo / "dl").symlink_to("sub")
     (repo / "gone.py").unlink()
@@ -326,9 +340,11 @@ def test_snapshot_equals_the_rsync_copy_of_0_1_0(repo: Path, tmp_path: Path) -> 
     diff = _rsync_copy(repo, reference)
     prov = snapshot(repo, tmp_path / "store", "proj")
     commit = git(repo, "rev-parse", "HEAD").strip()
-    assert prov.diff_sha256 == diff
+    assert prov.diff_sha256 == diff == provenance(repo, "proj").diff_sha256
     assert Path(prov.snapshot).name == f"{commit[:12]}-{diff[:12]}"
-    assert _tree(tmp_path / "store" / prov.snapshot) == _tree(reference)
+    tree = _tree(tmp_path / "store" / prov.snapshot)
+    assert tree == _tree(reference)
+    assert tree["sgid.sh"][1] == 0o2555 and tree["sub"][1] == 0o750
 
 
 def test_scan_lists_files_hashes_and_links(repo: Path) -> None:
@@ -352,8 +368,6 @@ def test_scan_lists_files_hashes_and_links(repo: Path) -> None:
     assert by_path["a.py"].mode == 0o444
     assert by_path["a.py"].link is None
     assert by_path["l"].link == "a.py" and by_path["l"].sha256 is None
-    import hashlib
-
     assert by_path["a.py"].sha256 == hashlib.sha256(b"a = 2\n").hexdigest()
     assert Scan.model_validate_json(found.model_dump_json()) == found
 
