@@ -20,7 +20,8 @@ function mountBar(fields: Partial<RunRecord> = {}, events: Record<string, TaskPr
 describe("RunBar", () => {
   it("shows the run, who submitted it, its state and the share of its units done", () => {
     const wrapper = mountBar({ id: "20261107-002755-17eb1c" });
-    expect(wrapper.get("[data-run-id]").text()).toBe("Run #20261107-002755-17eb1c");
+    expect(wrapper.get("[data-run-id]").text()).toBe("Run #17eb1c");
+    expect(wrapper.get("[data-run-id]").attributes("title")).toBe("Run #20261107-002755-17eb1c");
     expect(wrapper.get("[data-who]").text()).toBe("mk");
     expect(wrapper.get("[data-started]").text()).toMatch(/^started /);
     expect(wrapper.get("[data-status]").text()).toBe("running");

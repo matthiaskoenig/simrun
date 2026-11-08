@@ -112,6 +112,10 @@ function onEnum(field: Field, index: string): void {
 
 const placeholder = (field: Field): string => (field.default === undefined || field.default === null ? "" : String(field.default));
 const label = (field: Field): string => (field.required ? `${field.title} *` : field.title);
+
+/** The rows of a text field: every item of a list in view (one more for the scrollbar of a long one), at most 8. */
+const rows = (field: Field): number =>
+  field.kind === "list" ? Math.min(8, Math.max(3, (texts[field.key] ?? "").split("\n").length + 1)) : 3;
 </script>
 
 <template>
@@ -153,9 +157,11 @@ const label = (field: Field): string => (field.required ? `${field.title} *` : f
         <span class="mb-1 block text-xs text-gray-600" :title="field.description">
           {{ label(field) }}<span class="text-gray-400">{{ field.kind === "list" ? " (one per line)" : " (JSON)" }}</span>
         </span>
+        <!-- a list is one item per line: a long item scrolls instead of wrapping into what looks like two -->
         <textarea
-          :class="[INPUT, border(field), 'font-mono text-xs']"
-          rows="3"
+          :class="[INPUT, border(field), 'font-mono text-xs', field.kind === 'list' ? 'overflow-x-auto whitespace-pre' : '']"
+          :wrap="field.kind === 'list' ? 'off' : 'soft'"
+          :rows="rows(field)"
           :value="texts[field.key]"
           :placeholder="field.default === undefined ? '' : JSON.stringify(field.default)"
           @input="(e) => onText(field, (e.target as HTMLTextAreaElement).value)"

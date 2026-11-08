@@ -411,7 +411,8 @@ class WorkerView(BaseModel):
         state: `running` while a pod of an attempt without a report lives (a
             retry after an eviction, a preemption, a lost node or a kill for
             memory, as a worker reports also when it is stopped), else from the
-            last report: `failed` when it was killed for memory, else `done`.
+            last report: `failed` when it was killed for memory or failed (a unit
+            or its command failed), else `done`.
         attempts: The attempts of the worker: one more than the highest attempt
             of its reports and of its live pod.
         processes: The processes of its pool, None before a report.
@@ -1229,7 +1230,9 @@ class _Service:
                 node = pod.node  # None while unbound, never an earlier node
                 current = reported + 1 if pod.attempt is None else pod.attempt
             else:
-                state = "failed" if oom else "done"
+                state = (
+                    "failed" if oom or (last is not None and last.failed) else "done"
+                )
                 node = last.node if last is not None and last.node else None
                 current = reported
             views.append(

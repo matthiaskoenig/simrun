@@ -29,6 +29,22 @@ describe("SchemaForm", () => {
     expect(wrapper.emitted("update:value")!.at(-1)).toEqual([{ names: ["a", "b"] }]);
   });
 
+  it("does not wrap the items of a list, so a long one stays on its line", () => {
+    const wrapper = mount(SchemaForm, { props: { schema, value: {} } });
+    expect(wrapper.get("[data-field='names'] textarea").attributes("wrap")).toBe("off");
+    expect(wrapper.get("[data-field='extra'] textarea").attributes("wrap")).toBe("soft");
+  });
+
+  it("shows every item of a list, up to eight rows", async () => {
+    const lines = (n: number) => Array.from({ length: n }, (_, i) => `a${i}`);
+    const few = mount(SchemaForm, { props: { schema, value: { names: lines(2) } } });
+    expect(few.get("[data-field='names'] textarea").attributes("rows")).toBe("3");
+    const some = mount(SchemaForm, { props: { schema, value: { names: lines(4) } } });
+    expect(some.get("[data-field='names'] textarea").attributes("rows")).toBe("5");
+    const many = mount(SchemaForm, { props: { schema, value: { names: lines(20) } } });
+    expect(many.get("[data-field='names'] textarea").attributes("rows")).toBe("8");
+  });
+
   it("keeps invalid JSON text, shows the message and emits nothing", async () => {
     const wrapper = mount(SchemaForm, { props: { schema, value: {} } });
     const area = wrapper.get("[data-field='extra'] textarea");

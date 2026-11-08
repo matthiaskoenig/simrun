@@ -8,7 +8,7 @@
 import { computed, nextTick, ref, watch } from "vue";
 import { api, ApiError, type RunRecord, type TaskProgress } from "../api/client";
 import { ACTIVE_STATES } from "../lib/filters";
-import { formatTime } from "../lib/format";
+import { formatTime, shortRun } from "../lib/format";
 import { FINISHED_TASK_STATES, runPercent } from "../lib/progress";
 import AppIcon from "./AppIcon.vue";
 import StatusPill from "./StatusPill.vue";
@@ -77,13 +77,14 @@ watch(stoppable, (value) => {
       data-run-bar
       class="pointer-events-auto flex min-w-0 items-center gap-3 rounded-lg border border-gray-200 bg-white/95 px-3 py-2 text-xs whitespace-nowrap shadow-sm"
     >
-      <span data-run-id class="shrink-0 font-semibold text-gray-900">Run #{{ record.id }}</span>
+      <!-- the short id, as the breadcrumb of a rerun: the full one, in the list and the tooltip, would leave no room for who submitted it -->
+      <span data-run-id class="shrink-0 font-semibold text-gray-900" :title="`Run #${record.id}`">Run #{{ shortRun(record.id) }}</span>
       <span
         data-who
         class="inline-flex min-w-0 items-center gap-1 text-gray-600"
         :title="agent ? `${who}, an agent of ${record.owner}` : who"
       >
-        <AppIcon :name="agent ? 'bot' : 'user'" class="size-3.5" />
+        <AppIcon :name="agent ? 'bot' : 'user'" class="size-3.5 shrink-0" />
         <span class="truncate">{{ who }}<span v-if="agent" class="text-gray-400"> for {{ record.owner }}</span></span>
       </span>
       <span data-started class="shrink-0 text-gray-500" :title="`submitted ${formatTime(record.created)}`">started {{ formatTime(started) }}</span>

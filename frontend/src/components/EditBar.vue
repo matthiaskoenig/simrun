@@ -69,15 +69,15 @@ const button = "inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-sm 
         data-edit-bar
         class="pointer-events-auto flex min-w-0 items-center gap-2 rounded-lg border border-gray-200 bg-white/95 px-3 py-2 text-xs whitespace-nowrap shadow-sm"
       >
-        <!-- one line: a long branch is cut, the separators never end a line -->
+        <!-- one line: a long branch and the count of uncommitted files are cut (a short branch stays whole), the separators never end a line -->
         <template v-if="model">
           <AppIcon name="git-branch" class="size-3.5 shrink-0 text-gray-500" />
-          <span data-branch class="min-w-0 truncate font-mono text-gray-700" :title="model.branch ?? undefined">{{ model.branch ?? "detached" }}</span>
+          <span data-branch class="min-w-[5ch] truncate font-mono text-gray-700" :title="model.branch ?? undefined">{{ model.branch ?? "detached" }}</span>
           <span data-commit class="shrink-0 font-mono text-gray-400">{{ model.commit.slice(0, 7) }}</span>
           <span
             v-if="changed.length"
             data-uncommitted
-            class="shrink-0 rounded bg-amber-50 px-1.5 py-0.5 text-amber-800"
+            class="min-w-[4ch] truncate rounded bg-amber-50 px-1.5 py-0.5 text-amber-800"
             :title="changed.join('\n')"
             >{{ changed.length }} uncommitted {{ changed.length === 1 ? "file" : "files" }}</span
           >
