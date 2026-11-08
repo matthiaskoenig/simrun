@@ -246,6 +246,14 @@ def test_estimate(service):
     assert service.post("/estimate", single).json()["squares"]["plan"]["pods"] == 1
 
 
+def test_a_backend_without_extra_workers_plans_one_pod(service):
+    service.backend.extra_workers = False  # the local backend: one machine
+    response = service.post(
+        "/estimate", {"workflow": service.workflow(n=100), "sources": []}
+    )
+    assert response.json()["squares"]["plan"]["pods"] == 1
+
+
 def test_estimate_from_records(service):
     # the reviewer's example: 360 units of 10 s on 36 processes took 100 s
     report = WorkerReport(

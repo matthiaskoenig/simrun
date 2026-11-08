@@ -154,3 +154,49 @@ def test_sigterm_reaches_the_command(tmp_path: Path) -> None:
         process.wait()
     assert stopped.exists()
     assert (task_dir / "workers" / "report-0.json").is_file()
+
+
+def test_the_memory_of_the_process_tree(tmp_path: Path) -> None:
+    ready = tmp_path / "ready"
+    code = (
+        "import pathlib, sys, time; block = bytearray(200 * 2**20); "
+        "pathlib.Path(sys.argv[1]).touch(); time.sleep(60)"
+    )
+    child = subprocess.Popen([sys.executable, "-c", code, str(ready)])
+    try:
+        deadline = time.monotonic() + 30
+        while not ready.exists():
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        own = worker.process_tree_anon(child.pid)
+        tree = worker.process_tree_anon(os.getpid())
+        assert own is not None and own >= 200 * 2**20
+        assert tree is not None and tree >= own
+    finally:
+        child.kill()
+        child.wait()
+    assert worker.process_tree_anon(child.pid) is None
+
+
+def test_the_process_source_ignores_the_cgroup(
+    exec_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # the root cgroup of a laptop: the memory and the kills of the whole machine
+    monkeypatch.setenv("SIMRUN_MEMORY_SOURCE", "process")
+    monkeypatch.setenv("SIMRUN_MEMORY_LIMIT_GB", "4")
+    counts = iter([0, 5])
+    monkeypatch.setattr(worker.cgroup, "memory_oom_kills", lambda: next(counts))
+    monkeypatch.setattr(worker.cgroup, "memory_anon", lambda: 64 * GIB)
+    assert run_exec(monkeypatch, *python("pass")) == 0
+    report = json.loads((exec_env / "workers" / "report-1.json").read_text())
+    # the process tree of the harness, here the one of the tests
+    assert 0 < report["peak_memory_bytes"] < 4 * GIB
+    assert report["memory_limit_bytes"] == 4 * GIB
+    assert report["oom_kills"] == 0
+
+
+def test_an_unknown_memory_source_is_a_configuration_error(
+    exec_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("SIMRUN_MEMORY_SOURCE", "psi")
+    assert run_exec(monkeypatch, *python("pass")) == 4

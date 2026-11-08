@@ -430,6 +430,7 @@ class ArgoBackend:
     # workflows
 
     runs_images = True
+    extra_workers = True
 
     def subscribe(self, callback: Callable[[], None]) -> None:
         """Ignore the callback: the controller polls the cluster."""

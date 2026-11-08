@@ -58,6 +58,7 @@ nav = [
       { "backend" = "api/service.backend.md" },
       { "argo_backend" = "api/service.argo_backend.md" },
       { "local_backend" = "api/service.local_backend.md" },
+      { "local_env" = "api/service.local_env.md" },
       { "controller" = "api/service.controller.md" },
       { "submission" = "api/service.submission.md" },
       { "index" = "api/service.index.md" },

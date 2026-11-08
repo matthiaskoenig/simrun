@@ -34,6 +34,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from multiprocessing import forkserver
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel
 
@@ -59,6 +60,11 @@ POLL_S = 0.2
 HEARTBEAT_S = 30.0
 # seconds between two samples of the anonymous memory of the cgroup
 SAMPLE_S = 1.0
+MEMORY_SOURCE_ENV = "SIMRUN_MEMORY_SOURCE"
+"""Where the harness reads its memory: `cgroup` (the default, a pod) or `process`
+(its process tree in `/proc`, the local backend, whose processes share the cgroup of
+the machine or of the session)."""
+PROC = Path("/proc")
 # the directory of the writable trees the snapshots are installed from
 SOURCES_DIR = "simrun-sources"
 # set once the snapshots are installed, in the interpreter `install_sources` restarts
@@ -357,15 +363,95 @@ class _Coordination:
     poll_s: float
 
 
-class _OomKills:
-    """The kills of the out of memory killer in the cgroup from now on."""
+type MemorySource = Literal["cgroup", "process"]
 
-    def __init__(self) -> None:
-        """Read the counter of `memory.events` now."""
-        self.start = cgroup.memory_oom_kills()
+
+def memory_source(env: Mapping[str, str]) -> MemorySource:
+    """Where the harness reads its memory, `SIMRUN_MEMORY_SOURCE`, `cgroup` by default.
+
+    Raises:
+        ConfigurationError: The value is neither `cgroup` nor `process`.
+    """
+    value = env.get(MEMORY_SOURCE_ENV) or "cgroup"
+    if value == "cgroup":
+        return "cgroup"
+    if value == "process":
+        return "process"
+    raise ConfigurationError(
+        f"{MEMORY_SOURCE_ENV} is neither cgroup nor process: {value!r}"
+    )
+
+
+def _status_bytes(path: Path) -> int | None:
+    """The anonymous memory of a process from its `status`, else its resident set.
+
+    Returns:
+        `RssAnon`, `VmRSS` without it, in bytes; None for a process which is gone
+        or has no memory (a kernel thread, a zombie).
+    """
+    try:
+        text = path.read_text()
+    except OSError:
+        return None
+    fields: dict[str, int] = {}
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key in ("RssAnon", "VmRSS"):
+            fields[key] = int(value.split()[0]) * 1024  # in kB
+    return fields.get("RssAnon", fields.get("VmRSS"))
+
+
+def process_tree_anon(pid: int, proc: Path = PROC) -> int | None:
+    """The anonymous memory of a process and all of its descendants in bytes.
+
+    The sum over the processes of `RssAnon` (`VmRSS` without it): pages shared after
+    a fork count once per process, so it is an upper bound.
+
+    Args:
+        pid: The root of the tree.
+        proc: The mount of procfs.
+
+    Returns:
+        The bytes, None when the process is gone.
+    """
+    children: dict[int, list[int]] = {}
+    for entry in proc.iterdir():
+        if not entry.name.isdigit():
+            continue
+        try:
+            stat = (entry / "stat").read_text()
+        except OSError:
+            continue  # ended meanwhile
+        # the command in parentheses may hold spaces and parentheses
+        ppid = int(stat.rsplit(")", 1)[1].split()[1])
+        children.setdefault(ppid, []).append(int(entry.name))
+    total: int | None = None
+    stack = [pid]
+    while stack:
+        current = stack.pop()
+        value = _status_bytes(proc / str(current) / "status")
+        if value is not None:
+            total = (total or 0) + value
+        stack.extend(children.get(current, []))
+    return total
+
+
+class _OomKills:
+    """The kills of the out of memory killer in the cgroup from now on.
+
+    Without a cgroup of its own (`process`) there is no counter of the worker: the
+    one of the machine counts the kills of every process on it.
+    """
+
+    def __init__(self, source: MemorySource = "cgroup") -> None:
+        """Read the counter of `memory.events` now, unless the source is `process`."""
+        self.source = source
+        self.start = cgroup.memory_oom_kills() if source == "cgroup" else None
 
     def since(self) -> int:
         """The kills since the object was created, 0 without the counter."""
+        if self.source != "cgroup":
+            return 0
         now = cgroup.memory_oom_kills()
         if now is None:
             return 0
@@ -373,23 +459,30 @@ class _OomKills:
 
 
 class MemorySampler:
-    """The maximum of the anonymous memory of the cgroup over its samples.
+    """The maximum of the anonymous memory of the worker over its samples.
 
-    The anonymous memory (`memory.stat` `anon`) is what the processes allocated;
-    `memory.peak` also counts the page cache of staging, installing and writing
-    outputs, which the kernel reclaims at the limit instead of killing.
+    The anonymous memory is what the processes allocated: of the cgroup
+    (`memory.stat` `anon`), or of the process tree of the harness (`process`, see
+    `process_tree_anon`). `memory.peak` also counts the page cache of staging,
+    installing and writing outputs, which the kernel reclaims at the limit instead
+    of killing.
 
     Attributes:
+        source: Where the memory is read.
         peak: The largest sample in bytes, None before one was taken.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, source: MemorySource = "cgroup") -> None:
         """Create a sampler without samples."""
+        self.source = source
         self.peak: int | None = None
 
     def sample(self) -> None:
         """Read the anonymous memory and keep it when it is the largest."""
-        value = cgroup.memory_anon()
+        if self.source == "process":
+            value = process_tree_anon(os.getpid())
+        else:
+            value = cgroup.memory_anon()
         if value is not None and (self.peak is None or value > self.peak):
             self.peak = value
 
@@ -548,6 +641,7 @@ def run_worker(
     coordinator: bool = False,
     stale_s: float | None = None,
     poll_s: float = COORDINATOR_POLL_S,
+    memory_source: MemorySource = "cgroup",
 ) -> WorkerReport:
     """Compute units of the ledger of a task until none is pending.
 
@@ -581,6 +675,8 @@ def run_worker(
         stale_s: Seconds after which the heartbeat of another worker is stale,
             `grace_s + 60` by default.
         poll_s: Seconds between two releases of stale claims by a coordinator.
+        memory_source: Where the memory of the report is read, see
+            `MemorySampler`.
 
     Returns:
         The report.
@@ -607,8 +703,8 @@ def run_worker(
         n_processes = processes(cores, memory_bytes, base_gb, per_worker_gb)
         logger.info("worker %s: %d processes, %d units", worker, n_processes, n_units)
         units = _Units(ledger, worker, paths.task_dir / PROGRESS_FILE)
-        sampler = MemorySampler()
-        oom_kills = _OomKills()
+        sampler = MemorySampler(memory_source)
+        oom_kills = _OomKills(memory_source)
         coordination = None
         if coordinator:
             stale = grace_s + STALE_MARGIN_S if stale_s is None else stale_s
@@ -925,14 +1021,16 @@ def cores(env: Mapping[str, str]) -> int:
 def memory_limit(env: Mapping[str, str]) -> int | None:
     """The memory limit of a worker in bytes: the one of its cgroup.
 
-    Without a limit of the cgroup it is `SIMRUN_MEMORY_LIMIT_GB`, the harness's own
-    limit, e.g. the memory of the plan of a task on the local backend; None without
-    either.
+    Without a limit of the cgroup, or with the memory of the process tree
+    (`SIMRUN_MEMORY_SOURCE=process`, whose cgroup is not the worker's), it is
+    `SIMRUN_MEMORY_LIMIT_GB`, the memory of the plan of the task, by which the
+    harness sizes its pool; None without either.
 
     Raises:
-        ConfigurationError: `SIMRUN_MEMORY_LIMIT_GB` is not a number.
+        ConfigurationError: `SIMRUN_MEMORY_LIMIT_GB` or `SIMRUN_MEMORY_SOURCE` is
+            invalid.
     """
-    limit = cgroup.memory_limit()
+    limit = cgroup.memory_limit() if memory_source(env) == "cgroup" else None
     if limit is not None:
         return limit
     value = _gb(env, "SIMRUN_MEMORY_LIMIT_GB", 0.0)
@@ -1002,6 +1100,7 @@ def _worker(stop: threading.Event) -> int:
         )
         worker_cores = cores(env)
         worker_memory = memory_limit(env)
+        source = memory_source(env)
     except CONFIGURATION_ERRORS as error:
         logger.error("configuration error: %s", error)
         return EXIT_CONFIGURATION
@@ -1024,6 +1123,7 @@ def _worker(stop: threading.Event) -> int:
             stop=stop,
             coordinator=coordinator,
             stale_s=stale_s,
+            memory_source=source,
         )
     except UnitError:
         return EXIT_ANALYSIS
@@ -1129,6 +1229,7 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
         per_worker_gb = _gb(env, "SIMRUN_MEMORY_PER_WORKER_GB", 0.0)
         exec_cores = cores(env)
         exec_memory = memory_limit(env)
+        source = memory_source(env)
     except CONFIGURATION_ERRORS as error:
         logger.error("configuration error: %s", error)
         return EXIT_CONFIGURATION
@@ -1139,13 +1240,13 @@ def _exec(argv: list[str], stop: threading.Event) -> int:
         os.environ[name] = "1"
     worker = env.get("SIMRUN_WORKER") or paths.task_dir.name
     start = time.monotonic()
-    oom_kills = _OomKills()
+    oom_kills = _OomKills(source)
     try:
         process = subprocess.Popen(argv)
     except OSError as error:
         logger.error("configuration error: the command cannot start: %s", error)
         return EXIT_CONFIGURATION
-    sampler = MemorySampler()
+    sampler = MemorySampler(source)
     try:
         with _heartbeats(None, worker, HEARTBEAT_S, sampler):
             returncode = _wait_for(process, stop, GRACE_S)

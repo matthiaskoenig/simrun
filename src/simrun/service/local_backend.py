@@ -9,7 +9,13 @@ cores fit into the free cores of the machine; the tasks of several runs take the
 the order of their submission. The nodes and phases of its status are the ones of
 the Argo workflow of the run, so the controller decides the states of the tasks as
 on the cluster. Every process runs in its own process group with its stdout and
-stderr in `<task dir>/logs/<node>-<attempt>.log`.
+stderr in `<task dir>/logs/<node>-<attempt>.log`; while it runs,
+`<node>-<attempt>.pid` beside the log names it, so a service which starts after
+one which died without ending its processes kills them (`kill_orphans`).
+
+A run with snapshots gets a venv of its own (`simrun.service.local_env`), created when
+its first process starts and removed at its end: its snapshots are installed there,
+never into the environment of the service.
 
 A daemon thread per run starts the processes of the run, a thread per process waits
 for its end; the state lives under one condition, the callbacks of `subscribe` are
@@ -17,6 +23,7 @@ called outside of it after every start and end of a process.
 """
 
 import contextlib
+import json
 import logging
 import os
 import re
@@ -29,13 +36,14 @@ import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import BinaryIO, Literal
 
 from simrun import podspec, worker
 from simrun.argo import RETRY_LIMIT, workflow_name
 from simrun.config import ClusterConfig
 from simrun.planner import Node, PodShape, TaskPlan
 from simrun.plugins import TaskType
+from simrun.service import local_env
 from simrun.service.app import CONFIG_ENV, load_settings
 from simrun.service.backend import (
     RETRYING_PHASE,
@@ -65,6 +73,9 @@ NOT_LOCAL = "not on the local backend"
 RETRIED_EXITS = frozenset({EXIT_POOL_BROKEN, EXIT_TERMINATED})
 # seconds a `docker kill` may take
 DOCKER_KILL_S = 60.0
+ENDED_KEPT = 64
+"""The ended runs whose status the backend keeps, the latest; an older one is
+unknown (KeyError), which the controller resolves from its record."""
 
 Commands = Literal["direct", "docker"]
 
@@ -118,13 +129,27 @@ class _Node:
 
 @dataclass(eq=False)
 class _Run:
-    """A submitted run: its nodes in topological order."""
+    """A submitted run: its nodes in topological order.
+
+    Attributes:
+        name: The name of its workflow.
+        run_id: The id of the run.
+        nodes: Its nodes by name, in topological order.
+        snapshots: The paths of its snapshots, installed into its venv.
+        cancelled: Whether it was cancelled.
+        thread: The thread which starts its processes.
+        python: The python of its venv once created.
+        env_error: Why its venv could not be created, for every later process.
+    """
 
     name: str
     run_id: str
     nodes: dict[str, _Node]
+    snapshots: list[str] = field(default_factory=list)
     cancelled: bool = False
     thread: threading.Thread | None = None
+    python: Path | None = None
+    env_error: str | None = None
 
 
 def _machine_memory_gb() -> float:
@@ -154,6 +179,25 @@ def _docker_kill(container: str, signal_name: str | None = None) -> None:
         logger.exception("docker kill %s failed", container)
 
 
+def _start_time(pid: int) -> int | None:
+    """The start of a process in clock ticks since the boot, None when it is gone."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return None
+    # the fields after the command, from the state on; the start time is the 22nd
+    return int(stat.rsplit(")", 1)[1].split()[19])
+
+
+def _cmdline(pid: int) -> list[str] | None:
+    """The command line of a process, None when it is gone."""
+    try:
+        raw = Path(f"/proc/{pid}/cmdline").read_bytes()
+    except OSError:
+        return None
+    return [os.fsdecode(part) for part in raw.split(b"\0")[:-1]]
+
+
 def _container(run_id: str, node: str, attempt: int) -> str:
     """The name of the container of an attempt, valid for docker."""
     return re.sub(r"[^a-zA-Z0-9_.-]", "-", f"simrun-{run_id}-{node}-{attempt}")
@@ -169,6 +213,7 @@ class LocalBackend:
     Attributes:
         store: The root of the store.
         scratch: The root of the scratch directories of the processes.
+        envs: The root of the venvs of the runs with snapshots.
         commands: How a `command` task runs unless its run says otherwise
             (`RunRecord.local_commands`): `direct` its args, `docker` in its image.
         cores: The cores of the machine the tasks share.
@@ -177,6 +222,8 @@ class LocalBackend:
     """
 
     runs_images = False
+    # the machine is one node: a split task is its coordinator with all the cores
+    extra_workers = False
 
     def __init__(
         self,
@@ -185,6 +232,7 @@ class LocalBackend:
         commands: Commands = "direct",
         cores: int | None = None,
         memory_gb: float | None = None,
+        envs: Path | None = None,
     ) -> None:
         """Create the backend.
 
@@ -195,9 +243,12 @@ class LocalBackend:
             cores: The cores of the machine, `os.process_cpu_count()` by default.
             memory_gb: The memory of the machine in GiB, its physical memory by
                 default.
+            envs: The root of the venvs of the runs, `envs` beside `scratch` by
+                default.
         """
         self.store = store.absolute()
         self.scratch = scratch.absolute()
+        self.envs = (envs or scratch.parent / "envs").absolute()
         self.commands = commands
         self.cores = cores or os.process_cpu_count() or 1
         self.memory_gb = memory_gb if memory_gb is not None else _machine_memory_gb()
@@ -206,6 +257,8 @@ class LocalBackend:
         self._runs: dict[str, _Run] = {}
         # the runs with a node which has not ended, in the order of submission
         self._active: dict[str, _Run] = {}
+        # the ended runs in the order of their end, the latest `ENDED_KEPT`
+        self._ended: list[str] = []
         self._used = 0
         self._callbacks: list[Callable[[], None]] = []
         self._closed = False
@@ -237,7 +290,10 @@ class LocalBackend:
                 raise RuntimeError("the local backend is closed")
             if name in self._runs:
                 return name
-        run = _Run(name, record.id, self._nodes(record, plans, types, cluster))
+        snapshots = [str(self.store / s.snapshot) for s in record.sources if s.snapshot]
+        run = _Run(
+            name, record.id, self._nodes(record, plans, types, cluster), snapshots
+        )
         with self._cond:
             if self._closed:
                 raise RuntimeError("the local backend is closed")
@@ -423,7 +479,15 @@ class LocalBackend:
             env = podspec.env_values(
                 record, task, task_type, shape, str(self.store), str(scratch)
             )
-            env |= {"SIMRUN_NODE": self.hostname, "SIMRUN_CORES": str(cores)}
+            env |= {
+                "SIMRUN_NODE": self.hostname,
+                "SIMRUN_CORES": str(cores),
+                # the cgroup is the one of the machine or the session, not the task's
+                worker.MEMORY_SOURCE_ENV: "process",
+            }
+            if env["SIMRUN_EDITABLE"]:
+                # installed into the venv of the run, which the harness runs in
+                env[worker.SOURCES_INSTALLED] = "1"
             image: str | None = None
             worker_id: str | None = None
             if task_type.splittable:
@@ -477,6 +541,9 @@ class LocalBackend:
                     node.phase = PENDING
             if all(n.phase in ENDED for n in run.nodes.values()):
                 del self._active[run.name]
+                self._ended.append(run.name)
+        while len(self._ended) > ENDED_KEPT:
+            del self._runs[self._ended.pop(0)]
         for run in self._active.values():
             if run.cancelled:
                 continue
@@ -504,6 +571,8 @@ class LocalBackend:
                     node.admitted = False
                     node.phase = RUNNING
             if not starts:
+                if run.snapshots:
+                    shutil.rmtree(self.envs / run.run_id, ignore_errors=True)
                 logger.info("run %s ended on the local backend", run.run_id)
                 return
             for node in starts:
@@ -545,6 +614,9 @@ class LocalBackend:
     def _launch(self, run: _Run, node: _Node) -> subprocess.Popen[bytes] | None:
         """The process of the current attempt of a node.
 
+        The first process of a run with snapshots creates the venv of the run, the
+        output of its installer in the log of the process.
+
         Returns:
             The process, None (and a line in its log) when the command cannot start.
         """
@@ -567,26 +639,38 @@ class LocalBackend:
         env = {k: v for k, v in os.environ.items() if not k.startswith("SIMRUN_")}
         env |= values
         argv = node.command
-        if node.image is not None:
-            container = _container(run.run_id, node.name, node.attempt)
-            with self._cond:
-                node.container = container
-            argv = [
-                *("docker", "run", "--rm", "--init", "--name", container),
-                *("-v", f"{self.store}:{self.store}"),
-                *("-v", f"{self.scratch}:{self.scratch}"),
-                *("--user", f"{os.getuid()}:{os.getgid()}"),
-                *(option for k, v in values.items() for option in ("-e", f"{k}={v}")),
-                node.image,
-                *node.command,
-            ]
         with (log / f"{node.name}-{node.attempt}.log").open("ab") as out:
             error: str | None = None
-            if node.image and shutil.which("docker", path=env.get("PATH")) is None:
-                error = f"docker is not installed: task {node.task_id} cannot run"
-            else:
+            if node.image is not None:
+                container = _container(run.run_id, node.name, node.attempt)
+                with self._cond:
+                    node.container = container
+                argv = [
+                    *("docker", "run", "--rm", "--init", "--name", container),
+                    *("-v", f"{self.store}:{self.store}"),
+                    *("-v", f"{self.scratch}:{self.scratch}"),
+                    *("--user", f"{os.getuid()}:{os.getgid()}"),
+                    *(o for k, v in values.items() for o in ("-e", f"{k}={v}")),
+                    node.image,
+                    *node.command,
+                ]
+                if shutil.which("docker", path=env.get("PATH")) is None:
+                    error = f"docker is not installed: task {node.task_id} cannot run"
+            elif run.snapshots:
+                python = self._environment(run, node, out)
+                if python is None:
+                    error = run.env_error
+                else:
+                    if argv[:1] == [sys.executable]:
+                        argv = [str(python), *argv[1:]]
+                    venv_dir = python.parent.parent
+                    env["VIRTUAL_ENV"] = str(venv_dir)
+                    env["PATH"] = os.pathsep.join(
+                        [str(python.parent), *filter(None, [env.get("PATH")])]
+                    )
+            if error is None:
                 try:
-                    return subprocess.Popen(
+                    process = subprocess.Popen(
                         argv,
                         stdin=subprocess.DEVNULL,
                         stdout=out,
@@ -596,12 +680,102 @@ class LocalBackend:
                     )
                 except OSError as e:
                     error = f"the command of task {node.task_id} cannot start: {e}"
+                else:
+                    self._write_pid(log, node, process, argv)
+                    return process
             out.write(f"{error}\n".encode())
         logger.error("run %s: %s", run.run_id, error)
         return None
 
+    @staticmethod
+    def _pid_file(log: Path, node: _Node) -> Path:
+        return log / f"{node.name}-{node.attempt}.pid"
+
+    def _write_pid(
+        self,
+        log: Path,
+        node: _Node,
+        process: subprocess.Popen[bytes],
+        argv: list[str],
+    ) -> None:
+        """Name a started process beside its log: its group, start, command line."""
+        record = {
+            "pid": process.pid,
+            "start": _start_time(process.pid),
+            "argv": argv,
+            "container": node.container,
+        }
+        try:
+            self._pid_file(log, node).write_text(json.dumps(record))
+        except OSError:
+            logger.exception("the pid file of %s cannot be written", node.name)
+
+    def kill_orphans(self) -> int:
+        """Kill the processes of runs which a service before left running.
+
+        A service which died without ending its processes (SIGKILL, out of memory)
+        leaves their pid files beside their logs. The process group of each is
+        killed, and its container, unless its run is one of this backend or its
+        leader is not the process of the file any more (another start time or
+        command line: a reused pid); the files are removed.
+
+        Returns:
+            The process groups killed.
+        """
+        with self._cond:
+            live = {run.run_id for run in self._runs.values()}
+        killed = 0
+        for path in self.store.glob("runs/*/tasks/*/logs/*.pid"):
+            if path.parents[3].name in live:
+                continue
+            try:
+                record = json.loads(path.read_text())
+                pid = int(record["pid"])
+            except (OSError, ValueError, KeyError, TypeError) as error:
+                logger.warning("pid file %s: %s", path, error)
+                path.unlink(missing_ok=True)
+                continue
+            same = (
+                record.get("start") is not None
+                and _start_time(pid) == record["start"]
+                and _cmdline(pid) == record.get("argv")
+            )
+            if same:
+                logger.warning("killing the orphaned process group %d (%s)", pid, path)
+                _signal_group(pid, signal.SIGKILL)
+                killed += 1
+            container = record.get("container")
+            if isinstance(container, str):
+                _docker_kill(container)
+            path.unlink(missing_ok=True)
+        return killed
+
+    def _environment(self, run: _Run, node: _Node, log: BinaryIO) -> Path | None:
+        """The python of the venv of a run, created by its first process.
+
+        Called by the thread of the run only, so the venv is created once.
+
+        Returns:
+            The python, None when the venv cannot be created (`run.env_error`).
+        """
+        if run.python is not None or run.env_error is not None:
+            return run.python
+        try:
+            run.python = local_env.create(
+                self.envs / run.run_id,
+                run.snapshots,
+                log,
+                lambda: run.cancelled,
+            )
+        except local_env.RunEnvironmentError as error:
+            run.env_error = f"{error} (see the log of {node.name})"
+        return run.python
+
     def _wait(self, run: _Run, node: _Node, process: subprocess.Popen[bytes]) -> None:
         """Wait for the end of a process, then end the rest of its process group."""
+        pid_file = self._pid_file(
+            self._task_dir(run.run_id, node.task_id) / "logs", node
+        )
         code = process.wait()
         # a process killed by a signal exits 128 + the signal, as in a container
         code = 128 - code if code < 0 else code
@@ -609,6 +783,7 @@ class LocalBackend:
         if node.container is not None and code != 0:
             # a docker client which was killed leaves its container running
             _docker_kill(node.container)
+        pid_file.unlink(missing_ok=True)
         shutil.rmtree(node.scratch, ignore_errors=True)
         self._finish(run, node, code)
 
