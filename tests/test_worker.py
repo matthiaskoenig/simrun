@@ -183,6 +183,7 @@ def worker_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         "SIMRUN_ROLE",
         "SIMRUN_STALE_S",
         "SIMRUN_MERGE",
+        "SIMRUN_CORES",
         worker.SOURCES_INSTALLED,
     ):
         monkeypatch.delenv(name, raising=False)
@@ -213,6 +214,31 @@ def test_main_done(worker_env: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     assert os.listdir(worker_env / "workers") == ["squares-w0-2.json"]
     report = read_report(worker_env, "squares-w0", attempt=2)
     assert sorted(report["units_done"]) == list(range(5))
+
+
+def test_simrun_cores_caps_the_processes_of_main(
+    worker_env: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(worker.cgroup, "cpu_quota", lambda: 4)
+    monkeypatch.setattr(worker.cgroup, "memory_limit", lambda: None)
+    monkeypatch.setenv("SIMRUN_CORES", "2")
+    (worker_env / "settings.json").write_text(SquaresSettings(n=3).model_dump_json())
+    with pytest.raises(SystemExit) as raised:
+        worker.main()
+    assert raised.value.code == 0
+    assert read_report(worker_env, "squares-w0")["processes"] == 2
+
+
+def test_cores_of_the_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(worker.cgroup, "cpu_quota", lambda: 3)
+    assert worker.cores({}) == 3
+    assert worker.cores({"SIMRUN_CORES": "2"}) == 2
+    # a cap: never more than the quota
+    assert worker.cores({"SIMRUN_CORES": "8"}) == 3
+    monkeypatch.setattr(worker.cgroup, "cpu_quota", lambda: None)
+    assert worker.cores({"SIMRUN_CORES": "1"}) == 1
+    with pytest.raises(worker.ConfigurationError):
+        worker.cores({"SIMRUN_CORES": "many"})
 
 
 def test_main_configuration_error(worker_env: Path) -> None:

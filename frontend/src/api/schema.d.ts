@@ -973,6 +973,9 @@ export interface components {
          *             may have been created by a submission that failed.
          *         pending_logs: Whether the logs of the pods of an ended run must still be
          *             kept in the store (`simrun.service.logs`).
+         *         local_commands: How the local backend runs the `command` tasks of the run:
+         *             `direct` its args, `docker` in its image; None the choice of the
+         *             backend. The Argo backend ignores it.
          */
         RunRecord: {
             /** Agent */
@@ -994,6 +997,8 @@ export interface components {
             id: string;
             /** Image */
             image: string | null;
+            /** Local Commands */
+            local_commands?: ("direct" | "docker") | null;
             /** Message */
             message: string | null;
             /** Oom Kills */
@@ -1158,10 +1163,15 @@ export interface components {
          *         group: Group of the run, e.g. a study.
          *         split: Split mode of every task, else the one of the task or the workflow.
          *         reserve: A node reserved for the run, else the one of the workflow.
+         *         local_commands: How the local backend runs the `command` tasks: `direct`
+         *             their args, `docker` in their images; None the choice of the backend.
+         *             The Argo backend ignores it.
          */
         SubmitRequest: {
             /** Group */
             group?: string | null;
+            /** Local Commands */
+            local_commands?: ("direct" | "docker") | null;
             /** Reserve */
             reserve?: string | null;
             /** Sources */

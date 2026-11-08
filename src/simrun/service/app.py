@@ -153,6 +153,9 @@ class SubmitRequest(BaseModel):
         group: Group of the run, e.g. a study.
         split: Split mode of every task, else the one of the task or the workflow.
         reserve: A node reserved for the run, else the one of the workflow.
+        local_commands: How the local backend runs the `command` tasks: `direct`
+            their args, `docker` in their images; None the choice of the backend.
+            The Argo backend ignores it.
     """
 
     workflow: Workflow
@@ -160,6 +163,7 @@ class SubmitRequest(BaseModel):
     group: str | None = None
     split: SplitMode | None = None
     reserve: str | None = None
+    local_commands: Literal["direct", "docker"] | None = None
 
 
 class ValidationResult(BaseModel):
@@ -765,6 +769,7 @@ class _Service:
             created=datetime.now(UTC),
             finished=None,
             message=None,
+            local_commands=request.local_commands,
         )
         self._write(record)
         self.controller.start_submission(record.id, self.submitter.run)

@@ -27,7 +27,7 @@ const workflow: Workflow = {
 const estimate: Record<string, TaskEstimate> = {
   b: {
     seconds: 125,
-    plan: { task_id: "b", pods: 3, units: 12, base_priority: "standard", extra_priority: "standard", shape: { cores: 4, gpus: 0, memory_gb: 8, per_worker_gb: 2, processes: 4, retry_memory_gb: 16, retry_per_worker_gb: 4, scratch_gb: 0 } },
+    plan: { task_id: "b", pods: 3, units: 12, base_priority: "standard", extra_priority: "standard", coordinator_merges: true, shape: { cores: 4, gpus: 0, memory_gb: 8, per_worker_gb: 2, processes: 4, retry_memory_gb: 16, retry_per_worker_gb: 4, scratch_gb: 0 } },
     resources: { gpus: 0, memory_base_gb: 0, memory_per_worker_gb: 2.5, samples: 20, scratch_gb: 0, seconds_per_unit: 1, source: "learned" },
   },
 };

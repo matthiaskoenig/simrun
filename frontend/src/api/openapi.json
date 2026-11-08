@@ -878,7 +878,7 @@
         "type": "object"
       },
       "RunRecord": {
-        "description": "The record of a run.\n\nAttributes:\n    id: Run id, `YYYYMMDD-HHMMSS-<6 hex>`.\n    submitted_by: Submitting user.\n    owner: Owner of the run.\n    agent: Agent which submitted the run.\n    priority: Priority in the queue.\n    group: Group of the run.\n    workflow: The workflow.\n    sources: Provenance of the snapshots of the sources.\n    image: Container image.\n    reserve: Reservation.\n    state: State of the run.\n    tasks: State of every task.\n    plans: The task plans as dicts.\n    backend_name: Name of the backend workflow.\n    created: Time of creation.\n    built: Time the image of the run was ready and the submission of its workflow\n        began, None while its environment is resolved and built.\n    finished: Time of the end.\n    message: A message, e.g. the failure.\n    oom_kills: The attempts of the pods killed for memory per worker (the worker\n        id, the task id of an unsplit task, `<task>-merge` of a merge).\n    pending_release: A reserved node whose release failed, retried by the service.\n    pending_cancel: Whether the workflow must still be cancelled, e.g. one which\n        may have been created by a submission that failed.\n    pending_logs: Whether the logs of the pods of an ended run must still be\n        kept in the store (`simrun.service.logs`).",
+        "description": "The record of a run.\n\nAttributes:\n    id: Run id, `YYYYMMDD-HHMMSS-<6 hex>`.\n    submitted_by: Submitting user.\n    owner: Owner of the run.\n    agent: Agent which submitted the run.\n    priority: Priority in the queue.\n    group: Group of the run.\n    workflow: The workflow.\n    sources: Provenance of the snapshots of the sources.\n    image: Container image.\n    reserve: Reservation.\n    state: State of the run.\n    tasks: State of every task.\n    plans: The task plans as dicts.\n    backend_name: Name of the backend workflow.\n    created: Time of creation.\n    built: Time the image of the run was ready and the submission of its workflow\n        began, None while its environment is resolved and built.\n    finished: Time of the end.\n    message: A message, e.g. the failure.\n    oom_kills: The attempts of the pods killed for memory per worker (the worker\n        id, the task id of an unsplit task, `<task>-merge` of a merge).\n    pending_release: A reserved node whose release failed, retried by the service.\n    pending_cancel: Whether the workflow must still be cancelled, e.g. one which\n        may have been created by a submission that failed.\n    pending_logs: Whether the logs of the pods of an ended run must still be\n        kept in the store (`simrun.service.logs`).\n    local_commands: How the local backend runs the `command` tasks of the run:\n        `direct` its args, `docker` in its image; None the choice of the\n        backend. The Argo backend ignores it.",
         "properties": {
           "agent": {
             "anyOf": [
@@ -956,6 +956,21 @@
               }
             ],
             "title": "Image"
+          },
+          "local_commands": {
+            "anyOf": [
+              {
+                "enum": [
+                  "direct",
+                  "docker"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Commands"
           },
           "message": {
             "anyOf": [
@@ -1320,7 +1335,7 @@
         "type": "string"
       },
       "SubmitRequest": {
-        "description": "A submission of a workflow.\n\nAttributes:\n    workflow: The workflow.\n    sources: The snapshots of the sources, the model first.\n    group: Group of the run, e.g. a study.\n    split: Split mode of every task, else the one of the task or the workflow.\n    reserve: A node reserved for the run, else the one of the workflow.",
+        "description": "A submission of a workflow.\n\nAttributes:\n    workflow: The workflow.\n    sources: The snapshots of the sources, the model first.\n    group: Group of the run, e.g. a study.\n    split: Split mode of every task, else the one of the task or the workflow.\n    reserve: A node reserved for the run, else the one of the workflow.\n    local_commands: How the local backend runs the `command` tasks: `direct`\n        their args, `docker` in their images; None the choice of the backend.\n        The Argo backend ignores it.",
         "properties": {
           "group": {
             "anyOf": [
@@ -1332,6 +1347,21 @@
               }
             ],
             "title": "Group"
+          },
+          "local_commands": {
+            "anyOf": [
+              {
+                "enum": [
+                  "direct",
+                  "docker"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Local Commands"
           },
           "reserve": {
             "anyOf": [
