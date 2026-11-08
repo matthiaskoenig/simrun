@@ -76,7 +76,9 @@ def env_values(
         "SIMRUN_STAGE": ",".join(
             f"{inputs[port]}={scratch}/{port}" for port in task.stage
         ),
-        "SIMRUN_EDITABLE": ",".join(f"{store}/{s.snapshot}" for s in record.sources),
+        "SIMRUN_EDITABLE": ",".join(
+            f"{store}/{s.snapshot}" for s in record.sources if s.snapshot
+        ),
         "SIMRUN_SCRATCH": scratch,
         "SIMRUN_PROVENANCE": f"{directory}/{PROVENANCE_FILE}",
     }

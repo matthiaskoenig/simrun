@@ -36,6 +36,7 @@ import os
 import re
 import time
 import uuid
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -46,9 +47,10 @@ from kubernetes.client.exceptions import ApiException
 from kubernetes.config.config_exception import ConfigException
 from kubernetes.utils import parse_quantity
 
-from simrun.argo import CONTAINER, GPU_RESOURCE, RESERVED_KEY
+from simrun.argo import CONTAINER, GPU_RESOURCE, RESERVED_KEY, to_argo
 from simrun.config import ClusterConfig
-from simrun.planner import Node
+from simrun.planner import Node, TaskPlan
+from simrun.plugins import TaskType
 from simrun.service.app import CONFIG_ENV, load_settings
 from simrun.service.backend import (
     FINAL_PHASES,
@@ -59,6 +61,7 @@ from simrun.service.backend import (
     Placement,
     PodLog,
 )
+from simrun.store import RunRecord
 from simrun.worker import EXIT_TERMINATED
 
 logger = logging.getLogger(__name__)
@@ -426,12 +429,27 @@ class ArgoBackend:
 
     # workflows
 
-    def submit(self, manifest: dict[str, Any]) -> str:
-        """Create the workflow; returns its name.
+    runs_images = True
+
+    def subscribe(self, callback: Callable[[], None]) -> None:
+        """Ignore the callback: the controller polls the cluster."""
+
+    def submit(
+        self,
+        record: RunRecord,
+        plans: dict[str, TaskPlan],
+        types: dict[str, TaskType],
+        cluster: ClusterConfig,
+    ) -> str:
+        """Create the workflow of a run; returns its name.
 
         A workflow of the name which exists already is taken as submitted: the name
         of the workflow of a run is fixed, so a resumed submission creates it once.
+
+        Raises:
+            ValueError: The workflow cannot be built, e.g. a task has no image.
         """
+        manifest = to_argo(record, plans, types, cluster)
         try:
             created = self.custom.create_namespaced_custom_object(
                 GROUP, VERSION, self.config.namespace, PLURAL, manifest

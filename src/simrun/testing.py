@@ -4,11 +4,14 @@ import dataclasses
 import os
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
-from simrun.planner import Node
+from simrun.argo import to_argo
+from simrun.config import ClusterConfig
+from simrun.planner import Node, TaskPlan
+from simrun.plugins import TaskType
 from simrun.service.backend import (
     FINAL_PHASES,
     BackendStatus,
@@ -16,6 +19,7 @@ from simrun.service.backend import (
     Placement,
     PodLog,
 )
+from simrun.store import RunRecord
 
 # the tokens of the tests of the service: the owner, the owner's agent, another
 # person and the agent of the other person
@@ -63,6 +67,7 @@ class FakeBackend:
 
     Attributes:
         manifests: The submitted manifests by name.
+        subscribed: The callbacks registered with `subscribe`.
         calls: `("submit", name)`, `("cancel", name)`, `("stop", name)`,
             `("logs", name, task_id)`, `("reserve", node, run_id)`,
             `("unreserve", node, run_id)` and `("build_image", ref, files of the
@@ -89,14 +94,32 @@ class FakeBackend:
         self.finish_after = finish_after
         self.images = set(images)
         self.manifests: dict[str, dict[str, Any]] = {}
+        self.subscribed: list[Callable[[], None]] = []
         self.calls: list[tuple[Any, ...]] = []
         self.pod_logs: dict[tuple[str, str], list[PodLog]] = {}
         self._status: dict[str, BackendStatus] = {}
         self._submitted: dict[str, float] = {}
         self._placed: list[Placement] = []
 
-    def submit(self, manifest: dict[str, Any]) -> str:
-        """Accept a workflow, pending without nodes; one which exists is kept."""
+    runs_images = True
+
+    def subscribe(self, callback: Callable[[], None]) -> None:
+        """Remember the callback in `subscribed`; the fake never calls it."""
+        self.subscribed.append(callback)
+
+    def submit(
+        self,
+        record: RunRecord,
+        plans: dict[str, TaskPlan],
+        types: dict[str, TaskType],
+        cluster: ClusterConfig,
+    ) -> str:
+        """Accept the workflow of a run, pending without nodes; one which exists is kept.
+
+        Raises:
+            ValueError: The workflow cannot be built, e.g. a task has no image.
+        """
+        manifest = to_argo(record, plans, types, cluster)
         name = manifest["metadata"]["name"]
         with self._lock:
             if name in self.manifests:
