@@ -75,3 +75,22 @@ def memory_oom_kills(root: Path = CGROUP_ROOT) -> int | None:
         if key == "oom_kill":
             return int(value)
     return None
+
+
+def cpu_throttled_seconds(root: Path = CGROUP_ROOT) -> float | None:
+    """The seconds the processes of the cgroup waited for its CPU quota.
+
+    `throttled_usec` of `cpu.stat`: time a process could have run but the quota of
+    `cpu.max` held it back, the evidence that a task needs more cores.
+
+    Returns:
+        Seconds, `None` without the file or the field.
+    """
+    text = _read(root / "cpu.stat")
+    if text is None:
+        return None
+    for line in text.splitlines():
+        key, _, value = line.partition(" ")
+        if key == "throttled_usec":
+            return int(value) / 1e6
+    return None

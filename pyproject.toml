@@ -133,10 +133,10 @@ markers = [
 ]
 
 [tool.ty.environment]
-# the package lives in the src layout, the helpers of the cluster tests are
-# imported by the module name; the checked python version is inferred from
-# `project.requires-python` (i.e. the oldest supported version)
-root = ["./src", "./tests/cluster"]
+# the package lives in the src layout, the helpers of the cluster tests and of the
+# smoke workflows are imported by their module names; the checked python version is
+# inferred from `project.requires-python` (i.e. the oldest supported version)
+root = ["./src", "./tests/cluster", "./tests/smoke"]
 
 [tool.ty.src]
 include = ["src", "tests", "scripts"]

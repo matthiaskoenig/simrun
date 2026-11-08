@@ -6,8 +6,8 @@ from pathlib import Path
 import pytest
 
 from simrun.environment import (
-    UV_CACHE,
     BUILD_CONSTRAINTS,
+    UV_CACHE,
     Environment,
     dockerfile,
     image_ref,
