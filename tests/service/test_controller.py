@@ -8,10 +8,12 @@ from simrun.demo import SQUARES
 from simrun.planner import PodShape, TaskPlan
 from simrun.plugins_builtin import COMMAND
 from simrun.resources import GIB, ResourceKey, ResourceStore
+from simrun.service import controller as controller_module
 from simrun.service.backend import BackendStatus
 from simrun.service.controller import (
     SUBMIT_GRACE_S,
     Controller,
+    has_merge_marker,
     is_oom,
     task_states,
 )
@@ -363,7 +365,7 @@ WORKFLOW = Workflow(
 
 
 def _states(
-    merges: bool = False, merged: bool = True, **nodes: str
+    merges: bool = False, merged: TaskState = TaskState.DONE, **nodes: str
 ) -> dict[str, TaskState]:
     status = BackendStatus(phase="Running", tasks=nodes)
     plans = {"a": TaskPlan("a", 1, _SHAPE, "b", "e", 4, coordinator_merges=merges)}
@@ -391,13 +393,17 @@ def test_a_split_task_whose_coordinator_merges_is_done_with_its_coordinator():
     assert _states(False, **{"a-w0": "Succeeded"})["a"] == TaskState.RUNNING
 
 
-def test_a_coordinator_which_succeeded_without_merging_fails_its_task():
+def test_a_coordinator_which_succeeded_has_the_state_of_its_merge():
     # the harness of simrun 0.1.0 ignores SIMRUN_MERGE: no marker of a merge
-    assert _states(True, False, **{"a-w0": "Succeeded"})["a"] == TaskState.FAILED
-    assert _states(True, False, **{"a-w0": "Running"})["a"] == TaskState.RUNNING
+    failed, running = TaskState.FAILED, TaskState.RUNNING
+    assert _states(True, failed, **{"a-w0": "Succeeded"})["a"] == failed
+    assert _states(True, failed, **{"a-w0": "Running"})["a"] == running
+    # the marker is awaited
+    assert _states(True, running, **{"a-w0": "Succeeded"})["a"] == running
 
 
-def test_an_old_harness_fails_the_run_with_its_cause(service):
+def test_an_old_harness_fails_the_run_with_its_cause(service, monkeypatch):
+    monkeypatch.setattr(controller_module, "MERGE_MARKER_GRACE_S", 0.0)
     run_id = service.submit()["id"]
     name = service.name(run_id)
     service.backend.merges = False  # the coordinator exits 0 without merging
@@ -778,3 +784,108 @@ def test_wait_for_wake(service):
 def test_the_app_subscribes_the_controller_to_the_backend(service_factory):
     with service_factory() as service:
         assert service.backend.subscribed == [service.controller.wake]
+
+
+def test_has_merge_marker(tmp_path):
+    assert not has_merge_marker(tmp_path / "missing")
+    assert not has_merge_marker(tmp_path)  # no out/
+    (tmp_path / "out").mkdir()
+    assert not has_merge_marker(tmp_path)
+    (tmp_path / "out" / MERGED_MARKER).touch()
+    assert has_merge_marker(tmp_path)
+
+
+def _unmerged(service) -> tuple[str, str]:
+    """A run whose coordinator succeeded without the marker, its workflow ended."""
+    run_id = service.submit()["id"]
+    name = service.name(run_id)
+    service.backend.merges = False  # the marker is not there (yet)
+    service.backend.finish(name)
+    service.controller.reconcile()
+    return run_id, name
+
+
+def test_a_coordinator_without_its_marker_waits_for_it(service):
+    run_id, name = _unmerged(service)
+    record = service.store.read(run_id)
+    # the workflow ended Succeeded, yet the run waits for the marker of the merge
+    assert service.backend.status(name).phase == "Succeeded"
+    assert record.state == RunState.RUNNING
+    assert record.tasks["squares"] == TaskState.RUNNING
+    assert set(record.merge_pending) == {"squares"}
+    service.controller.reconcile()
+    assert service.store.read(run_id) == record  # still waiting, nothing changed
+    # the marker becomes visible within the grace
+    out = service.run_dir(run_id) / "tasks/squares/out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / MERGED_MARKER).touch()
+    service.controller.reconcile()
+    record = service.store.read(run_id)
+    assert record.state == RunState.SUCCEEDED
+    assert record.tasks["squares"] == TaskState.DONE
+    assert record.merge_pending == {}
+    assert ("stop", name) not in service.backend.calls
+
+
+def test_a_coordinator_without_its_marker_fails_after_the_grace(service, monkeypatch):
+    run_id, _ = _unmerged(service)
+    assert _state(service, run_id) == RunState.RUNNING
+    monkeypatch.setattr(controller_module, "MERGE_MARKER_GRACE_S", 0.0)
+    service.controller.reconcile()
+    record = service.store.read(run_id)
+    assert record.state == RunState.FAILED
+    assert record.tasks["squares"] == TaskState.FAILED
+    assert record.merge_pending == {}
+    assert "does not merge" in (record.message or "")
+    assert "the workflow ended with phase" not in (record.message or "")
+
+
+def _controller(service) -> Controller:
+    """A new controller over the store of a service, as after a restart."""
+    old = service.controller
+    return Controller(service.store, old.resources, service.backend, old.types)
+
+
+def test_the_wait_for_a_marker_survives_a_restart(service):
+    run_id, _ = _unmerged(service)
+    since = service.store.read(run_id).merge_pending["squares"]
+    restarted = _controller(service)
+    try:
+        restarted.reconcile()
+        record = service.store.read(run_id)
+        assert record.state == RunState.RUNNING
+        assert record.merge_pending == {"squares": since}  # continued, not restarted
+        # the wait began before the grace: the restarted controller fails the run
+        old = since - timedelta(seconds=controller_module.MERGE_MARKER_GRACE_S + 1)
+        service.store.write(
+            record.model_copy(update={"merge_pending": {"squares": old}})
+        )
+        restarted.reconcile()
+        record = service.store.read(run_id)
+        assert record.state == RunState.FAILED
+        assert "newer than 0.1.0" in (record.message or "")
+    finally:
+        restarted.close()
+
+
+def test_a_gone_workflow_waits_for_the_marker(service):
+    run_id, name = _unmerged(service)
+    service.backend.delete(name)
+    service.controller.reconcile()
+    record = service.store.read(run_id)
+    assert (record.state, record.tasks["squares"]) == ("running", "running")
+    out = service.run_dir(run_id) / "tasks/squares/out"
+    out.mkdir(parents=True, exist_ok=True)
+    (out / MERGED_MARKER).touch()
+    service.controller.reconcile()
+    assert _state(service, run_id) == RunState.SUCCEEDED
+
+
+def test_a_gone_workflow_fails_after_the_grace(service, monkeypatch):
+    run_id, name = _unmerged(service)
+    service.backend.delete(name)
+    monkeypatch.setattr(controller_module, "MERGE_MARKER_GRACE_S", 0.0)
+    service.controller.reconcile()
+    record = service.store.read(run_id)
+    assert record.state == RunState.FAILED
+    assert "does not merge" in (record.message or "")

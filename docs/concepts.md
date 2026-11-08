@@ -32,7 +32,7 @@ A run lives in `runs/<id>/` of the store:
 | `tasks/<task>/logs/` | the logs of the pods, kept once the task is final |
 | `tasks/<task>/progress.jsonl` | the progress of the task, one line per completed unit |
 
-The store is the source of truth. The service keeps an index of the runs in SQLite beside it (id, owner, agent, group, workflow, state, times, pending release and cancellation, snapshots and summary), rebuilt from the records at its start, so a restarted service continues where the one before stopped. The state of a run is the one of the service, not the one of Argo: a split task is done when its merge succeeded (its coordinator, which merges), an unsplit task when its pod succeeded; when every task is done the run succeeded, when a task failed the run failed, and in both cases the service stops the workflow.
+The store is the source of truth. The service keeps an index of the runs in SQLite beside it (id, owner, agent, group, workflow, state, times, pending release and cancellation, snapshots and summary), rebuilt from the records at its start, so a restarted service continues where the one before stopped. The state of a run is the one of the service, not the one of Argo: a split task is done when its merge succeeded (its coordinator, which merges, succeeded and its output has the marker of the merge, which the service awaits up to two minutes for the attribute cache of NFS), an unsplit task when its pod succeeded; when every task is done the run succeeded, when a task failed the run failed, and in both cases the service stops the workflow.
 
 A run belongs to a group, e.g. a study or the subagents of one main agent, which lists and compares the runs of the group (`simrun list --group`, `simrun compare`).
 
