@@ -23,7 +23,15 @@ from rich.table import Column, Table
 
 from simrun.client import Client, ClientError
 from simrun.edit import run_edit
-from simrun.local import LOCAL_DIR, SERVICE_FILE, LocalService, serve_local, web_dir
+from simrun.local import (
+    EXIT_RUNNING,
+    LOCAL_DIR,
+    SERVICE_FILE,
+    LocalService,
+    ServiceRunning,
+    serve_local,
+    web_dir,
+)
 from simrun.service.app import RunSummary
 from simrun.service.logs import DEFAULT_TAIL_LINES
 from simrun.store import RunState
@@ -383,7 +391,8 @@ def serve(
     """Run the service until stopped.
 
     With --local the service of the current directory with the local backend: the
-    tasks run as processes on this machine, Ctrl-C cancels the runs. Without, the
+    tasks run as processes on this machine, Ctrl-C cancels the runs; exit 3 when
+    the service of the directory runs already. Without, the
     service of the settings named by SIMRUN_CONFIG, as
     `uvicorn --factory simrun.service.app:serve` runs it.
     """
@@ -406,4 +415,8 @@ def serve(
         if web_dir() is None:
             typer.echo("the web app is not built in this installation", err=True)
 
-    serve_local(Path.cwd(), port or 0, idle_exit, ready)
+    try:
+        serve_local(Path.cwd(), port or 0, idle_exit, ready)
+    except ServiceRunning as error:
+        typer.echo(str(error), err=True)
+        raise typer.Exit(EXIT_RUNNING) from None

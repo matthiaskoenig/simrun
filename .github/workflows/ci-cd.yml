@@ -256,7 +256,8 @@ jobs:
       # the sdist and the wheel, both with the web app
       run: |
         uvx hatch build
-        unzip -l dist/*.whl | grep -q 'simrun/web/index.html'
+        unzip -l dist/*.whl | grep 'simrun/web/index.html' > /dev/null
+        tar tzf dist/*.tar.gz | grep 'src/simrun/web/index.html' > /dev/null
     - name: Check the package
       run: uvx twine check --strict dist/*
     - name: Publish to PyPI

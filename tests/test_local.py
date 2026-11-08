@@ -1,7 +1,9 @@
 """The local service of a project: settings in .simrun, started on demand."""
 
 import asyncio
+import fcntl
 import getpass
+import http.server
 import json
 import os
 import re
@@ -12,7 +14,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from pathlib import Path
-from typing import Any
+from typing import Any, ClassVar
 
 import httpx
 import pytest
@@ -83,7 +85,8 @@ def root(tmp_path: Path) -> Iterator[Path]:
     if path.is_file():
         started.append(json.loads(path.read_text())["pid"])
     for pid in started:
-        _stop(pid)
+        if pid != os.getpid():
+            _stop(pid)
 
 
 def _get(service: LocalService, path: str) -> httpx.Response:
@@ -119,6 +122,12 @@ def _state(service: LocalService, run_id: str) -> str:
     return _get(service, f"/runs/{run_id}").json()["state"]
 
 
+def test_local_settings_keeps_the_tokens_private(tmp_path):
+    tokens = local_settings(tmp_path).tokens
+    tokens.chmod(0o644)
+    assert local_settings(tmp_path).tokens.stat().st_mode & 0o777 == 0o600
+
+
 def test_local_settings_creates_the_tokens_once(tmp_path):
     settings = local_settings(tmp_path)
     directory = tmp_path / LOCAL_DIR
@@ -140,13 +149,18 @@ def test_local_settings_creates_the_tokens_once(tmp_path):
 
 
 def test_web_dir_prefers_the_package(tmp_path, monkeypatch):
-    package, checkout = tmp_path / "package", tmp_path / "dist"
+    package, repository = tmp_path / "package", tmp_path / "repository"
+    checkout = repository / "frontend" / "dist"
     monkeypatch.setattr(local, "PACKAGE_WEB", package)
-    monkeypatch.setattr(local, "CHECKOUT_WEB", checkout)
+    monkeypatch.setattr(local, "CHECKOUT", repository)
     assert web_dir() is None
-    checkout.mkdir()
+    checkout.mkdir(parents=True)
     assert web_dir() is None  # no index.html
     (checkout / "index.html").write_text("<p>dist</p>")
+    assert web_dir() is None  # no checkout of simrun
+    (repository / "pyproject.toml").write_text('[project]\nname = "other"\n')
+    assert web_dir() is None
+    (repository / "pyproject.toml").write_text('[project]\nname = "simrun"\n')
     assert web_dir() == checkout
     package.mkdir()
     (package / "index.html").write_text("<p>package</p>")
@@ -171,6 +185,7 @@ def test_ensure_local_starts_one_service(root):
     path = _service_file(root)
     assert path.stat().st_mode & 0o777 == 0o600
     assert json.loads(path.read_text()) == {
+        "instance": service.instance,
         "pid": service.pid,
         "port": service.port,
         "token": service.token,
@@ -191,12 +206,89 @@ def test_a_stale_service_file_starts_a_new_service(root):
     path.parent.mkdir()
     path.write_text(
         json.dumps(
-            {"pid": dead.pid, "port": 1, "token": "t", "url": "http://127.0.0.1:1"}
+            {
+                "instance": "i",
+                "pid": dead.pid,
+                "port": 1,
+                "token": "t",
+                "url": "http://127.0.0.1:1",
+            }
         )
     )
     service = ensure_local(root)
     assert service.pid != dead.pid
     assert _get(service, "/me").status_code == 200
+
+
+class _Recorder(http.server.BaseHTTPRequestHandler):
+    seen: ClassVar[list[str]] = []
+
+    def do_GET(self) -> None:
+        self.seen.append(f"{self.path} {self.headers.get('Authorization')}")
+        body = b"not simrun"
+        self.send_response(200)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+
+def test_the_token_goes_only_to_the_service_of_the_file(root):
+    """A live pid and another listener on the port of service.json get no token."""
+    listener = http.server.HTTPServer(("127.0.0.1", 0), _Recorder)
+    thread = threading.Thread(target=listener.serve_forever, daemon=True)
+    thread.start()
+    try:
+        port = listener.server_address[1]
+        path = _service_file(root)
+        path.parent.mkdir()
+        path.write_text(
+            json.dumps(
+                {
+                    "instance": "the-instance",
+                    "pid": os.getpid(),
+                    "port": port,
+                    "token": "secret-token",
+                    "url": f"http://127.0.0.1:{port}",
+                }
+            )
+        )
+        service = ensure_local(root)
+    finally:
+        listener.shutdown()
+        listener.server_close()
+    assert service.port != port
+    assert service.pid != os.getpid()
+    assert _Recorder.seen  # it was asked for its instance
+    assert not any("secret-token" in request for request in _Recorder.seen)
+    assert _get(service, "/me").status_code == 200
+
+
+def test_ensure_local_waits_for_the_end_of_an_old_service(root, monkeypatch):
+    """A start refused while an old service still holds the lock is repeated."""
+    spawned: list[int] = []
+    spawn = local._spawn
+
+    def counting(directory: Path) -> subprocess.Popen[bytes]:
+        process = spawn(directory)
+        spawned.append(process.pid)
+        return process
+
+    monkeypatch.setattr(local, "_spawn", counting)
+    directory = local.local_dir(root)
+    lock = open(directory / local.SERVICE_LOCK, "a")  # noqa: SIM115
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    found: list[LocalService] = []
+    thread = threading.Thread(target=lambda: found.append(ensure_local(root, 20)))
+    thread.start()
+    _wait_until(lambda: len(spawned) == 1 and not _alive(spawned[0]))
+    lock.close()  # the old service ends
+    thread.join(DEADLINE_S)
+    assert len(found) == 1
+    assert len(spawned) == 2
+    assert found[0].pid == spawned[1]
 
 
 def test_concurrent_calls_start_one_service(root, monkeypatch):
@@ -251,18 +343,27 @@ def test_the_service_exits_when_idle_but_not_during_a_run(root):
         process.wait()
 
 
-def test_stopping_the_service_ends_the_processes_of_a_run(root):
-    service = ensure_local(root)
+def _start_sleeper(service: LocalService, root: Path) -> int:
+    """Submit a task which sleeps, the pid of its process once it runs."""
     pid_file = root / "task.pid"
     code = (
         "import os, pathlib, time; "
         f"pathlib.Path({str(pid_file)!r}).write_text(str(os.getpid())); "
         "time.sleep(600)"
     )
-    run_id = _submit(service, code)
+    _submit(service, code)
     _wait_until(lambda: pid_file.is_file() and pid_file.read_text() != "")
     task = int(pid_file.read_text())
     assert _alive(task)
+    return task
+
+
+def test_stopping_the_service_ends_the_processes_of_a_run(root):
+    service = ensure_local(root)
+    task = _start_sleeper(service, root)
+    [run_id] = [
+        r for r in os.listdir(root / LOCAL_DIR / "store" / "runs") if r[0] != "."
+    ]
     _stop(service.pid)
     assert not _alive(task)
     assert not _service_file(root).exists()
@@ -272,7 +373,8 @@ def test_stopping_the_service_ends_the_processes_of_a_run(root):
     assert record["state"] == "failed"
 
 
-def test_serve_local_in_the_foreground(root):
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGHUP])
+def test_serve_local_in_the_foreground(root, signum):
     process = subprocess.Popen(
         [sys.executable, "-m", "simrun", "serve", "--local"],
         cwd=root,
@@ -292,9 +394,11 @@ def test_serve_local_in_the_foreground(root):
         assert data["pid"] == process.pid
         assert data["url"] == match[1]
         assert data["port"] == int(match[2])
-        process.send_signal(signal.SIGINT)
+        task = _start_sleeper(LocalService(**data), root)
+        process.send_signal(signum)
         process.wait(DEADLINE_S)
         assert not _service_file(root).exists()
+        assert not _alive(task)
     finally:
         process.kill()
         process.wait()
@@ -307,6 +411,10 @@ def test_requests_to_the_web_app_are_no_activity():
     activity = local._Activity(app)
     activity.last -= 100
     asyncio.run(activity({"type": "http", "path": "/ui/index.html"}, None, None))
+    asyncio.run(activity({"type": "http", "path": "/ui"}, None, None))
     assert activity.idle_s() >= 100
+    asyncio.run(activity({"type": "http", "path": "/uix"}, None, None))
+    assert activity.idle_s() < 100
+    activity.last -= 100
     asyncio.run(activity({"type": "http", "path": "/me"}, None, None))
     assert activity.idle_s() < 100

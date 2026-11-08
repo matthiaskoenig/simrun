@@ -17,11 +17,13 @@ import json
 import logging
 import os
 import secrets
+import signal
 import socket
 import subprocess
 import sys
 import threading
 import time
+import tomllib
 from collections.abc import Callable, Generator
 from pathlib import Path
 from typing import Any
@@ -35,9 +37,7 @@ import simrun
 from simrun.config import ClusterConfig
 from simrun.service.app import ServiceSettings, create_app
 from simrun.service.auth import load_tokens
-from simrun.service.index import TERMINAL
 from simrun.service.local_backend import LocalBackend
-from simrun.store import RunState
 
 logger = logging.getLogger(__name__)
 
@@ -55,10 +55,17 @@ GRACEFUL_SHUTDOWN_S = 5
 """Seconds the open requests, e.g. event streams, have at the end of the service."""
 PACKAGE_WEB = Path(simrun.__file__).parent / "web"
 """The built web app in the package, put there by the release before the wheel."""
-CHECKOUT_WEB = Path(simrun.__file__).parents[2] / "frontend" / "dist"
-"""The built web app of a checkout of the repository."""
-_LIVE = tuple(state for state in RunState if state not in TERMINAL)
+CHECKOUT = Path(simrun.__file__).parents[2]
+"""The checkout of the repository simrun is imported from, if it is one."""
+INSTANCE_PATH = "/local/instance"
+"""The route which answers the instance of the local service, without a token."""
+EXIT_RUNNING = 3
+"""The exit code of `simrun serve --local` when the service of the directory runs."""
 _CHECK_S = 0.25
+
+
+class ServiceRunning(RuntimeError):
+    """The local service of the directory runs already."""
 
 
 @dataclasses.dataclass(frozen=True)
@@ -66,12 +73,16 @@ class LocalService:
     """A running local service, as its `service.json` names it.
 
     Attributes:
+        instance: A random value of this start of the service, which it answers at
+            `INSTANCE_PATH` without a token: a client checks it before it sends the
+            token.
         pid: The process of the service.
         port: The port on `127.0.0.1`.
         token: The bearer token of the user.
         url: The URL of the API, `http://127.0.0.1:<port>`.
     """
 
+    instance: str
     pid: int
     port: int
     token: str
@@ -83,12 +94,25 @@ def web_dir() -> Path | None:
 
     Returns:
         `simrun/web` of the installed package if it has an `index.html`, else
-        `frontend/dist` of the checkout simrun is imported from, else None.
+        `frontend/dist` of the checkout of simrun it is imported from (a
+        `pyproject.toml` of the project simrun beside `frontend/`), else None.
     """
-    for directory in (PACKAGE_WEB, CHECKOUT_WEB):
-        if (directory / "index.html").is_file():
-            return directory
+    if (PACKAGE_WEB / "index.html").is_file():
+        return PACKAGE_WEB
+    checkout = CHECKOUT / "frontend" / "dist"
+    if (checkout / "index.html").is_file() and _is_simrun(CHECKOUT / "pyproject.toml"):
+        return checkout
     return None
+
+
+def _is_simrun(pyproject: Path) -> bool:
+    """Whether a `pyproject.toml` is the one of simrun."""
+    try:
+        data = tomllib.loads(pyproject.read_text())
+    except OSError, tomllib.TOMLDecodeError, UnicodeDecodeError:
+        return False
+    project = data.get("project")
+    return isinstance(project, dict) and project.get("name") == "simrun"
 
 
 def local_dir(root: Path) -> Path:
@@ -145,6 +169,7 @@ def local_settings(root: Path) -> ServiceSettings:
         user = getpass.getuser()
         identity = {"name": user, "kind": "person"}
         _create_once(tokens, yaml.safe_dump({secrets.token_urlsafe(32): identity}))
+    os.chmod(tokens, 0o600)  # the token runs commands as the user
     return ServiceSettings(
         store=directory / "store",
         db=directory / "simrun.sqlite",
@@ -159,16 +184,22 @@ class _Activity:
     """ASGI middleware: the time since the last request, the web app not counted.
 
     A request counts from its start to its end, so an open event stream is activity.
+    It answers `INSTANCE_PATH` itself, without a token and without activity.
     """
 
-    def __init__(self, app: Callable[..., Any]) -> None:
+    def __init__(self, app: Callable[..., Any], instance: str = "") -> None:
         self.app = app
+        self.instance = instance
         self.last = time.monotonic()
         self.open = 0
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         path = scope.get("path", "")
-        if scope["type"] not in ("http", "websocket") or path.startswith("/ui"):
+        if scope["type"] == "http" and path == INSTANCE_PATH:
+            await _plain(send, self.instance)
+            return
+        static = path == "/ui" or path.startswith("/ui/")
+        if scope["type"] not in ("http", "websocket") or static:
             await self.app(scope, receive, send)
             return
         self.open += 1
@@ -182,6 +213,22 @@ class _Activity:
     def idle_s(self) -> float:
         """Seconds since the end of the last request, 0 while one is open."""
         return 0.0 if self.open else time.monotonic() - self.last
+
+
+async def _plain(send: Any, text: str) -> None:
+    """Send `text` as a plain response of status 200."""
+    body = text.encode()
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 200,
+            "headers": [
+                (b"content-type", b"text/plain; charset=utf-8"),
+                (b"content-length", str(len(body)).encode()),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": body})
 
 
 class _Server(uvicorn.Server):
@@ -210,9 +257,8 @@ def _idle(activity: _Activity, idle_exit_s: float, app: FastAPI) -> bool:
     """
     if activity.idle_s() < idle_exit_s:
         return False
-    index = app.state.service.store.index
     try:
-        return not any(index.runs(state=state) for state in _LIVE)
+        return not app.state.service.store.index.any_unended()
     except Exception:
         logger.exception("reading the live runs failed")
         return False
@@ -239,7 +285,7 @@ def _service_lock(directory: Path) -> Generator[None]:
         except BlockingIOError:
             found = read_service(directory.parent)
             running = f" (pid {found.pid}, {found.url})" if found else ""
-            raise RuntimeError(
+            raise ServiceRunning(
                 f"the local service of {directory.parent} runs already{running}"
             ) from None
         yield
@@ -264,7 +310,8 @@ def serve_local(
         ready: Called with the service once it listens.
 
     Raises:
-        RuntimeError: The local service of the directory runs already.
+        ServiceRunning: The local service of the directory runs already.
+        RuntimeError: The tokens file has no token of the user.
         OSError: The port cannot be bound.
     """
     directory = local_dir(root)
@@ -273,7 +320,8 @@ def serve_local(
         token = _user_token(settings)
         backend = LocalBackend(settings.store, directory / "scratch")
         app = create_app(settings, backend)
-        activity = _Activity(app)
+        instance = secrets.token_urlsafe(16)
+        activity = _Activity(app, instance)
         listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             listener.bind((HOST, port))
@@ -282,7 +330,11 @@ def serve_local(
             raise
         bound = listener.getsockname()[1]
         service = LocalService(
-            pid=os.getpid(), port=bound, token=token, url=f"http://{HOST}:{bound}"
+            instance=instance,
+            pid=os.getpid(),
+            port=bound,
+            token=token,
+            url=f"http://{HOST}:{bound}",
         )
         path = directory / SERVICE_FILE
         # the service file is written once listening and removed at the end, never
@@ -330,36 +382,68 @@ def serve_local(
 
         watcher = threading.Thread(target=watch, name="local-service", daemon=True)
         watcher.start()
+        hangup = _on_hangup(server)
         try:
             server.run(sockets=[listener])
         finally:
             cleanup()
             listener.close()
+            if hangup is not None:
+                signal.signal(signal.SIGHUP, hangup)
+
+
+def _on_hangup(server: uvicorn.Server) -> Any:
+    """Stop the server on SIGHUP as on SIGTERM, e.g. when its terminal closes.
+
+    Returns:
+        The handler before, None outside of the main thread, where no handler can
+        be set.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return None
+    return signal.signal(
+        signal.SIGHUP, lambda *_: server.handle_exit(signal.SIGTERM, None)
+    )
 
 
 def read_service(root: Path) -> LocalService | None:
-    """The service `.simrun/service.json` names, None without a readable file."""
+    """The service `.simrun/service.json` names.
+
+    Returns:
+        The service, None without a readable file or with a URL which is not the one
+        of its port on `127.0.0.1`.
+    """
     try:
         data = json.loads((root.absolute() / LOCAL_DIR / SERVICE_FILE).read_text())
-        return LocalService(**data)
+        service = LocalService(**data)
     except OSError, ValueError, TypeError:
         return None
+    if service.url != f"http://{HOST}:{service.port}":
+        return None
+    return service
 
 
 def _answers(service: LocalService) -> bool:
-    """Whether the process of the service runs and `GET /me` answers."""
+    """Whether the service of the file runs and `GET /me` answers.
+
+    The token goes only to a server which answers the instance of the file: a pid
+    reused by another process or a port bound by another program never gets it.
+    """
     try:
         os.kill(service.pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        pass  # a process of another user: the request decides
+    except ProcessLookupError, PermissionError:
+        return False  # gone, or a process of another user
     try:
-        response = httpx.get(
-            f"{service.url}/me",
-            headers={"Authorization": f"Bearer {service.token}"},
-            timeout=2.0,
-        )
+        with httpx.Client(timeout=2.0) as client:
+            instance = client.get(f"{service.url}{INSTANCE_PATH}")
+            if instance.status_code != 200 or not secrets.compare_digest(
+                instance.content, service.instance.encode()
+            ):
+                return False
+            response = client.get(
+                f"{service.url}/me",
+                headers={"Authorization": f"Bearer {service.token}"},
+            )
     except httpx.HTTPError:
         return False
     return response.status_code == 200
@@ -416,9 +500,10 @@ def _log_tail(directory: Path, lines: int = 20) -> str:
 def ensure_local(root: Path, timeout_s: float = 10.0) -> LocalService:
     """The local service of a project directory, started in the background if none runs.
 
-    A service runs when the pid of `service.json` is alive and `GET /me` answers.
-    The start runs under an exclusive lock of `.simrun/start.lock`, so concurrent
-    calls start one service.
+    A service runs when the pid of `service.json` is alive, the server answers the
+    instance of the file and `GET /me` answers. The start runs under an exclusive
+    lock of `.simrun/start.lock`, so concurrent calls start one service; a start
+    refused while an old service still ends is repeated once it has ended.
 
     Args:
         root: The project directory.
@@ -446,11 +531,15 @@ def ensure_local(root: Path, timeout_s: float = 10.0) -> LocalService:
             found = _running(root)
             if found is not None:
                 return found
-            if process.poll() is not None and not _held(directory):
-                raise RuntimeError(
-                    f"the local service of {root} exited with {process.returncode}:"
-                    f"\n{_log_tail(directory)}"
-                )
+            code = process.poll()
+            # while a service holds the lock it starts or ends: wait for either
+            if code is not None and not _held(directory):
+                if code != EXIT_RUNNING:
+                    raise RuntimeError(
+                        f"the local service of {root} exited with {code}:"
+                        f"\n{_log_tail(directory)}"
+                    )
+                process = _spawn(directory)  # refused by a service which has ended
             time.sleep(0.05)
         if process.poll() is None:
             process.terminate()
