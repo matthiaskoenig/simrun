@@ -45,6 +45,19 @@ describe("SchemaForm", () => {
     expect(many.get("[data-field='names'] textarea").attributes("rows")).toBe("8");
   });
 
+  it("shows no placeholder for a default of null", () => {
+    const nullable = {
+      properties: {
+        start: { anyOf: [{ additionalProperties: { type: "number" }, type: "object" }, { type: "null" }], default: null, title: "Start" },
+        studies: { anyOf: [{ items: { type: "string" }, type: "array" }, { type: "null" }], default: null, title: "Studies" },
+      },
+      type: "object",
+    };
+    const wrapper = mount(SchemaForm, { props: { schema: nullable, value: {} } });
+    expect(wrapper.get("[data-field='start'] textarea").attributes("placeholder")).toBe("");
+    expect(wrapper.get("[data-field='studies'] textarea").attributes("placeholder")).toBe("");
+  });
+
   it("keeps invalid JSON text, shows the message and emits nothing", async () => {
     const wrapper = mount(SchemaForm, { props: { schema, value: {} } });
     const area = wrapper.get("[data-field='extra'] textarea");

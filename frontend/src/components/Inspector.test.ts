@@ -274,6 +274,20 @@ describe("Inspector of a task", () => {
     expect(wrapper.get("[data-logs]").text()).toContain("waiting for signals");
   });
 
+  it("keeps the layout of the lines, or wraps them at the width of the panel when asked", async () => {
+    vi.spyOn(api, "logs").mockResolvedValue("a long line of the console of the run layer\n");
+    const wrapper = mountInspector({});
+    await wrapper.get('[data-tab="logs"]').trigger("click");
+    await flushPromises();
+    const pre = () => wrapper.get("[data-logs-text]").classes();
+    expect(pre()).toContain("whitespace-pre");
+    expect(pre()).toContain("w-max");
+    await wrapper.get("[data-wrap]").setValue(true);
+    expect(pre()).toContain("whitespace-pre-wrap");
+    expect(pre()).not.toContain("w-max");
+    wrapper.unmount();
+  });
+
   it("reads the logs one request at a time, so that slow logs still show", async () => {
     const logs = vi
       .spyOn(api, "logs")
