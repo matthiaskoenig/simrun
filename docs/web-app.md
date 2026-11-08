@@ -1,6 +1,6 @@
 # Web app
 
-The service serves a web app at `/ui/`, e.g. `http://localhost:8000/ui/` on the [local test system](testing.md#a-local-test-system). It has two modes, switched in its top bar: the **Executions**, the runs of people and agents live, and the **Editor**, in which a workflow is built or changed, estimated and run while its file stays next to the code. The app talks only to the API of the service, with the token of the user; the service serves it from the directory of its setting `web` (`/opt/simrun/web` in the [service image](deployment.md#the-service-image)), and without that setting there is no `/ui/`.
+The service serves a web app at `/ui/`, e.g. `http://localhost:8000/ui/` on the [local test system](testing.md#a-local-test-system), or on the [local service](local.md) of a project, which needs no cluster. It has two modes, switched in its top bar: the **Executions**, the runs of people and agents live, and the **Editor**, in which a workflow is built or changed, estimated and run while its file stays next to the code. The app talks only to the API of the service, with the token of the user; the service serves it from the directory of its setting `web` (`/opt/simrun/web` in the [service image](deployment.md#the-service-image)), and without that setting there is no `/ui/`.
 
 ## Login
 

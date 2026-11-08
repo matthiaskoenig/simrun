@@ -2,6 +2,8 @@
 
 The tests are written with pytest and live in `tests/`. Most of them are unit tests, which run anywhere; the tests in `tests/cluster` run on a k3d cluster and are deselected by default (`-m 'not cluster'` of the `addopts` of `pyproject.toml`).
 
+The [local mode](local.md) needs no cluster: `simrun submit examples/squares.yaml --local` runs a workflow on this machine, and its tests (`tests/test_local.py`, `tests/test_cli_local.py`) are part of the unit tests.
+
 ## Unit tests
 
 ```bash

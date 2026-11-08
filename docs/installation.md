@@ -34,7 +34,7 @@ simrun --help
 python -c "import simrun; print(simrun.__version__)"
 ```
 
-The command line needs a running service, see [Command line](command-line.md); the service and the cluster are set up as described in [Cluster deployment](deployment.md).
+The command line needs a running service, see [Command line](command-line.md), or runs everything on this machine with `--local`, see [Local mode](local.md); the service and the cluster are set up as described in [Cluster deployment](deployment.md).
 
 ## Optional packages
 
