@@ -97,7 +97,18 @@ uv run python tests/smoke/run.py --k3d                 # on the local test syste
 uv run python tests/smoke/run.py --only sbmlsim --sbmlsim ../sbmlsim --pkdb-models ../pkdb_models
 ```
 
-`run.py` installs this checkout of simrun and the two checkouts editable into an environment of its own, `.tools/smoke/venv`, so the client plans with the plugin of sbmlsim and the service knows its task types. Locally it uses the local service of `.tools/smoke/local` and stops it at the end; with `--k3d` it runs a service of that environment against the local test system on a free port, and the first run of each workflow builds the image of its environment. It prints the state of every task and exits 1 when a run did not succeed.
+`run.py` installs this checkout of simrun and the two checkouts editable into an environment of its own, `.tools/smoke/venv`, so the client plans with the plugin of sbmlsim and the service knows its task types. Locally it uses the local service of `.tools/smoke/local` and stops it at the end; with `--k3d` it runs a service of that environment against the local test system on a free port, and the first run of each workflow builds the image of its environment. `--local --k3d` runs both, one after the other. After every run it prints the timeline of the run (`tests/smoke/timeline.py`, also on its own for any run of a store) and the load of the machine, which other work on it changes:
+
+```
+smoke-pkdb-models 20261108-222005-074473 succeeded in 353 s
+  task              start waited  prep   work    end    cpu procs
+  simulate             +0      0     0     65    +65     21    20
+  factory             +66     66     0      9    +74      9     1
+  fit                 +66     66     1     95   +161      4     2
+  ...
+```
+
+`start` and `end` are seconds from the creation of the run; `waited` the seconds from the end of the tasks a task reads (or the creation of the run) to the start of its harness, the submission and the start of its pod on the cluster, the free cores locally; `prep` the install of the sources, the restart and the imports; `work` its command or its units; `cpu` the cpu seconds of its processes; `procs` its processes. On k3d the pods split `waited` into `dag` (to the creation of the pod), `admit` (Kueue) and `start` (the image and Argo's init container), `thrott` is the time the CPU quota of its pods held it back, and the submission shows the build of the image. The reports of the workers carry these times (`started`, `prepare_seconds`, `cpu_seconds`, `throttled_seconds`). The exit code is 1 when a run did not succeed.
 
 ## Continuous integration
 
