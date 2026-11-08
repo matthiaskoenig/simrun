@@ -32,7 +32,7 @@ A run lives in `runs/<id>/` of the store:
 | `tasks/<task>/logs/` | the logs of the pods, kept once the task is final |
 | `tasks/<task>/progress.jsonl` | the progress of the task, one line per completed unit |
 
-The store is the source of truth. The service keeps an index of the runs in SQLite beside it (id, owner, agent, group, workflow, state, times, pending release and cancellation, snapshots and summary), rebuilt from the records at its start, so a restarted service continues where the one before stopped. The state of a run is the one of the service, not the one of Argo: a split task is done when its merge succeeded, an unsplit task when its pod succeeded; when every task is done the run succeeded, when a task failed the run failed, and in both cases the service stops the workflow.
+The store is the source of truth. The service keeps an index of the runs in SQLite beside it (id, owner, agent, group, workflow, state, times, pending release and cancellation, snapshots and summary), rebuilt from the records at its start, so a restarted service continues where the one before stopped. The state of a run is the one of the service, not the one of Argo: a split task is done when its merge succeeded (its coordinator, which merges), an unsplit task when its pod succeeded; when every task is done the run succeeded, when a task failed the run failed, and in both cases the service stops the workflow.
 
 A run belongs to a group, e.g. a study or the subagents of one main agent, which lists and compares the runs of the group (`simrun list --group`, `simrun compare`).
 
@@ -50,9 +50,10 @@ A unit may be computed more than once: by a worker which is evicted before it co
 
 A split task of `pods` pods is three nodes of its Argo DAG:
 
-- `<task>-w0`, the coordinator, a worker which claims units like the others and returns only once the ledger is complete. It releases the claims of workers whose heartbeat is older than the grace period plus a minute and computes them itself.
+- `<task>-w0`, the coordinator, a worker which claims units like the others and returns only once the ledger is complete and then merges the units. It releases the claims of workers whose heartbeat is older than the grace period plus a minute and computes them itself.
 - `<task>-extra`, the extra workers `<task>-w1` to `<task>-w<pods-1>`, which exit when nothing is pending. An extra worker which fails does not fail the run.
-- `<task>-merge`, which runs `simrun-merge` after the coordinator only, so extra workers still waiting for admission never hold up the merge.
+
+The coordinator merges the units itself once the ledger is complete (`SIMRUN_MERGE=1`), so extra workers still waiting for admission never hold up the merge. A run recorded before that has a node `<task>-merge` running `simrun-merge` after the coordinator only.
 
 An unsplit task is one pod which runs the command of its type through `simrun-exec`.
 
@@ -70,7 +71,7 @@ The identity of the token of a submission decides the priority of its run:
 | `standard` | the other people | 500 | 400 |
 | `agent` | the agents of the other people | 200 | 100 |
 
-Every priority is a Kueue `WorkloadPriorityClass` and a Kubernetes `PriorityClass` of the same name and value (`simrun-<priority>-base`, `simrun-<priority>-extra`). The coordinator, the merge and an unsplit task have the base priority of the run, the extra workers the extra priority. Kueue admits the pods and preempts workloads of a lower priority; the scheduler itself never preempts.
+Every priority is a Kueue `WorkloadPriorityClass` and a Kubernetes `PriorityClass` of the same name and value (`simrun-<priority>-base`, `simrun-<priority>-extra`). The coordinator (with its merge) and an unsplit task have the base priority of the run, the extra workers the extra priority. Kueue admits the pods and preempts workloads of a lower priority; the scheduler itself never preempts.
 
 ## Take-back by preemption
 

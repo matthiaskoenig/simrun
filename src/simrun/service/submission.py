@@ -17,7 +17,6 @@ has the workflow cancelled; the workflow of one cancelled and deleted meanwhile 
 cancelled as an orphan.
 """
 
-import dataclasses
 import hashlib
 import logging
 import shutil
@@ -38,10 +37,14 @@ from simrun.environment import (
     image_ref,
     resolve_environment,
 )
-from simrun.planner import PodShape, TaskPlan
 from simrun.plugins import TaskType
 from simrun.service.backend import Backend
-from simrun.service.controller import TERMINAL_RUN_STATES, Controller, closed
+from simrun.service.controller import (
+    TERMINAL_RUN_STATES,
+    Controller,
+    closed,
+    task_plans,
+)
 from simrun.snapshot import SourceProvenance
 from simrun.store import RunRecord, RunState, RunStore
 
@@ -57,14 +60,6 @@ class SubmissionError(Exception):
 def has_model_project(store: Path, sources: list[SourceProvenance]) -> bool:
     """Whether the model of a run (its first source) has a `pyproject.toml`."""
     return bool(sources) and (store / sources[0].snapshot / "pyproject.toml").is_file()
-
-
-def task_plans(record: RunRecord) -> dict[str, TaskPlan]:
-    """The plans of the tasks of a run from its record."""
-    return {
-        task_id: dataclasses.replace(TaskPlan(**plan), shape=PodShape(**plan["shape"]))
-        for task_id, plan in record.plans.items()
-    }
 
 
 def _undo(current: RunRecord, record: RunRecord) -> dict[str, object]:

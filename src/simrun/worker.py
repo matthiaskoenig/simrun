@@ -65,7 +65,7 @@ SOURCES_DIR = "simrun-sources"
 SOURCES_INSTALLED = "SIMRUN_SOURCES_INSTALLED"
 # seconds a command of `simrun-exec` gets after SIGTERM, the grace of a worker
 GRACE_S = 60.0
-COORDINATOR_POLL_S = 5.0
+COORDINATOR_POLL_S = 0.5
 # a heartbeat is stale this long after the grace of a worker
 STALE_MARGIN_S = 60.0
 ROLES = {"base": True, "extra": False}
@@ -984,6 +984,8 @@ def _worker(stop: threading.Event) -> int:
             coordinator=coordinator,
             stale_s=stale_s,
         )
+        if coordinator and env.get("SIMRUN_MERGE") == "1":
+            _merge_once(task_type, settings, paths)
     except UnitError:
         return EXIT_ANALYSIS
     except BrokenProcessPool:
@@ -994,6 +996,9 @@ def _worker(stop: threading.Event) -> int:
     except ValueError as error:
         logger.error("configuration error: %s", error)
         return EXIT_CONFIGURATION
+    except Exception:
+        logger.exception("the merge of %s failed", paths.task_dir)
+        return EXIT_ANALYSIS
     return EXIT_DONE
 
 
@@ -1009,6 +1014,17 @@ def merge_main() -> None:
     stop = threading.Event()
     with _stop_on_sigterm(stop):
         sys.exit(_merge(stop))
+
+
+def _merge_once(task_type: TaskType, settings: BaseModel, paths: TaskPaths) -> None:
+    """Merge the units and write the marker, unless a retry finds the marker."""
+    marker = paths.out / MERGED_MARKER
+    if marker.exists():
+        logger.info("the merge of %s is done already", paths.task_dir)
+        return
+    run_merge(task_type, settings, paths)
+    paths.out.mkdir(parents=True, exist_ok=True)
+    marker.touch()
 
 
 def _merge(stop: threading.Event) -> int:
