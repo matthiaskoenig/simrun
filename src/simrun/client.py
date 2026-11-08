@@ -63,6 +63,9 @@ REQUEST_TIMEOUT_S = 60.0
 UPLOAD_READ_TIMEOUT_S = 600.0
 # an upload is sent again when the latest snapshot changed since `missing`
 UPLOAD_ATTEMPTS = 3
+# the details of a service without the route of a request, e.g. one of simrun 0.1.0
+# without the uploads of snapshots
+NO_ROUTE = frozenset({"Not Found", "Method Not Allowed"})
 BACKOFF_START_S = 1.0
 REFOLLOW_S = 0.2
 BACKOFF_MAX_S = 10.0
@@ -260,7 +263,7 @@ class Client:
         for attempt in range(1, UPLOAD_ATTEMPTS + 1):
             found = scan(repo)
             files = [entry.model_dump(mode="json") for entry in found.files]
-            lacking = self._call("POST", f"/snapshots/{name}/missing", json=files)
+            lacking = self._missing(name, files)
             with tempfile.TemporaryFile() as archive:
                 with tarfile.open(fileobj=archive, mode="w") as tar:
                     for path in lacking.json():
@@ -291,6 +294,24 @@ class Client:
                     continue
             return SourceProvenance.model_validate(response.json())
         raise AssertionError("unreachable")
+
+    def _missing(self, name: str, files: list[dict[str, Any]]) -> httpx.Response:
+        """The files of a scan the store lacks.
+
+        Raises:
+            ClientError: The service refused, also with 404 or 405 when it has no
+                route of uploads (simrun 0.1.0), named as such.
+        """
+        try:
+            return self._call("POST", f"/snapshots/{name}/missing", json=files)
+        except ClientError as error:
+            if error.status in (404, 405) and error.detail in NO_ROUTE:
+                raise ClientError(
+                    error.status,
+                    "the service is too old for uploads of snapshots; set "
+                    f"{STORE_ENV} to the store as mounted here",
+                ) from error
+            raise
 
     def close(self) -> None:
         """Close the connections."""

@@ -2,7 +2,7 @@
 
 The tools go through the `Client`; they return the JSON of the API and `store`, the
 absolute local prefix of the paths in it, which are relative to the store, so an
-agent opens a result with `store / path`. A refusal is returned as
+agent opens a result with `store / path`; it is null without a store mounted here. A refusal is returned as
 `{"error": detail, "status": code}` instead of raised, so an agent can read it.
 """
 
@@ -43,8 +43,9 @@ def build_server(client: Client) -> FastMCP:
     """The MCP server whose tools call the service through `client`.
 
     Every answer carries `store`, the path of the store as mounted locally; it is
-    null for a client without a mounted store (the local service without
-    snapshots).
+    null for a client without a mounted store: a client of the cluster without
+    `SIMRUN_STORE`, which uploads its snapshots, and a client of the local service
+    without snapshots.
     """
     server = FastMCP("simrun")
     store = None if client.store is None else str(client.store.resolve())

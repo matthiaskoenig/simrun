@@ -20,6 +20,7 @@ from simrun.service.backend import (
     PodLog,
 )
 from simrun.store import RunRecord
+from simrun.worker import MERGED_MARKER
 
 # the tokens of the tests of the service: the owner, the owner's agent, another
 # person and the agent of the other person
@@ -62,7 +63,9 @@ class FakeBackend:
     running, `finish` every node succeeded, `fail` and `set_node` one node,
     `fail_attempt` and `oom_kill` fail attempts of a pod; `finish_after` finishes a
     workflow that many seconds after its submission. The attempts of a pod are
-    numbered from 0 in the order they fail.
+    numbered from 0 in the order they fail. A coordinator which merges and succeeds
+    writes the marker of a merge into the output of its task in `store`, as the
+    harness does, unless `merges` is False (the harness of simrun 0.1.0).
     The calls which change the cluster are recorded in `calls`.
 
     Attributes:
@@ -74,6 +77,9 @@ class FakeBackend:
             context)`.
         images: The images of the registry.
         pod_logs: The logs of the pods by workflow name and task id, see `add_log`.
+        store: The store of the service, where a coordinator which merges writes the
+            marker of its merge; None writes none.
+        merges: Whether a coordinator which merges writes the marker.
     """
 
     def __init__(
@@ -100,8 +106,13 @@ class FakeBackend:
         self._status: dict[str, BackendStatus] = {}
         self._submitted: dict[str, float] = {}
         self._placed: list[Placement] = []
+        # the outputs of the tasks whose coordinator merges, by workflow and node
+        self._merging: dict[str, dict[str, Path]] = {}
+        self.store: Path | None = None
+        self.merges = True
 
     runs_images = True
+    extra_workers = True
 
     def subscribe(self, callback: Callable[[], None]) -> None:
         """Remember the callback in `subscribed`; the fake never calls it."""
@@ -126,6 +137,11 @@ class FakeBackend:
                 self.calls.append(("submit", name))
                 return name
             self.manifests[name] = manifest
+            self._merging[name] = {
+                f"{task.id}-w0": Path("runs", record.id, "tasks", task.id, "out")
+                for task in record.workflow.tasks
+                if types[task.type].splittable and plans[task.id].coordinator_merges
+            }
             self._status[name] = BackendStatus(phase="Pending", tasks={})
             self._submitted[name] = time.monotonic()
             self.calls.append(("submit", name))
@@ -148,6 +164,17 @@ class FakeBackend:
         status = self._status[name]
         status.phase = phase
         status.tasks = dict.fromkeys(dag_nodes(self.manifests[name]), phase)
+        for node in status.tasks:
+            self._merged(name, node, phase)
+
+    def _merged(self, name: str, node: str, phase: str) -> None:
+        """Write the marker of a merge of a coordinator which merges and succeeded."""
+        out = self._merging.get(name, {}).get(node)
+        if phase != "Succeeded" or out is None or self.store is None:
+            return
+        if self.merges:
+            (self.store / out).mkdir(parents=True, exist_ok=True)
+            (self.store / out / MERGED_MARKER).touch()
 
     def start(self, name: str) -> None:
         """Set every node of a workflow running."""
@@ -163,6 +190,7 @@ class FakeBackend:
         """Set the phase of one node."""
         with self._lock:
             self._status[name].tasks[node] = phase
+            self._merged(name, node, phase)
 
     def fail(self, name: str, node: str) -> None:
         """Fail a node, given by its name or by a task id (its coordinator `-w0`)."""

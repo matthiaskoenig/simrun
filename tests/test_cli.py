@@ -167,3 +167,37 @@ def test_cli_outputs_lists_and_extracts(cli, service, tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     assert (to / "squares/0.json").read_text() == '{"i": 0}'
     assert cli("outputs", run_id, "nope").exit_code == 1
+
+
+def test_the_live_table_ticks_between_events(service, monkeypatch) -> None:
+    import io
+    import time
+
+    from rich.console import Console
+
+    from simrun.store import TaskState
+
+    run_id = service.submit()["id"]
+    record = service.store.read(run_id)
+    running = record.model_copy(update={"tasks": {"squares": TaskState.RUNNING}})
+    screen = io.StringIO()
+    monkeypatch.setattr(
+        simrun.cli, "console", Console(file=screen, force_terminal=True, width=80)
+    )
+    seen: list[str] = []
+
+    class Client:
+        def wait_live(self, run_id, callback, timeout) -> None:
+            callback({"run": running, "progress": {}})
+            time.sleep(1.4)  # no event: the table is drawn again by itself
+            seen.append(screen.getvalue())
+
+    simrun.cli._follow(Client(), run_id, None, False)  # ty: ignore[invalid-argument-type]
+    assert "1 s" in seen[0]
+
+
+def test_timeout_without_waiting_is_refused(cli, service, tmp_path: Path) -> None:
+    result = cli("submit", str(_workflow(tmp_path / "wf.yaml")), "--timeout", "5")
+    assert result.exit_code == 1
+    assert "--timeout needs --wait" in result.output
+    assert service.get("/runs").json() == []
