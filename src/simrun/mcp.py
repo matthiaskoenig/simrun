@@ -40,7 +40,12 @@ def _plain(value: Any) -> Any:
 
 
 def build_server(client: Client) -> FastMCP:
-    """The MCP server whose tools call the service through `client`."""
+    """The MCP server whose tools call the service through `client`.
+
+    Every answer carries `store`, the path of the store as mounted locally; it is
+    null for a client without a mounted store (the local service without
+    snapshots).
+    """
     server = FastMCP("simrun")
     store = None if client.store is None else str(client.store.resolve())
 

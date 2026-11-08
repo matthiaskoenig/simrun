@@ -235,3 +235,29 @@ def test_provenance_hash_follows_the_content(repo: Path) -> None:
     assert not before.dirty
     (repo / "a.py").write_text("a = 3\n")
     assert provenance(repo, "proj").diff_sha256 != before.diff_sha256
+
+
+def test_hash_of_a_tree_is_the_one_of_release_0_1_0(tmp_path: Path) -> None:
+    # the value of the `_tree_hash` of 0.1.0 for this tree with read-only files
+    pinned = "517bc4fde6ab69c9a211afa22e867b03c7530df1f814a6da7088bd572d0f5e90"
+    repo = tmp_path / "pin"
+    for rel, text in {
+        "b.txt": "1\n",
+        "a.txt": "2\n",
+        "sub/x.py": "3\n",
+        "sub/deep/y": "4\n",
+        "a/z": "5\n",
+        "run.sh": "#!/bin/sh\n",
+    }.items():
+        (repo / rel).parent.mkdir(parents=True, exist_ok=True)
+        (repo / rel).write_text(text)
+    (repo / "run.sh").chmod(0o755)
+    (repo / "link").symlink_to("sub/x.py")
+    (repo / "dirlink").symlink_to("sub")
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "a@b.c")
+    git(repo, "config", "user.name", "T")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "init")
+    assert provenance(repo, "pin").diff_sha256 == pinned
+    assert snapshot(repo, tmp_path / "store", "pin").diff_sha256 == pinned
