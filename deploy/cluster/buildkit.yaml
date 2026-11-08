@@ -1,7 +1,9 @@
 # BuildKit, rootless: the images of the environments of the runs are built by a Job
 # of the service (`ArgoBackend.build_image`) whose `buildctl` sends the build context
 # to this daemon and pushes the image to the registry, with the credentials of the
-# optional Secret `simrun-registry-auth` (a docker `config.json`).
+# optional Secret `simrun-registry-auth` (a docker `config.json`). Its state, the
+# layers and the cache of uv of the builds, is a volume which outlives the pod, so a
+# build after a restart reuses them.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -19,6 +21,9 @@ metadata:
   namespace: simrun
 spec:
   replicas: 1
+  # the state is a volume of one node, which one pod at a time mounts
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: buildkitd
@@ -78,7 +83,21 @@ spec:
           configMap:
             name: buildkitd-config
         - name: state
-          emptyDir: {}
+          persistentVolumeClaim:
+            claimName: buildkitd-state
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: buildkitd-state
+  namespace: simrun
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 50Gi
 ---
 apiVersion: v1
 kind: Service

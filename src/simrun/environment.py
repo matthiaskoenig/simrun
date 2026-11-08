@@ -354,6 +354,12 @@ def image_ref(env: Environment, registry: str, dockerfile_text: str) -> str:
     return f"{registry}/simrun-env:{digest.hexdigest()[:16]}"
 
 
+# the cache of uv in a build: a cache of BuildKit, kept between the builds and outside
+# of the image, so a build downloads only the wheels an earlier one did not
+UV_CACHE = "/root/.cache/uv"
+_UV_RUN = (
+    f"RUN --mount=type=cache,id=simrun-uv,target={UV_CACHE} UV_CACHE_DIR={UV_CACHE}"
+)
 # a requirement locked from a git repository, e.g. `pkpdsim @ git+https://...`
 GIT_REQUIREMENT = re.compile(r"@ git\+", re.MULTILINE)
 
@@ -365,6 +371,11 @@ def dockerfile(
     system_packages: Sequence[str] = (),
 ) -> str:
     """Dockerfile of the image: the dependencies, build backends and `simrun`, no source.
+
+    The packages are installed with their bytecode compiled, so a pod does not
+    compile the modules it imports, and with the downloads of uv in a cache of
+    BuildKit (`UV_CACHE`), so a build after a change of a dependency downloads only
+    what changed. `simrun` is the last layer: a new harness rebuilds only it.
 
     The pinned requirements are written with a heredoc, so no source is copied from the
     build context. The model and the libraries are installed at pod start.
@@ -397,8 +408,9 @@ def dockerfile(
         "RUN cat > /tmp/requirements.txt <<'SIMRUN_REQUIREMENTS'\n"
         f"{env.requirements.rstrip()}\n"
         "SIMRUN_REQUIREMENTS\n"
-        "RUN uv pip install --no-deps -r /tmp/requirements.txt "
-        "&& rm /tmp/requirements.txt\n"
+        f"{_UV_RUN} uv pip install --no-deps --compile-bytecode "
+        "-r /tmp/requirements.txt && rm /tmp/requirements.txt\n"
         f"COPY {wheel} /tmp/{wheel}\n"
-        f"RUN uv pip install --no-deps /tmp/{wheel} && rm /tmp/{wheel}\n"
+        f"{_UV_RUN} uv pip install --no-deps --compile-bytecode /tmp/{wheel} "
+        f"&& rm /tmp/{wheel}\n"
     )

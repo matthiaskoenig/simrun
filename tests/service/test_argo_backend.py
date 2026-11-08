@@ -879,3 +879,34 @@ def test_a_second_subscription_shares_the_watch(
     assert done.wait(5)
     created.join_watch(5)
     assert (first, second, len(streams)) == ([1], [1], 1)
+
+
+def test_a_cut_watch_starts_again_at_once(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    # a connection the API server ends (IncompleteRead under load) is no failure:
+    # the watch starts again without the wait and without a traceback
+    from urllib3.exceptions import ProtocolError
+
+    created, _ = _fake_backend()
+    streams: list[tuple[tuple, dict]] = []
+    done = threading.Event()
+
+    def last_round() -> Any:
+        yield {"type": "MODIFIED"}
+        created.close()
+        done.set()
+
+    rounds: list[Any] = [ProtocolError("Connection broken"), last_round()]
+    monkeypatch.setattr(argo_backend, "Watch", lambda: FakeWatch(rounds, streams))
+    monkeypatch.setattr(argo_backend, "WATCH_RETRY_S", 30.0)
+    woken: list[int] = []
+    with caplog.at_level("INFO", logger="simrun.service.argo_backend"):
+        created.subscribe(lambda: woken.append(1))
+        assert done.wait(5)
+        created.join_watch(5)
+    assert woken == [1]
+    assert "was cut" in caplog.text
+    assert "Traceback" not in caplog.text and not any(
+        r.exc_info for r in caplog.records
+    )

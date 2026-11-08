@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from simrun.environment import (
+    UV_CACHE,
     BUILD_CONSTRAINTS,
     Environment,
     dockerfile,
@@ -190,7 +191,7 @@ def test_dockerfile_has_no_source(tmp_path: Path) -> None:
     assert text.startswith(f"FROM {base}\n")
     assert text.count("COPY") == 1
     assert "COPY simrun-0.1.0.whl " in text
-    assert "--no-deps /tmp/simrun-0.1.0.whl" in text
+    assert "--no-deps --compile-bytecode /tmp/simrun-0.1.0.whl" in text
     assert "uv pip install simrun" not in text
     assert "snap/" not in text
     assert "file://" not in text
@@ -364,3 +365,17 @@ def test_dockerfile_installs_git_for_a_git_dependency(tmp_path: Path) -> None:
     install = next(line for line in text.splitlines() if "apt-get" in line)
     assert "--no-install-recommends libexpat1 git " in install
     assert dockerfile(with_git, "reg:5000/uv:1", "w.whl").count("apt-get install") == 1
+
+
+def test_dockerfile_compiles_bytecode_and_caches_the_downloads(tmp_path: Path) -> None:
+    # a pod imports from bytecode compiled in the image, not compiled anew in every
+    # pod (about 20 s for the scientific stack); the wheels uv downloads stay in a
+    # cache of BuildKit, outside of the image, for the next build
+    store, model, libs = _make(tmp_path, [])
+    text = dockerfile(_resolve(store, model, libs), "reg:5000/uv:1", "w.whl")
+    installs = [line for line in text.splitlines() if "uv pip install" in line]
+    assert len(installs) == 2
+    for line in installs:
+        assert "--compile-bytecode" in line
+        assert line.startswith(f"RUN --mount=type=cache,id=simrun-uv,target={UV_CACHE}")
+    assert f"UV_CACHE_DIR={UV_CACHE}" in text

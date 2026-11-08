@@ -52,6 +52,7 @@ from kubernetes.client.exceptions import ApiException
 from kubernetes.config.config_exception import ConfigException
 from kubernetes.utils import parse_quantity
 from kubernetes.watch import Watch
+from urllib3.exceptions import ProtocolError, ReadTimeoutError
 
 from simrun.argo import CONTAINER, GPU_RESOURCE, RESERVED_KEY, RUN_LABEL, to_argo
 from simrun.config import ClusterConfig
@@ -500,6 +501,9 @@ class ArgoBackend:
                     self._notify()
                     if self._closed.is_set():
                         break
+            except (ProtocolError, ReadTimeoutError) as error:
+                # the API server or a proxy ended the connection: watch on at once
+                logger.info("the watch of the workflows was cut (%s), again", error)
             except Exception:
                 logger.warning(
                     "the watch of the workflows failed, it starts again in %s s",

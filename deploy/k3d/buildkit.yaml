@@ -18,10 +18,12 @@ spec:
     spec:
       containers:
         - name: buildkitd
+          # on the server node, which has the cores and the memory of the host: the
+          # bytecode of an environment compiles in parallel
           resources:
             requests:
-              cpu: "1"
-              memory: 1Gi
+              cpu: "4"
+              memory: 4Gi
             limits:
-              cpu: "1"
-              memory: 1Gi
+              cpu: "4"
+              memory: 4Gi
