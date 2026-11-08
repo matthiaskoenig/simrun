@@ -1,7 +1,8 @@
 # Argo Workflows v4.1.6, the namespaced install (`namespace-install.yaml`, the release
 # manifest, unchanged) in the namespace `simrun`, without an archive; the executor
 # containers request what they limit, since Kueue counts every container of a pod;
-# the service account of the workflows (`ClusterConfig.service_account`).
+# the service account of the workflows (`ClusterConfig.service_account`); the requeue
+# time of the controller (`requeue.yaml`).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 namespace: simrun
@@ -10,3 +11,4 @@ resources:
   - workflow-rbac.yaml
 patches:
   - path: controller-config.yaml
+  - path: requeue.yaml
