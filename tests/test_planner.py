@@ -59,10 +59,6 @@ def test_fastest_pieces():
     assert _plan().pods == MAX_PIECES
 
 
-def test_fewer_units_than_pieces():
-    assert _plan(units=3).pods == 3
-
-
 def test_single_server():
     assert _plan(mode=SplitMode.SINGLE_SERVER).pods == 1
 
@@ -194,3 +190,58 @@ def test_unsplit_plugin_task_which_uses_the_cores_of_its_pod():
         None,
     )
     assert (p.shape.cores, p.shape.processes) == (36, 36)
+
+
+def _learned(seconds_per_unit: float) -> ResolvedResources:
+    return ResolvedResources(2.0, 5.1, 0.0, 0, seconds_per_unit, 3, "learned")
+
+
+def _plan_learned(seconds_per_unit, units=400, **kw):
+    return plan_task(
+        _spec(),
+        _type(),
+        _learned(seconds_per_unit),
+        NODES,
+        SplitMode.FASTEST,
+        Priority.OWNER,
+        units,
+        **kw,
+    )
+
+
+@pytest.mark.parametrize(
+    ("seconds_per_unit", "pods"),
+    # 400 units on 36 processes a pod: 11.1 s of work a pod per second of a unit
+    [(0.1, 1), (0.5, 1), (1.0, 1), (2.0, 2), (3.0, 3), (10.0, MAX_PIECES)],
+)
+def test_fastest_adds_a_pod_only_for_work_longer_than_its_start(seconds_per_unit, pods):
+    # every pod gets at least POD_START_S of work, else a pod would start when
+    # the others are nearly done and only hold cores
+    assert _plan_learned(seconds_per_unit).pods == pods
+
+
+def test_fastest_pod_start_of_the_cluster():
+    assert _plan_learned(1.0, pod_start_s=2.0).pods == 5
+    assert _plan_learned(1.0, pod_start_s=20.0).pods == 1
+
+
+def test_fastest_without_records_has_no_pod_without_units():
+    # 40 units fill two pods of 36 processes, a third pod would get none
+    assert _plan(units=40).pods == 2
+    assert _plan(units=36).pods == 1
+    assert _plan(units=1).pods == 1
+
+
+def test_single_server_ignores_the_work():
+    plan = _plan_learned(10.0, units=400)
+    assert plan.pods == MAX_PIECES
+    single = plan_task(
+        _spec(),
+        _type(),
+        _learned(10.0),
+        NODES,
+        SplitMode.SINGLE_SERVER,
+        Priority.OWNER,
+        400,
+    )
+    assert single.pods == 1

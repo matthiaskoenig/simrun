@@ -84,6 +84,7 @@ The service reads a YAML file named by `SIMRUN_CONFIG`, a `simrun.service.app.Se
 | `grace_s` | the seconds a worker has to stop after SIGTERM (60) |
 | `ttl_after_finished_s` | the seconds a finished workflow is kept (86400) |
 
+| `pod_start_s` | about the seconds from the creation of a pod to its first unit; a split task gets a further pod only while every pod has at least this much work (10), see [Split modes](concepts.md#split-modes) |
 To raise a pin of the build backends, edit `build_constraints.txt` (or point `build_constraints` at a file of your own) and redeploy the service; the images of the models which use the backend are built again.
 
 ## Environment variables

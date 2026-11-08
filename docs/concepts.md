@@ -59,7 +59,7 @@ An unsplit task is one pod which runs the command of its type through `simrun-ex
 
 ## Split modes
 
-`fastest` (the default) splits a task into as many pods as there are units and slots on the nodes, at most eight (`MAX_PIECES`); each pod takes the processes its node allows by cores and memory. `single-server` places one pod on one server. The mode is set for the workflow, for a task or for the submission (`--single-server`). Extra pods are not limited by the idle capacity: Kueue queues them until a node is free.
+`fastest` (the default) splits a task into as many pods as there are slots on the nodes, at most eight (`MAX_PIECES`) and no pod without a unit for each of its processes; each pod takes the processes its node allows by cores and memory. Once the seconds of a unit are learned, a task gets a further pod only while every pod still has at least `pod_start_s` (10) of work: a pod which takes longer to start than its share of the work would find the units taken by the others and only hold cores. `single-server` places one pod on one server. The mode is set for the workflow, for a task or for the submission (`--single-server`). Extra pods are not limited by the idle capacity: Kueue queues them until a node is free.
 
 ## Priorities and preemption
 

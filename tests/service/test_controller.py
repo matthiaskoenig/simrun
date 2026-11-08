@@ -7,7 +7,7 @@ import pytest
 from simrun.demo import SQUARES
 from simrun.planner import PodShape, TaskPlan
 from simrun.plugins_builtin import COMMAND
-from simrun.resources import GIB, ResourceKey, ResourceStore
+from simrun.resources import GIB, ResourceKey, ResourceStore, resource_key
 from simrun.service import controller as controller_module
 from simrun.service.backend import BackendStatus
 from simrun.service.controller import (
@@ -23,7 +23,8 @@ from simrun.worker import MERGED_MARKER, WorkerReport, write_report
 from simrun.workflow import Workflow
 
 TYPES = {SQUARES.name: SQUARES}
-KEY = ResourceKey("demo.squares", "", "")
+# the key of the squares of `service.workflow()`, sleep_s 0 its variant
+KEY = resource_key(SQUARES, {"n": 4}, "")
 
 
 def _report(worker: str, peak_gb: float, limit_gb: float = 8.0) -> WorkerReport:

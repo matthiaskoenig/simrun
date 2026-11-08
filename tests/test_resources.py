@@ -215,3 +215,14 @@ def test_seconds_per_unit_is_the_time_of_a_unit_in_a_process(tmp_path: Path) -> 
     )
     store.record(KEY, done, base_gb=2.0)
     assert store.resolve(KEY, ResourceHint(), None).seconds_per_unit == 10.0
+
+
+def test_the_demo_learns_per_sleep() -> None:
+    # the seconds of a unit of demo.squares are its sleep, so the observations of
+    # one sleep do not size the split of another
+    from simrun.demo import SQUARES
+
+    fast = resource_key(SQUARES, {"n": 200, "sleep_s": 0.2}, "")
+    slow = resource_key(SQUARES, {"n": 600, "sleep_s": 0.4}, "")
+    assert fast != slow
+    assert fast == resource_key(SQUARES, {"n": 9, "sleep_s": 0.2}, "")
