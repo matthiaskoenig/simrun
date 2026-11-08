@@ -16,7 +16,7 @@ simrun outputs <run> <task> --to results
 
 ## The service of a project
 
-The local service keeps everything in `.simrun/` of the current directory, like `.venv`: the store (`runs/`, `snapshots/`, `scratch/`), the index, the generated tokens, `service.json`, `service.log` and a `.gitignore` of everything, so none of it lands in git. It listens on `127.0.0.1` on a free port only.
+The local service keeps everything in `.simrun/` of the current directory, like `.venv`: `store/` (`runs/`, `snapshots/`), `scratch/`, the index `simrun.sqlite`, the generated tokens `tokens.yaml`, `service.json`, `service.log` and a `.gitignore` of everything, so none of it lands in git. It listens on `127.0.0.1` on a free port only.
 
 A `--local` command starts the service in the background when none runs, waits for its `service.json` and uses it. The service exits after 30 minutes without a request and without a live run, and a stopped service is started again by the next command. `simrun serve --local` runs the service in the foreground instead and prints its address; Ctrl-C, SIGTERM or SIGHUP cancels the runs and waits for their processes, so no process of a run outlives the service. One service runs per directory. See [serve](command-line.md#serve) for the file `service.json` and the check of the instance before the token is sent.
 
@@ -34,7 +34,7 @@ The `LocalBackend` of the service runs the pods of a run as processes of this ma
 - a task starts when the tasks it reads from succeeded and its cores are free; the cores are shared by all runs of the service, in the order of submission, and a waiting task is `queued`
 - a process stopped from outside (no exit code, 137 or 143) is retried as on the cluster, a kill for memory with more memory. The harness limits its own memory where there is no cgroup
 
-The backend sets `SIMRUN_CORES` (the cores of the worker) and `SIMRUN_MEMORY_LIMIT_GB` (its memory, which the harness enforces itself without a cgroup) in the environment of a process. The scratch directories are in `.simrun/scratch/`, the logs of every process are in `.simrun/runs/<run>/tasks/<task>/logs/`, and `simrun logs` reads them as it does on the cluster.
+The backend sets `SIMRUN_CORES` (the cores of the worker) and `SIMRUN_MEMORY_LIMIT_GB` (its memory, which the harness enforces itself without a cgroup) in the environment of a process. The scratch directories are in `.simrun/scratch/`, the logs of every process are in `.simrun/store/runs/<run>/tasks/<task>/logs/`, and `simrun logs` reads them as it does on the cluster.
 
 ## Sources
 
@@ -51,7 +51,7 @@ Locally the sources are recorded, not copied: the provenance (branch, commit, un
 | reservations of nodes | yes | refused |
 | images | built with BuildKit per environment | none; a `command` may use its image with `--docker` |
 | sources | snapshots, installed in the image | provenance only, unless `--snapshot` |
-| store | shared drive, or uploads through the API | `.simrun/` |
+| store | shared drive, or uploads through the API | `.simrun/store/` |
 | extra workers of a split task | spread over idle servers | none, one worker with all cores |
 
 The records, logs and outputs have the layout of a cluster run, see [Concepts](concepts.md).
