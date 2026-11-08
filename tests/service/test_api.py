@@ -11,7 +11,8 @@ import pytest
 import yaml
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
-from simrun.resources import ResourceKey, ResourceStore
+from simrun.demo import SQUARES
+from simrun.resources import ResourceStore, resource_key
 from simrun.service import app as app_module
 from simrun.service import controller as controller_module
 from simrun.service.app import serve, unknown_settings
@@ -235,7 +236,8 @@ def test_estimate(service):
     assert response.status_code == 200, response.text
     squares = response.json()["squares"]
     assert squares["plan"]["units"] == 100
-    assert squares["plan"]["pods"] == 8
+    # 100 units fill 3 pods of 36 processes, no pod is left without units
+    assert squares["plan"]["pods"] == 3
     assert squares["resources"]["source"] == "plugin hint"
     assert squares["seconds"] is None
     single = {
@@ -265,7 +267,7 @@ def test_estimate_from_records(service):
         unit_seconds=3600.0,
     )
     resources = ResourceStore(service.settings.db)
-    resources.record(ResourceKey("demo.squares", ""), report, base_gb=0.5)
+    resources.record(resource_key(SQUARES, {"n": 360}, ""), report, base_gb=0.5)
     single = {
         "workflow": service.workflow(n=360, resources={"memory_per_worker_gb": 4.0}),
         "sources": [],

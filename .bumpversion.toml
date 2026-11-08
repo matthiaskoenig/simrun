@@ -22,3 +22,30 @@ filename = "./src/simrun/__init__.py"
 
 [[tool.bumpversion.files]]
 filename = "./CITATION.cff"
+
+# the image of the service and the wheel it carries, in its manifest, its Dockerfile
+# and the documentation of the deployment (`tests/test_version.py`)
+[[tool.bumpversion.files]]
+filename = "./deploy/cluster/simrun.yaml"
+search = "simrun-service:{current_version}"
+replace = "simrun-service:{new_version}"
+
+[[tool.bumpversion.files]]
+filename = "./deploy/cluster/simrun.yaml"
+search = "simrun-{current_version}-py3-none-any.whl"
+replace = "simrun-{new_version}-py3-none-any.whl"
+
+[[tool.bumpversion.files]]
+filename = "./deploy/service/Dockerfile"
+search = "simrun-{current_version}-py3-none-any.whl"
+replace = "simrun-{new_version}-py3-none-any.whl"
+
+[[tool.bumpversion.files]]
+filename = "./docs/deployment.md"
+search = "simrun-service:{current_version}"
+replace = "simrun-service:{new_version}"
+
+[[tool.bumpversion.files]]
+filename = "./docs/deployment.md"
+search = "simrun-{current_version}-py3-none-any.whl"
+replace = "simrun-{new_version}-py3-none-any.whl"

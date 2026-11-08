@@ -251,8 +251,9 @@ class ServiceSettings(BaseModel):
         tokens: YAML file of the tokens, see `simrun.service.auth.load_tokens`.
         owner: The person who owns the cluster; their runs have the top priority.
         cluster: The cluster.
-        poll_s: Seconds between two reconciliations of the controller, and
-            between two checks of an event stream.
+        poll_s: Seconds between two reconciliations of the controller when no
+            change of the backend woke it before.
+        events_poll_s: Seconds between two checks of an event stream.
         events_max_s: Seconds after which an event stream ends and the client
             reconnects.
         default_image: Image of a run whose model has no `pyproject.toml`.
@@ -275,6 +276,7 @@ class ServiceSettings(BaseModel):
     owner: str
     cluster: ClusterConfig
     poll_s: float = 5.0
+    events_poll_s: float = 0.5
     events_max_s: float = 300.0
     default_image: str | None = None
     simrun_wheel: Path | None = None
@@ -821,7 +823,14 @@ class _Service:
                 mode = SplitMode.SINGLE_SERVER
             try:
                 plan = plan_task(
-                    task, task_type, resources, nodes, mode, priority, units
+                    task,
+                    task_type,
+                    resources,
+                    nodes,
+                    mode,
+                    priority,
+                    units,
+                    self.settings.cluster.pod_start_s,
                 )
             except PlanError as error:
                 raise HTTPException(422, f"task {task.id!r}: {error}") from error
@@ -1422,7 +1431,7 @@ async def _stream(
 
     Args:
         request: The request, whose disconnect ends the stream.
-        settings: The settings, `poll_s` and `events_max_s`.
+        settings: The settings, `events_poll_s` and `events_max_s`.
         compute: Returns the JSON text of every event by name and whether the
             stream is complete after them; it runs in a thread.
 
@@ -1454,7 +1463,7 @@ async def _stream(
         if time.monotonic() - last_sent >= KEEP_ALIVE_S:
             last_sent = time.monotonic()
             yield ": keep-alive\n\n"
-        await asyncio.sleep(settings.poll_s)
+        await asyncio.sleep(settings.events_poll_s)
         if await request.is_disconnected():
             return
 

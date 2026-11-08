@@ -56,7 +56,8 @@ The service reads a YAML file named by `SIMRUN_CONFIG`, a `simrun.service.app.Se
 | `tokens` | the YAML file of the tokens, see above |
 | `owner` | the person who owns the cluster: their runs and their agents' get the top priority |
 | `cluster` | the cluster, a `ClusterConfig`, see below |
-| `poll_s` | seconds between two reconciliations of the controller and between two checks of an event stream (5) |
+| `poll_s` | seconds between two reconciliations of the controller when no change of a workflow woke it before (5) |
+| `events_poll_s` | seconds between two checks of an event stream (0.5) |
 | `events_max_s` | seconds after which an event stream ends and the client connects again (300) |
 | `default_image` | the image of a run whose model has no `pyproject.toml` |
 | `simrun_wheel` | the simrun wheel the images of the environments install |
@@ -84,6 +85,7 @@ The service reads a YAML file named by `SIMRUN_CONFIG`, a `simrun.service.app.Se
 | `buildctl_image` | the image of the job which sends a build to BuildKit |
 | `grace_s` | the seconds a worker has to stop after SIGTERM (60) |
 | `ttl_after_finished_s` | the seconds a finished workflow is kept (86400) |
+| `pod_start_s` | about the seconds from the creation of a pod to its first unit; a split task gets a further pod only while every pod has at least this much work (10), see [Split modes](concepts.md#split-modes) |
 
 To raise a pin of the build backends, edit `build_constraints.txt` (or point `build_constraints` at a file of your own) and redeploy the service; the images of the models which use the backend are built again.
 
@@ -105,4 +107,4 @@ To raise a pin of the build backends, edit `build_constraints.txt` (or point `bu
 
 ## The controller
 
-The controller reconciles every `poll_s` seconds: it reads the records of the live runs from the index, the states of their workflows from the backend, records the states of the tasks and the kills for memory, records the reports of the workers as resource observations once a task is final, keeps the logs of the pods in the store, and ends a run when every task is done or one failed. It keeps no state in memory, so a restarted service continues where the one before stopped. A release of a reserved node or a cancellation of a workflow which fails stays in the record and is retried at the next polls.
+The controller reconciles whenever a workflow of a run changed (the backend watches the workflows; the local backend reports the start and end of every process) and every `poll_s` seconds otherwise: it reads the records of the live runs from the index, the states of their workflows from the backend, records the states of the tasks and the kills for memory, records the reports of the workers as resource observations once a task is final, keeps the logs of the pods in the store, and ends a run when every task is done or one failed. It keeps no state in memory, so a restarted service continues where the one before stopped. A release of a reserved node or a cancellation of a workflow which fails stays in the record and is retried at the next polls.

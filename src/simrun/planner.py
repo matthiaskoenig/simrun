@@ -5,6 +5,7 @@ import math
 from collections import Counter
 from dataclasses import dataclass
 
+from simrun.config import POD_START_S
 from simrun.plugins import TaskType
 from simrun.plugins_builtin import COMMAND, CommandSettings
 from simrun.resources import GIB, RETRY_FACTOR, ResolvedResources
@@ -273,8 +274,15 @@ def plan_task(
     mode: SplitMode,
     priority: Priority,
     units: int | None,
+    pod_start_s: float = POD_START_S,
 ) -> TaskPlan:
     """Plans the pods of a task.
+
+    A split task of the mode `fastest` gets at most `MAX_PIECES` pods, as many as
+    fit on the nodes, and no pod without a unit for each of its processes. With the
+    learned seconds of a unit it gets a further pod only while every pod still has
+    at least `pod_start_s` of work: a pod which takes longer to start than its share
+    of the work would find the units taken by the others and only hold cores.
 
     Args:
         task: The task.
@@ -284,6 +292,7 @@ def plan_task(
         mode: The split mode.
         priority: The priority of the run.
         units: The number of units, None for an unsplit task.
+        pod_start_s: About the seconds a pod takes to start on the cluster.
 
     Returns:
         The plan; extra pods are not limited by idle capacity, Kueue queues them.
@@ -303,7 +312,11 @@ def plan_task(
     pod = shape(resources, nodes)
     pods = 1
     if mode == SplitMode.FASTEST and units is not None:
-        pods = min(MAX_PIECES, units, _slots(pod, nodes))
+        pods = min(MAX_PIECES, _slots(pod, nodes), math.ceil(units / pod.processes))
+        if resources.seconds_per_unit is not None:
+            # the wall time of the work on one pod, in seconds
+            work_s = resources.seconds_per_unit * units / pod.processes
+            pods = min(pods, math.floor(work_s / pod_start_s))
     return TaskPlan(
         task.id, max(1, pods), pod, base, extra, units, coordinator_merges=True
     )

@@ -655,12 +655,12 @@ def wait_for_pool(process: subprocess.Popen[bytes], claimed: Path) -> set[int]:
         assert process.poll() is None
         assert time.monotonic() < deadline
         time.sleep(0.05)
-        if not (claimed.exists() and os.listdir(claimed)):
+        # one listing: a unit which ends between two would leave both empty
+        units = os.listdir(claimed) if claimed.exists() else []
+        if not units:
             continue
         running = {p for c in children(process.pid) for p in children(c)}
-        if len(running) == len(os.listdir(claimed)) and all(
-            ignores_sigint(p) for p in running
-        ):
+        if len(running) == len(units) and all(ignores_sigint(p) for p in running):
             return running
 
 
@@ -674,7 +674,11 @@ def wait_ended(pids: set[int]) -> None:
 @pytest.mark.skipif(not Path("/proc").is_dir(), reason="reads /proc")
 def test_sigterm_to_the_process_group_keeps_the_grace(tmp_path: Path) -> None:
     process, task_dir = start_main(
-        tmp_path, SquaresSettings(n=20, sleep_s=1.0), new_session=True
+        # units longer than the poll of a loaded machine, so the signal reaches
+        # the worker while they run, not after it ended
+        tmp_path,
+        SquaresSettings(n=20, sleep_s=4.0),
+        new_session=True,
     )
     claimed = task_dir / "units" / "claimed"
     pool: set[int] = set()
@@ -697,7 +701,9 @@ def test_sigterm_to_the_process_group_keeps_the_grace(tmp_path: Path) -> None:
 
 @pytest.mark.skipif(not Path("/proc").is_dir(), reason="reads /proc")
 def test_killed_pool_process_exits_137(tmp_path: Path) -> None:
-    process, task_dir = start_main(tmp_path, SquaresSettings(n=20, sleep_s=1.0))
+    # units longer than the poll of a loaded machine, so a pool process is killed
+    # while its unit runs, not after the worker ended
+    process, task_dir = start_main(tmp_path, SquaresSettings(n=20, sleep_s=4.0))
     claimed = task_dir / "units" / "claimed"
     pool: set[int] = set()
     try:

@@ -7,7 +7,7 @@
 | namespace | `namespace.yaml` | the namespace `simrun` of the service, the workflows and their pods |
 | priorities | `priority-classes.yaml` | the six priority classes of simrun, each a Kueue `WorkloadPriorityClass` and a Kubernetes `PriorityClass` of the same value, see [Priorities and preemption](concepts.md#priorities-and-preemption) |
 | Kueue v0.20.5 | `kueue/` | the release manifests, committed unchanged, and the queue: a `Topology` by host, a `ResourceFlavor` over the nodes labelled `simrun/worker=true`, the `ClusterQueue` `simrun`, which preempts lower priorities, and the `LocalQueue` `simrun` |
-| Argo Workflows v4.1.6 | `argo/` | the release manifests of a namespace install, committed unchanged, the configuration of the controller, its requeue time of 2 s instead of 10 s (`requeue.yaml`, so a run shows running soon after its pods start) and the service account `simrun-workflow` of the pods |
+| Argo Workflows v4.1.6 | `argo/` | the release manifests of a namespace install, committed unchanged, the configuration of the controller, its requeue time of 1 s instead of 10 s (`requeue.yaml`, so a run shows running soon after its pods start and the next task of the DAG starts about a second after the one before it) and the service account `simrun-workflow` of the pods |
 | run store | `store-settings.yaml`, `store.yaml` | the run store on NFS (csi-driver-nfs), mounted by the service and every pod with `nfsvers=4.2` and `lookupcache=positive` |
 | registry | `zot.yaml` | [Zot](https://zotregistry.dev), the image registry inside the network |
 | builds | `buildkit.yaml` | the BuildKit daemon, which builds the images of the environments |
@@ -43,7 +43,7 @@ The manifests carry the values of the cluster of the design. A setup replaces th
 | `registry.cluster.internal:5000` | `zot.yaml`, `buildkit.yaml`, `simrun.yaml`, `deploy/service/Dockerfile` | the address of the registry as the nodes and BuildKit name it |
 | `owner: mk` | `simrun.yaml`, ConfigMap `simrun-config` | the person who owns the cluster |
 | `{}` | `simrun.yaml`, Secret `simrun-tokens` | the tokens of the people and agents, see [Authentication](service.md#authentication) |
-| `simrun-service:0.1.0`, `simrun-0.1.0-py3-none-any.whl` | `simrun.yaml` | the image of the service and the wheel of simrun it carries, see below |
+| `simrun-service:0.2.0`, `simrun-0.2.0-py3-none-any.whl` | `simrun.yaml` | the image of the service and the wheel of simrun it carries, see below |
 | `nominalQuota` of cpu, memory, GPUs and ephemeral storage | `kueue/queues.yaml` | the allocatable resources of the worker nodes |
 
 The Service `simrun` (port 80) is reached by the clients, e.g. through an ingress or a DNS name of the network; the examples of this documentation use `http://simrun.cluster.internal`. The development server of the agents mounts the run store, e.g. at `/mnt/cluster`, which is `SIMRUN_STORE` of the clients.
@@ -63,9 +63,9 @@ cp ~/git/sbmlsim/dist/sbmlsim-*.whl build/service/plugins/   # the plugins
 (cd frontend && npm ci && npm run build)                     # the web app
 rm -rf build/service/web && cp -r frontend/dist build/service/web
 cp deploy/service/Dockerfile build/service/
-docker build -t registry.cluster.internal:5000/simrun-service:0.1.0 \
-    --build-arg WHEEL=simrun-0.1.0-py3-none-any.whl build/service
-docker push registry.cluster.internal:5000/simrun-service:0.1.0
+docker build -t registry.cluster.internal:5000/simrun-service:0.2.0 \
+    --build-arg WHEEL=simrun-0.2.0-py3-none-any.whl build/service
+docker push registry.cluster.internal:5000/simrun-service:0.2.0
 ```
 
 The plugins are installed with their dependencies at the versions of the lock of simrun (`constraints.txt`): a plugin which needs another version of a dependency of simrun fails the build instead of moving it. The base (`--build-arg BASE`) is the base image of the environments in the registry, which the registry mirrors with its digest (`ClusterConfig.base_image`). At runtime the service keeps the cache of uv in `/var/cache/uv`, a volume of the deployment, so a submission does not download the metadata and the build backends again.
