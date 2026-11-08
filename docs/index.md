@@ -1,5 +1,5 @@
 # simrun: simulation workflows on a k3s cluster
-[![CI-CD](https://github.com/matthiaskoenig/simrun/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/matthiaskoenig/simrun/actions/workflows/ci-cd.yml) [![Documentation](https://img.shields.io/badge/docs-simrun-3f51b5.svg)](https://matthiaskoenig.github.io/simrun) [![Version](https://img.shields.io/pypi/v/simrun.svg)](https://pypi.org/project/simrun/) [![Python Versions](https://img.shields.io/pypi/pyversions/simrun.svg)](https://pypi.org/project/simrun/) [![MIT License](https://img.shields.io/pypi/l/simrun.svg)](https://opensource.org/licenses/MIT) [![DOI](https://img.shields.io/badge/DOI-after%20the%20first%20release-lightgrey.svg)](development.md#pypi-and-zenodo)
+[![CI-CD](https://github.com/matthiaskoenig/simrun/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/matthiaskoenig/simrun/actions/workflows/ci-cd.yml) [![Documentation](https://img.shields.io/badge/docs-simrun-3f51b5.svg)](https://matthiaskoenig.github.io/simrun) [![Version](https://img.shields.io/pypi/v/simrun.svg)](https://pypi.org/project/simrun/) [![Python Versions](https://img.shields.io/pypi/pyversions/simrun.svg)](https://pypi.org/project/simrun/) [![MIT License](https://img.shields.io/pypi/l/simrun.svg)](https://opensource.org/licenses/MIT) [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24035618.svg)](https://doi.org/10.5281/zenodo.24035618)
 
 `simrun` runs simulation workflows on a small cluster of servers with [k3s](https://k3s.io), [Argo Workflows](https://argoproj.github.io/workflows/) and [Kueue](https://kueue.sigs.k8s.io). A workflow is a YAML file of tasks which read the outputs of other tasks. People and agents submit it together with the working trees of their model and their libraries, uncommitted changes included, and get a run id at once; the run is queued, placed, executed and recorded without the submitter staying connected, and its results and provenance stay in a shared run store. The source code is on [GitHub](https://github.com/matthiaskoenig/simrun).
 
@@ -48,6 +48,14 @@ The task runs as up to eight pods on as many servers, which claim the units from
 ## Questions and issues
 
 If you have any questions or issues please [open an issue](https://github.com/matthiaskoenig/simrun/issues). Contributions are welcome, see [Development](development.md).
+
+## How to cite
+
+If you use `simrun` please cite the archived software on Zenodo:
+
+> König, M. *simrun: a runner of simulation workflows on a k3s cluster*. Zenodo. [https://doi.org/10.5281/zenodo.24035618](https://doi.org/10.5281/zenodo.24035618)
+
+This DOI stands for every version of `simrun`; the DOI of a single version is on its Zenodo page. The metadata of the citation are in [CITATION.cff](https://github.com/matthiaskoenig/simrun/blob/develop/CITATION.cff).
 
 ## License
 
