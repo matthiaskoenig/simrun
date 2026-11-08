@@ -43,6 +43,7 @@ from simrun.argo import RETRY_LIMIT, workflow_name
 from simrun.config import ClusterConfig
 from simrun.planner import Node, PodShape, TaskPlan
 from simrun.plugins import TaskType
+from simrun.plugins_builtin import CommandSettings
 from simrun.service import local_env
 from simrun.service.app import CONFIG_ENV, load_settings
 from simrun.service.backend import (
@@ -500,13 +501,16 @@ class LocalBackend:
                     "SIMRUN_STALE_S": str(cluster.grace_s + podspec.STALE_MARGIN_S),
                 }
             else:
-                command_image, argv = podspec.unsplit_command(
+                # a run of this backend has no image, a plugin type runs its
+                # command here and a `command` task its args, in its image
+                # with `docker run`
+                argv = podspec.unsplit_argv(
                     record, task, task_type, str(self.store), str(scratch)
                 )
                 if argv[0] == podspec.EXEC_COMMAND:
                     argv = [*EXEC_ARGV, *argv[1:]]
                 elif commands == "docker":
-                    image = command_image
+                    image = CommandSettings.model_validate(task.settings).image
             nodes[name] = _Node(
                 name=name,
                 task_id=task.id,
