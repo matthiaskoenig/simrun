@@ -18,12 +18,14 @@ spec:
     spec:
       containers:
         - name: buildkitd
-          # on the server node, which has the cores and the memory of the host: the
-          # bytecode of an environment compiles in parallel
+          # on the server node with the controllers: it requests one core, which
+          # a runner of continuous integration (four cores) leaves the others,
+          # and may use four of a larger host, where the bytecode of an
+          # environment compiles in parallel
           resources:
             requests:
-              cpu: "4"
-              memory: 4Gi
+              cpu: "1"
+              memory: 1Gi
             limits:
               cpu: "4"
               memory: 4Gi
