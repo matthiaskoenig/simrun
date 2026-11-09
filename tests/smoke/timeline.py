@@ -12,8 +12,8 @@ cluster, the free cores locally.
 On the local test system (`--k3d`) the pods of the run, while Argo keeps them, split
 the wait: `dag` from the end of the dependencies to the pod, `admit` from the pod
 to its admission by Kueue, `start` from the admission to the start of its main
-container (the image, Argo's init container); the jobs of BuildKit which ran
-during the submission give the build of the image.
+container (the image, Argo's init container). The record gives the seconds the
+service took to resolve the environment and to build the image when missing.
 
     uv run python tests/smoke/timeline.py RUN --store .tools/k3d/store --k3d
     uv run python tests/smoke/timeline.py RUN --store .tools/smoke/local/.simrun/store
@@ -49,8 +49,25 @@ class Task:
     prepare_s: float = 0.0
     cpu_s: float = 0.0
     throttled_s: float | None = None
+    merged: float | None = None
     processes: int = 0
     pods: list[dict] = field(default_factory=list)
+
+    @property
+    def finished(self) -> float | None:
+        """The end of the task: the end of its merge, else of its last worker."""
+        if self.ended is None:
+            return None
+        return max(self.ended, self.merged or self.ended)
+
+    @property
+    def merge_s(self) -> float:
+        """Seconds of the merge after the work of the coordinator."""
+        return (
+            0.0
+            if self.finished is None or self.ended is None
+            else self.finished - self.ended
+        )
 
     @property
     def work_s(self) -> float:
@@ -70,12 +87,12 @@ class Timeline:
     created: float
     finished: float | None
     tasks: dict[str, Task]
+    built: float | None = None
     workflow_created: float | None = None
-    builds: list[tuple[float, float]] = field(default_factory=list)
 
     def ready(self, task: Task) -> float:
         """When a task could start: the end of its dependencies, else the creation."""
-        ends = [self.tasks[d].ended for d in task.dependencies]
+        ends = [self.tasks[d].finished for d in task.dependencies]
         return max([self.created, *(e for e in ends if e is not None)])
 
 
@@ -111,6 +128,11 @@ def read(store: Path, run_id: str) -> Timeline:
             task.started = min(started, task.started or started)
             task.work_started = min(work_started, task.work_started or work_started)
             task.ended = max(ended, task.ended or ended)
+        # the coordinator of a split task merges after its report; the marker of
+        # the merge is written at its end
+        marker = run_dir / "tasks" / task.id / "out" / ".simrun-merged"
+        if marker.exists() and task.ended is not None:
+            task.merged = marker.stat().st_mtime
         tasks[task.id] = task
     return Timeline(
         run_id=run_id,
@@ -119,6 +141,7 @@ def read(store: Path, run_id: str) -> Timeline:
         created=_epoch(record["created"]),
         finished=_epoch(record["finished"]) if record.get("finished") else None,
         tasks=tasks,
+        built=_epoch(record["built"]) if record.get("built") else None,
     )
 
 
@@ -166,16 +189,17 @@ def add_k3d(timeline: Timeline) -> None:
                 )
                 if state and state.get("startedAt"):
                     times["main"] = _epoch(state["startedAt"])
+                if state and state.get("finishedAt"):
+                    times["finished"] = _epoch(state["finishedAt"])
         timeline.tasks[task_id].pods.append(times)
-    jobs = _kubectl("get", "jobs", "-o", "json")
-    end = timeline.workflow_created or timeline.created
-    for job in jobs.get("items", []):
-        status = job.get("status", {})
-        if not status.get("startTime") or not status.get("completionTime"):
-            continue
-        start, done = _epoch(status["startTime"]), _epoch(status["completionTime"])
-        if timeline.created - 5 <= start <= end:
-            timeline.builds.append((start, done))
+    for task in timeline.tasks.values():
+        # the reports of simrun 0.3.0 have no start: the main containers instead,
+        # whose work includes the preparation
+        mains = [p["main"] for p in task.pods if "main" in p]
+        ends = [p["finished"] for p in task.pods if "finished" in p]
+        if task.started is None and mains and ends:
+            task.started = task.work_started = min(mains)
+            task.ended = max(ends)
 
 
 def _offset(timeline: Timeline, value: float | None) -> str:
@@ -186,16 +210,19 @@ def show(timeline: Timeline) -> None:
     """Print the timeline: a row per task in the order of its start, and the totals."""
     total = (timeline.finished or timeline.created) - timeline.created
     print(f"{timeline.name} {timeline.run_id} {timeline.state} in {total:.0f} s")
-    if timeline.workflow_created is not None:
-        build = sum(done - start for start, done in timeline.builds)
-        submitted = timeline.workflow_created - timeline.created
-        print(f"  submission {submitted:.0f} s (image built in {build:.0f} s)")
+    if timeline.built is not None:
+        # the environment resolved and the image built when missing, then the
+        # workflow created
+        line = f"  environment and image {timeline.built - timeline.created:.0f} s"
+        if timeline.workflow_created is not None:
+            line += f", workflow {max(0.0, timeline.workflow_created - timeline.built):.0f} s"
+        print(line)
     k3d = any(t.pods for t in timeline.tasks.values())
     header = f"  {'task':16s} {'start':>6s} {'waited':>6s}"
     if k3d:
         header += f" {'dag':>5s} {'admit':>5s} {'start':>5s}"
     throttled = any(t.throttled_s is not None for t in timeline.tasks.values())
-    header += f" {'prep':>5s} {'work':>6s} {'end':>6s} {'cpu':>6s} {'procs':>5s}"
+    header += f" {'prep':>5s} {'work':>6s} {'merge':>5s} {'end':>6s} {'cpu':>6s} {'procs':>5s}"
     if throttled:
         header += f" {'thrott':>6s}"
     print(header)
@@ -218,7 +245,8 @@ def show(timeline: Timeline) -> None:
             )
             row += f" {dag:5.0f} {admit:5.0f} {start:5.0f}"
         row += (
-            f" {task.prepare_s:5.0f} {task.work_s:6.0f} {_offset(timeline, task.ended):>6s}"
+            f" {task.prepare_s:5.0f} {task.work_s:6.0f} {task.merge_s:5.0f}"
+            f" {_offset(timeline, task.finished):>6s}"
             f" {task.cpu_s:6.0f} {task.processes:5d}"
         )
         if throttled:

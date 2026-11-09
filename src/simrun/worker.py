@@ -1262,9 +1262,11 @@ def _merge_once(task_type: TaskType, settings: BaseModel, paths: TaskPaths) -> N
     if marker.exists():
         logger.info("the merge of %s is done already", paths.task_dir)
         return
+    began = time.monotonic()
     run_merge(task_type, settings, paths)
     paths.out.mkdir(parents=True, exist_ok=True)
     marker.touch()
+    logger.info("merged %s in %.1f s", paths.task_dir.name, time.monotonic() - began)
 
 
 def _merge(stop: threading.Event) -> int:
