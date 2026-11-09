@@ -10,7 +10,7 @@
 | Argo Workflows v4.1.6 | `argo/` | the release manifests of a namespace install, committed unchanged, the configuration of the controller, its requeue time of 1 s instead of 10 s (`requeue.yaml`, so a run shows running soon after its pods start and the next task of the DAG starts about a second after the one before it) and the service account `simrun-workflow` of the pods |
 | run store | `store-settings.yaml`, `store.yaml` | the run store on NFS (csi-driver-nfs), mounted by the service and every pod with `nfsvers=4.2` and `lookupcache=positive` |
 | registry | `zot.yaml` | [Zot](https://zotregistry.dev), the image registry inside the network |
-| builds | `buildkit.yaml` | the BuildKit daemon, which builds the images of the environments |
+| builds | `buildkit.yaml` | the BuildKit daemon, which builds the images of the environments, and its state (`buildkitd-state`, 50 GiB of `local-path`): the layers and the downloads of uv of the builds, kept when its pod restarts |
 | service | `simrun.yaml` | the service: its settings, its tokens, its volumes and its rights |
 
 Since the release manifests are committed, a setup needs no download. Apply it with
