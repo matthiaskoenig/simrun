@@ -24,7 +24,7 @@ RUN uv venv /opt/venv --python 3.14
 COPY requirements.txt /tmp/requirements.txt
 RUN uv pip install --no-cache --no-deps --require-hashes -r /tmp/requirements.txt \
     && rm /tmp/requirements.txt
-ARG WHEEL=simrun-0.3.1-py3-none-any.whl
+ARG WHEEL=simrun-0.3.2-py3-none-any.whl
 COPY ${WHEEL} /opt/simrun/${WHEEL}
 RUN uv pip install --no-cache --no-deps /opt/simrun/${WHEEL}
 # the plugins with their dependencies, at the versions of the lock of simrun
