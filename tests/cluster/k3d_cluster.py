@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -78,11 +79,31 @@ def _run(
     return result.stdout
 
 
+# a download is tried this often, e.g. through a gateway timeout of GitHub
+DOWNLOAD_ATTEMPTS = 5
+DOWNLOAD_RETRY_S = 10.0
+
+
+def _fetch(url: str, sleep: Callable[[float], None] = time.sleep) -> bytes:
+    """The content of an url; a server error or a network error is tried again."""
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(url, timeout=300) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code < 500 or attempt == DOWNLOAD_ATTEMPTS:
+                raise
+        except urllib.error.URLError, TimeoutError:
+            if attempt == DOWNLOAD_ATTEMPTS:
+                raise
+        sleep(DOWNLOAD_RETRY_S * attempt)
+    raise AssertionError("unreachable")
+
+
 def _download(url: str, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".part")
-    with urllib.request.urlopen(url, timeout=300) as response:
-        tmp.write_bytes(response.read())
+    tmp.write_bytes(_fetch(url))
     tmp.chmod(0o755)
     tmp.replace(path)
 
